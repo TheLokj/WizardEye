@@ -90,4 +90,4 @@ Note that in the `GSA` mode, the directory need to be build like that, where `ki
 
 Keep in mind that in the case of the GSA mode, the assembled genomes need to be from the analyzed fasta and need to share the same contig id.
 
-The benchmarking mode will automatically generate a `truth.tsv` with two colums : the contig id and the associated kingdom. It will then compares the `predictions.tsv` and the `truth.tsv` and calculates scores where the kingdom of `-s kingdom` is used to calculate the *True Positive* and *True Negative*.
+The benchmarking mode will automatically generate a `truth.tsv` with two colums : the contig id and the associated kingdom. It will then compares the `predictions.tsv` and the `truth.tsv` and calculates scores where the kingdom of `-s kingdom` is used to calculate the *True Positive* and *False Positive*.
