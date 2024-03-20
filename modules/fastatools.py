@@ -65,13 +65,3 @@ def split_multifasta(fastaPath, fastaName, outdir, nSeq=None, minLength=None, ma
     else :
         print("Fasta found...")
     return newFasta
-
-def hist_length(fastaPath) :
-    """
-    This function construct a histogram showing the contigs length distribution
-    """
-    length = []
-    for record in SeqIO.parse(fastaPath, "fasta"):
-        length.append(len(record))
-    fig, ax = plt.subplots()
-    ax.hist(length)

@@ -69,9 +69,7 @@ def get_oneKingdom_tax(fastaPath, kingdom, outdir, mode="standalone") :
 
 def get_gca_tax(directory,  outdir) :
     """
-    This function is used in the GCA mode. It analyzes for each subfolder of the directory
-    the record id of the GCA and generate a truth.tsv containing the record id and the name
-    of the subfolder (which need to be the name of the kingdom).
+    This function is no longer used
     """
     dfTax = pd.DataFrame()
     for subdir in os.listdir(directory) :
