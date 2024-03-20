@@ -1,4 +1,4 @@
-# WizardEye 
+﻿# WizardEye 
 
 ## Requirements
 
@@ -14,7 +14,6 @@ WizardEye can be quickly used by cloning the repository with git.
 
     git clone https://github.com/TheLokj/WizardEye.git
   
-
 ## Configuration
 
 Before launching WizardEye, you will need to configure it in the `config.ini` file. This configuration is necessary notably to precise the name of the conda environments where the tools are installed, an email to use the NCBI Entrez services and the details about CAT.
@@ -43,6 +42,8 @@ Before launching WizardEye, you will need to configure it in the `config.ini` fi
     
     CAT_Taxonomy_DB = /CAT_taxonomy/
 
+In the case where you don't plan to use CAT, you can only keep the `[user]` and `[environment]` section.
+
 ## Usage
 
 Basic usage :
@@ -54,8 +55,9 @@ Different arguments can be added :
 | Shortcut | Options | Description |  
 |--|--|--|
 | -c | y/n| If yes, run CAT  |  
-| -n | x | The number of contigs to analyzed  |  
-| -ml | x | The minimum length of the contigs to analyzed  |  
+| -n | x | The number of contigs to analyze  |  
+| -mnl | x | The minimum length of the contigs to analyze  |  
+| -mxl | x | The maximum length of the contigs to analyze  |  
 | -l | 1/2 | The level of prediction precision | 
 | -d | y/n | If yes, the tools print their output in the stdout | 
 
@@ -67,27 +69,44 @@ As initially developped to benchmark the tools, some arguments can be added :
 
 | Shortcut | Options | Description |  
 |--|--|--|
-| -tf | ... | The method to generate the file .tsv containing the truth | 
-| -t | ... | The kingdom, the path or the directory  | 
-| -s | ... | The searched kingdom to calculate the benchmarking scores | 
+| -bm | ... | The method to generate the file .tsv containing the truth | 
+| -t | ... | the path to the file containing the truth or the kingdom in One-Kingdom mode | 
+| -bs | ... | The searched kingdom to calculate the benchmarking scores | 
 
 Three methods can be used in benchmarking mode :
 
- - `OK` for one-kingdom : the analyzed fasta contain only contigs from the `-t kingdom`.
- - `CAMI`: the analyzed fasta was generated with CAMISIM and the real taxonomy can be find in `-t gsa_mapping.tsv`
- - `GSA` : the analyzed fasta is an assembly that allowed the reconstruction of the whole genome of different organisms ; the files containing the GSA of these organisms are localized in the `-t directory`.
+ - `CAMI`: the input fasta was generated with CAMISIM and the real taxonomy can be find in `-t gsa_mapping.tsv`.
+ -  `AK` for **A**lready-**K**nown : a file containing the real taxonomy for each contig already exists and is located to`-t path`. It need to respect the format described below.
+ - `OK` for **O**ne-**K**ingdom : the inputfasta contain only contigs from the `-t kingdom`.
 
-Note that in the `GSA` mode, the directory need to be build like that, where `kingdomX` need to be replaced by the real kingdom ("`eukaryote`", "`prokaryote`" or "`virus`") :
+The `OK` and `CAMI` modes automatically generate a `truth.tsv` with two colums : the contig id and the associated kingdom. Note that in the case where you want to use your own-made `truth.tsv` with the `AK` mode and where your input fasta contain also non-labelled contigs, it's necessary to label them as `unknown`.
 
- - directory
-	 - kingdom1
-		 - GSA1.fa
-		 - GSA2.fa
-	- kingdom2
-		- GSA3.fa
-		- GSA4.fa
-		- GSA5.fa
 
-Keep in mind that in the case of the GSA mode, the assembled genomes need to be from the analyzed fasta and need to share the same contig id.
+| contig ID | division |
+|--|--|
+| ERZXXXXX.1 | eukaryote |
+| ERZXXXXX.23 | unknown |
+| ERZXXXXX.3432 | prokaryote |
+| ERZXXXXX.444 | prokaryote |
+| ERZXXXXX.3 | unknown |
 
-The benchmarking mode will automatically generate a `truth.tsv` with two colums : the contig id and the associated kingdom. It will then compares the `predictions.tsv` and the `truth.tsv` and calculates scores where the kingdom of `-s kingdom` is used to calculate the *True Positive* and *False Positive*.
+Finally, WizardEye in the benchmarking mode will compares the `predictions.tsv` and the `truth.tsv` and calculates scores where the kingdom of `-s kingdom` is used to calculate the *True Positive*, *False Negative*. These results are saved at `performances.tsv`.
+
+### Use kingdom-specific proportions
+
+Note that you can also add proportion parameters in this mode to select only a precise percentage of each specified kingdom :
+
+| Shortcut | Options | Description |  
+|--|--|--|
+| -bk | kingdom1:kingdon2 | The name of the kingdoms   | 
+| -bp | X:Y | The proportion of each kingdom | 
+
+Each kingdom and proportion need to be separated with `:`.
+
+
+
+
+ 
+
+ 
+
