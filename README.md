@@ -81,7 +81,6 @@ Three methods can be used in benchmarking mode :
 
 The `OK` and `CAMI` modes automatically generate a `truth.tsv` with two colums : the contig id and the associated kingdom. Note that in the case where you want to use your own-made `truth.tsv` with the `AK` mode and where your input fasta contain also non-labelled contigs, it's necessary to label them as `unknown`.
 
-
 | contig ID | division |
 |--|--|
 | ERZXXXXX.1 | eukaryote |
@@ -91,6 +90,15 @@ The `OK` and `CAMI` modes automatically generate a `truth.tsv` with two colums :
 | ERZXXXXX.3 | unknown |
 
 Finally, WizardEye in the benchmarking mode will compares the `predictions.tsv` and the `truth.tsv` and calculates scores where the kingdom of `-s kingdom` is used to calculate the *True Positive*, *False Negative*. These results are saved at `performances.tsv`.
+
+|  | EukRep | Tiara | Whokaryote | Whokaryote+Tiara | DeepMicroClass |
+|--|--|--|--|--|--|
+| TP | 39 | 40 | 37 | 40 | 37 |
+| TN | 158 | 158 | 137 | 154 | 153 |
+| FP | 3 | 3 | 24 | 7 | 2 |
+| FN | 1 | 0 | 3 | 0 | 9 |
+
+Each generated `truth.tsv`,  `performances.tsv` and tools output can be found in the directory output/`newName`/ where the `newName` is a name build with the original input name, the number of contigs, the minimum selected length, the maximum selected length and the wanted proportion as described below. 
 
 ### Use kingdom-specific proportions
 
