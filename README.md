@@ -106,7 +106,7 @@ Note that you can also add proportion parameters in this mode to select only a p
 
 | Shortcut | Options | Description |  
 |--|--|--|
-| -bk | kingdom1:kingdon2 | The name of the kingdoms   | 
+| -bk | kingdom1:kingdon2 | The name of the wanted kingdoms   | 
 | -bp | X:Y | The proportion of each kingdom | 
 
 Each kingdom and proportion need to be separated with `:`.
