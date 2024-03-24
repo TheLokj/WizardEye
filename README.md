@@ -137,6 +137,6 @@ In this example, WizardEye will be launched 7 times, analysing firstly 200 conti
  
 The `proportion` mode allows WizardEye to be run several times, selecting contigs of `-ekl` kindgoms separated with `:` whose proportions are changing. The proportions are precised with the `-ekp` argument and each iteration is separated with a `,`, the `:` separing once again the kingdom.
  
-    python3 main.py expert -i example.fa -na PROP -mo proportion -t truth.tsv -c n -ekl eukaryote:prokaryote -ekp 20,80,50,40:80,20,50,60 -mnl 3000 -mxl 10000 -n 200 -pr eukaryote
+    python3 main.py expert -i example.fa -na PROP -mo proportion -t truth.tsv -ekl eukaryote:prokaryote -ekp 20,80,50,40:80,20,50,60 -mnl 3000 -mxl 10000 -n 200 -pr eukaryote
 
 In this example, WizardEye will be launched 4 times, analysing firstly 200 contigs between 3000 and 10000pb with 20% of eukaryotic contigs and 80% of prokaryotic contigs, then 200 contigs between 3000 and 10000pb with 80% of eukaryotic contigs and 20% of prokaryotic contigs... The positive refence to calculate the scores is `eukaryote`.
