@@ -89,6 +89,9 @@ def check_truth(checkedPath, truthPath, search=None) :
     predictions = pd.read_csv(checkedPath, sep='\t', header=0, index_col=0)
     truth = pd.read_csv(truthPath, sep='\t', header=0, index_col=0).loc[predictions.index]
 
+    print(truth)
+    pd.concat([predictions, truth], axis=1).to_csv(checkedPath, sep="\t")
+
     sameAsTruth, countTable, sameAsTruthSummary, sameAsSearch, countTFPN = pd.DataFrame(index=predictions.index, columns=predictions.columns), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(index=['TP', 'TN', 'FP', 'FN'])
     for col in predictions.columns :
         for index in predictions.index :

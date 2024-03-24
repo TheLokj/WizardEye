@@ -4,13 +4,17 @@ import random
 import matplotlib
 import matplotlib.pyplot as plt
 from Bio import SeqIO
+import numpy as np
 
-def split_multifasta(fastaPath, fastaName, outdir, nSeq=None, minLength=None, maxLength=None, knownIds=None, proportions=None) :
+def split_multifasta(fastaPath, fastaName, outdir, nSeq=None, minLength=None, maxLength=None, knownIds=None, proportions=None, exName=None) :
     """
     This function generates a multifasta from another multifasta containing only
     nSeq sequences of a specified length, as the results of the tools used by WizardEye
     can be length-dependant. It also allow to select only known contig from a list.
     """
+    if exName == None :
+        print("Plotting the sequences length histogram...")
+        hist_length(fastaPath, fastaName)
     print("Selecting the sequences from the fasta...")
     # Check if proportions are important
     if minLength == None :
@@ -34,34 +38,51 @@ def split_multifasta(fastaPath, fastaName, outdir, nSeq=None, minLength=None, ma
             if nSeq == float('inf') :
                 record = records[i]
             else :
-                record = records[random.randint(0, len(records)-1)]
+                rindex = random.randint(0, len(records)-1)
+                record = records[rindex]
             if len(selectedRecs) < nSeq:
                 if len(record) >= minLength and len(record) <= maxLength :
                     id = record.id.split(" ")[0]
-                    # To avoid the selection of an already random selected contig
-                    if id not in selectedIds :
-                        if isinstance(knownIds, list) is True or isinstance(knownIds, dict) is True :
-                            if proportions == None :
-                                if id in knownIds:
-                                    selectedRecs.append(record)
-                                    selectedIds.append(id)
-                            else :
-                                for iKingdom in range(len(knownIds.keys())) :
-                                    if id in knownIds[list(knownIds.keys())[iKingdom]] :
-                                        if nSeqPerKingdom[iKingdom] != 0 :
+                    if isinstance(knownIds, list) is True or isinstance(knownIds, dict) is True :
+                        if proportions == None :
+                            if id in knownIds:
+                                selectedRecs.append(record)
+                                selectedIds.append(id)
+                        else :
+                            for iKingdom in range(len(knownIds.keys())) :
+                                if id in knownIds[list(knownIds.keys())[iKingdom]] :
+                                    if nSeqPerKingdom[iKingdom] != 0 :
                                             selectedRecs.append(record)
                                             selectedIds.append(id)
                                             nSeqPerKingdom[iKingdom] -= 1
-                        else :
-                            selectedRecs.append(record)
-                            selectedIds.append(id)
+                    else :
+                        selectedRecs.append(record)
+                        selectedIds.append(id)
+                records.pop(rindex)
             else:
                 break
-        SeqIO.write(selectedRecs, newFasta, "fasta")
+            # To avoid an analyzis on empty data or partial data, stop the tool if nSeq isn't reach
+        if len(selectedRecs) < nSeq :
+            print(f"Warning : There are only {len(selectedRecs)} sequences (<{nSeq}) between {minLength} and {maxLength} in {fastaName}")
+            if isinstance(knownIds, list) is True or isinstance(knownIds, dict) is True:
+                print("This may affect the requested proportions.")
+        if len(selectedRecs) == 0 :
+            print("There isn't contig of this length in the input fasta")
+            sys.exit()
+        else :
+            SeqIO.write(selectedRecs, newFasta, "fasta")
         if maxLength == float("inf") :
             print(f"{len(selectedRecs)} sequences larger or making {minLength} pb selected")
         else :
             print(f"{len(selectedRecs)} sequences between {minLength} and {maxLength} pb selected")
     else :
         print("Fasta found...")
-    return newFasta
+    return newFasta, len(selectedRecs)
+
+def hist_length(fastaPath, fastaName) :
+    length = [len(record) for record in SeqIO.parse(fastaPath, "fasta")]
+    plt.hist(length, log=True)
+    plt.xlabel("Length (pb)")
+    plt.ylabel("logCount")
+    plt.title(f"Histogram of sequences length from \n{fastaPath.split("/")[-1]}")
+    plt.savefig(f"output/{fastaName}/original_length_distribution.png")
