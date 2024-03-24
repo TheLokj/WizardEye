@@ -48,30 +48,33 @@ In the case where you don't plan to use CAT, you can only keep the `[user]` and 
 
 Basic usage :
 
-      main.py -i fasta.fa
+      main.py basic -i fasta.fa
 
 Different arguments can be added :
 
 | Shortcut | Options | Description |  
 |--|--|--|
-| -c | y/n| If yes, run CAT  |  
 | -n | x | The number of contigs to analyze  |  
 | -mnl | x | The minimum length of the contigs to analyze  |  
 | -mxl | x | The maximum length of the contigs to analyze  |  
 | -l | 1/2 | The level of prediction precision | 
+| -c | y/n| If yes, run CAT  |  
+| -cl | y/n | If yes, the tools output are cleaned after the exectution of WizardEye | 
 | -d | y/n | If yes, the tools print their output in the stdout | 
 
 By default, the tool uniformize the result of the tools to make easier the comparaison. It's possible to keep the original results with the level argument `-l 2`.
 
 ### About the benchmarking mode
 
-As initially developped to benchmark the tools, some arguments can be added :
+#### Basic benchmark mode : compare the results of one launch with the truth
+
+As initially developped to benchmark the tools, some arguments can be added to compare the predictions with the reality :
 
 | Shortcut | Options | Description |  
 |--|--|--|
-| -bm | ... | The method to generate the file .tsv containing the truth | 
 | -t | ... | the path to the file containing the truth or the kingdom in One-Kingdom mode | 
-| -bs | ... | The searched kingdom to calculate the benchmarking scores | 
+| -tf | ... | The method to generate the file .tsv containing the truth | 
+| -pr | ... | The kingdom to use as a positive reference to calculate scores | 
 
 Three methods can be used in benchmarking mode :
 
@@ -100,21 +103,40 @@ Finally, WizardEye in the benchmarking mode will compares the `predictions.tsv` 
 
 Each generated `truth.tsv`,  `performances.tsv` and tools output can be found in the directory output/`newName`/ where the `newName` is a name build with the original input name, the number of contigs, the minimum selected length, the maximum selected length and the wanted proportion as described below. 
 
-### Use kingdom-specific proportions
+##### Use kingdom-specific proportions
 
 Note that you can also add proportion parameters in this mode to select only a precise percentage of each specified kingdom :
 
 | Shortcut | Options | Description |  
 |--|--|--|
-| -bk | kingdom1:kingdon2 | The name of the wanted kingdoms   | 
-| -bp | X:Y | The proportion of each kingdom | 
+| -kl | kingdom1:kingdon2 | The name of the wanted kingdoms   | 
+| -kp | X:Y | The proportion of each kingdom | 
 
 Each kingdom and proportion need to be separated with `:`.
 
+#### Expert benchmark mode : launch WizardEye several times adjusting the parameters at each iteration 
 
+    main.py expert -i fasta.fa
 
+Because a benchmark is better with multiple data, WizardEye also provide an expert mode to launch the tools several times. This mode resumes all the predictions and metrics obtained thanks to WizardEye and the tools in several `.tsv` files. 
 
+| Shortcut | Options | Description |  
+|--|--|--|
+| -na | name | The Benchmark name    | 
+| -mo | mode | The Benchmark mode (see below) | 
+
+##### Launching WizardEye with different contig lengths 
+
+The `length` mode allows WizardEye to be run several times, selecting contigs between a minimum length `-mnL` and a maximum length `-mxl`. An additional argument, `-lr`, is required to specify the size of the different intervals.
+
+    python3 main.py expert -i example.fa -na LENGTH -mo length -t truth.tsv -c n -lr 1000 -mnl 3000 -mxl 10000 -n 200 -pr eukaryote
+
+In this example, WizardEye will be launched 7 times, analysing firstly 200 contigs from 3000 pb to 4000 pb, then 200 contigs from 4000 pb to 5000 pb... The positive refence to calculate the scores is `eukaryote`.
+
+##### Launching WizardEye with different kingdom known proportions
  
-
+The `proportion` mode allows WizardEye to be run several times, selecting contigs of `-ekl` kindgoms separated with `:` whose proportions are changing. The proportions are precised with the `-ekp` argument and each iteration is separated with a `,`, the `:` separing once again the kingdom.
  
+    python3 main.py expert -i example.fa -na PROP -mo proportion -t truth.tsv -c n -ekl eukaryote:prokaryote -ekp 20,80,50,40:80,20,50,60 -mnl 3000 -mxl 10000 -n 200 -pr eukaryote
 
+In this example, WizardEye will be launched 4 times, analysing firstly 200 contigs between 3000 and 10000pb with 20% of eukaryotic contigs and 80% of prokaryotic contigs, then 200 contigs between 3000 and 10000pb with 80% of eukaryotic contigs and 20% of prokaryotic contigs... The positive refence to calculate the scores is `eukaryote`.
