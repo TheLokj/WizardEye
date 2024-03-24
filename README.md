@@ -92,7 +92,7 @@ The `OK` and `CAMI` modes automatically generate a `truth.tsv` with two colums :
 | ERZXXXXX.444 | prokaryote |
 | ERZXXXXX.3 | unknown |
 
-Finally, WizardEye in the benchmarking mode will compares the `predictions.tsv` and the `truth.tsv` and calculates scores where the kingdom of `-s kingdom` is used to calculate the *True Positive*, *False Negative*. These results are saved at `performances.tsv`.
+Finally, WizardEye in the benchmarking mode will compares the `predictions.tsv` and the `truth.tsv` and calculates scores where the kingdom of `-pr kingdom` is used to calculate the *True Positive*, *False Negative*. These results are saved at `performances.tsv`.
 
 |  | EukRep | Tiara | Whokaryote | Whokaryote+Tiara | DeepMicroClass |
 |--|--|--|--|--|--|
