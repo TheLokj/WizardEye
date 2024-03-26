@@ -1,4 +1,3 @@
-
 ﻿# WizardEye 
 
 ## Requirements
