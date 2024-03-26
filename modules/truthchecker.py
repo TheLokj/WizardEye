@@ -87,9 +87,7 @@ def check_truth(checkedPath, truthPath, search=None) :
     scores if a searched kingdom is provided.
     """
     predictions = pd.read_csv(checkedPath, sep='\t', header=0, index_col=0)
-    truth = pd.read_csv(truthPath, sep='\t', header=0, index_col=0).loc[predictions.index]
-
-    print(truth)
+    truth = pd.read_csv(truthPath, sep='\t', header=0, index_col=0, dtype=str).loc[predictions.index]
     pd.concat([predictions, truth], axis=1).to_csv(checkedPath, sep="\t")
 
     sameAsTruth, countTable, sameAsTruthSummary, sameAsSearch, countTFPN = pd.DataFrame(index=predictions.index, columns=predictions.columns), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(index=['TP', 'TN', 'FP', 'FN'])

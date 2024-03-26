@@ -6,17 +6,16 @@ import matplotlib.pyplot as plt
 from Bio import SeqIO
 import numpy as np
 
-def split_multifasta(fastaPath, fastaName, outdir, nSeq=None, minLength=None, maxLength=None, knownIds=None, proportions=None, exName=None) :
+def split_multifasta(fastaPath, fastaName, outdir, nSeq=None, minLength=None, maxLength=None, knownIds=None, kingdomProp=None, exName=None) :
     """
     This function generates a multifasta from another multifasta containing only
     nSeq sequences of a specified length, as the results of the tools used by WizardEye
     can be length-dependant. It also allow to select only known contig from a list.
     """
-    if exName == None :
+    if exName == "" :
         print("Plotting the sequences length histogram...")
         hist_length(fastaPath, fastaName)
     print("Selecting the sequences from the fasta...")
-    # Check if proportions are important
     if minLength == None :
         minLength = 0
     if maxLength == None :
@@ -29,10 +28,10 @@ def split_multifasta(fastaPath, fastaName, outdir, nSeq=None, minLength=None, ma
             records.append(record)
         if nSeq == None :
             nSeq = len(records)
-        if proportions == None and isinstance(knownIds, dict) is True :
+        if kingdomProp == None and isinstance(knownIds, dict) is True :
             knownIds = [ids for kingdoms in knownIds.values() for ids in kingdoms]
-        elif proportions != None and isinstance(knownIds, dict) is True :
-            nSeqPerKingdom = [round(nSeq*(float(value)/100)) for value in proportions.values()]
+        elif kingdomProp != None and isinstance(knownIds, dict) is True :
+            nSeqPerKingdom = [round(nSeq*(float(value)/100)) for value in kingdomProp.values()]
         # To avoid a bias in the selection, parse semi-randomly the records except if we want all the seq
         for i in range(len(records)) :
             if nSeq == float('inf') :
@@ -44,7 +43,7 @@ def split_multifasta(fastaPath, fastaName, outdir, nSeq=None, minLength=None, ma
                 if len(record) >= minLength and len(record) <= maxLength :
                     id = record.id.split(" ")[0]
                     if isinstance(knownIds, list) is True or isinstance(knownIds, dict) is True :
-                        if proportions == None :
+                        if kingdomProp == None :
                             if id in knownIds:
                                 selectedRecs.append(record)
                                 selectedIds.append(id)
@@ -63,10 +62,10 @@ def split_multifasta(fastaPath, fastaName, outdir, nSeq=None, minLength=None, ma
                 break
             # To avoid an analyzis on empty data or partial data, stop the tool if nSeq isn't reach
         if len(selectedRecs) < nSeq :
-            print(f"Warning : There are only {len(selectedRecs)} sequences (<{nSeq}) between {minLength} and {maxLength} in {fastaName}")
+            print(f"Warning : There are only {len(selectedRecs)} compatible sequences (<{nSeq}) between {minLength} and {maxLength} in {fastaName}")
             if isinstance(knownIds, list) is True or isinstance(knownIds, dict) is True:
                 print("This may affect the requested proportions.")
-        if len(selectedRecs) == 0 :
+        if len(selectedRecs) == 0 and exName == None:
             print("There isn't contig of this length in the input fasta")
             sys.exit()
         else :

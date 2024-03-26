@@ -16,7 +16,24 @@ class HiddenPrints :
         sys.stdout.close()
         sys.stdout = self._original_stdout
 
-def main(fastaPath, ncontigs = None, minLength = None, maxLength = None, precisionLevel = 1, debugMode = None, truthFormat = None, positiveRef = None, realKingdom = None, kingdomProp = None, kingdomList = None, exName = None, clean=None, cat=None, config=None) :
+def get_fasta_name(fastaPath, ncontigs, minLength, maxLength, kingdomList, kingdomProp, exName)  :
+    """
+    This function is used to get the analysed multifasta name, also used as the name of the output directory
+    """
+    if exName == None :
+        fastaName = f"{os.path.basename(fastaPath).split(".")[0]}_{ncontigs}seq_{minLength}pb"
+    else :
+        fastaName = f"{exName}_{os.path.basename(fastaPath).split(".")[0]}_{ncontigs}seq_{minLength}pb"
+    if maxLength != None:
+        fastaName = fastaName[:-2] + f"to{maxLength}pb"
+    if kingdomProp != None and kingdomList != None:
+        fastaName += "_"
+        for i in range(len(kingdomProp.split(":"))):
+            fastaName += kingdomProp.split(":")[i].split("..")[0] + kingdomList.split(":")[i][:4] + "-"
+        fastaName = fastaName[:-1]
+    return fastaName
+
+def main(fastaPath, ncontigs = None, minLength = None, maxLength = None, precisionLevel = 1, truthFormat = None, positiveRef = None, realKingdom = None, kingdomProp = None, kingdomList = None, exName = None, clean=None, cat=None, config=None) :
     """
     This function is the main function of WizardEye. It allows to run a specific
     analysis using different tools to predict the kingdom of contigs contained in
@@ -24,28 +41,9 @@ def main(fastaPath, ncontigs = None, minLength = None, maxLength = None, precisi
     some metrics if WizardEye is launched in benchmark mode.
     """
 
-    # Print the tools output in the stdout or not according to the debug mode
-    if debugMode == "y":
-        toolsOutput = ""
-    else :
-        toolsOutput = "> /dev/null"
-
-    # If the tool is launched with the expert() function, use the benchmark name
-    if exName == None :
-        exName = ""
-    else :
-        exName = "EX" + exName + "_"
-    
     # Format the final name of the fasta
-    fastaName = f"{exName}{os.path.basename(fastaPath).split(".")[0]}_{ncontigs}seq_{minLength}pb"
-    if maxLength != None :
-        fastaName = fastaName[:-2] + f"to{maxLength}pb"
-    if kingdomProp != None and kingdomList != None :
-        fastaName += "_"
-        for i in range(len(kingdomProp.split(":"))) :
-            fastaName += kingdomProp.split(":")[i] + kingdomList.split(":")[i][:4] + "-"
-        fastaName = fastaName[:-1]
-    
+    fastaName = get_fasta_name(fastaPath, ncontigs, minLength, maxLength, kingdomList, kingdomProp, exName)
+
     if os.path.exists(f"output/{fastaName}") is False :
         os.mkdir(f"output/{fastaName}")
     
@@ -55,15 +53,31 @@ def main(fastaPath, ncontigs = None, minLength = None, maxLength = None, precisi
         truthPath, knownIds = realKingdom, {}
         truth = open(realKingdom)
         for line in truth.readlines()[1:] :
+            sub = ""
+            if kingdomProp != None and kingdomList != None:
+                if ".." in kingdomList and ".." in kingdomProp and line.split("\t")[1] in kingdomList.split("..")[0]:
+                    sub = "-" + line.split("\t")[2].replace("\n", "")
             if line.split("\t")[1].replace("\n", "") != "unknown":
-                if line.split("\t")[1] not in knownIds.keys() :
-                    knownIds[line.split("\t")[1]] = []
-                knownIds[line.split("\t")[1]].append(line.split("\t")[0])
+                if line.split("\t")[1]+sub not in knownIds.keys() :
+                    knownIds[line.split("\t")[1] + sub] = []
+                knownIds[line.split("\t")[1] + sub].append(line.split("\t")[0])
         truth.close()
         if kingdomProp != None and kingdomList != None :
             proportions = {}
-            for i in range(len(kingdomList.split(":"))) :
-                proportions[kingdomList.split(":")[i]] = kingdomProp.split(":")[i]
+            kingdomList, kingdomProp = kingdomList.split(":"), kingdomProp.split(":")
+            for i in range(len(kingdomList)) :
+                proportions[kingdomList[i].split("..")[0]] = kingdomProp[i].split("..")[0]
+                #Check if there are subdivisions proportions
+                if ".." in kingdomList[i] and ".." in kingdomProp[i]:
+                    subList = kingdomList[i].split("..")[1].split(".")
+                    subProp = kingdomProp[i].split("..")[1].split(".")
+                    if sum([float(percent) for percent in subProp]) == float(kingdomProp[i].split("..")[0]):
+                        for j in range(len(subList)) :
+                            proportions[f"{kingdomList[i].split("..")[0]}-{subList[j]}"] = subProp[j]
+                    else :
+                        print(f"The sum of subdivision of {kingdomList[i]} proportions should be {kingdomList[i].split("..")[0]}% !")
+                        sys.exit()
+                    proportions.pop(kingdomList[i].split("..")[0])
             if sum([float(value) for value in proportions.values()]) != float(100):
                 print("The sum of the proportions should be 100% !")
                 sys.exit()
@@ -75,7 +89,7 @@ def main(fastaPath, ncontigs = None, minLength = None, maxLength = None, precisi
         knownIds, proportions = None,  None
     
     # Make a copy of the multifasta with the selectionned size, n contigs
-    newFasta, nFindContig  = ft.split_multifasta(fastaPath, fastaName, "input/", nSeq=ncontigs, minLength=minLength,  maxLength=maxLength, knownIds=knownIds, proportions=proportions, exName=exName)
+    newFasta, nFindContig  = ft.split_multifasta(fastaPath, fastaName, "input/", nSeq=ncontigs, minLength=minLength,  maxLength=maxLength, knownIds=knownIds, kingdomProp=proportions, exName=exName)
     
     # Format the real taxonomy for non-already existing truth.tsv
     if truthFormat == "CAMI":
@@ -93,15 +107,12 @@ def main(fastaPath, ncontigs = None, minLength = None, maxLength = None, precisi
     if cat == "y" :
         if os.path.exists(f"output/{fastaName}/CAT") is False :
             os.mkdir(f"output/{fastaName}/CAT")
-            envStartTime, envStartProcTime = time.time(), time.process_time()
-            os.system(f'singularity run {config["CAT"]["CAT_sif"]} CAT')
-            envActivationTime, envProcActivationTime = time.time() - envStartTime, time.process_time() - envStartProcTime
             print("Running CAT...")
-            startTime, startProcTime = time.time(), time.process_time()
-            os.system(f'singularity run {config["CAT"]["CAT_sif"]} CAT contigs -c {newFasta} -d {config["CAT"]["CAT_DB"]} --path_to_diamond {config["CAT"]["CAT_Diamond_DB"]} -t {config["CAT"]["CAT_Taxonomy_DB"]} --out_prefix "./output/{fastaName}/CAT/out.CAT" --block_size 4 --index_chunks 2 {toolsOutput}')
-            os.system(f'singularity run {config["CAT"]["CAT_sif"]} CAT add_fastaNames -i "./output/{fastaName}/CAT/out.CAT.contig2classification.txt" -o "./output/{fastaName}/CAT/out.CAT.lineage" -t {config["CAT"]["CAT_Taxonomy_DB"]} {toolsOutput}')
-            elapsedTimes.append(time.time() - startTime - envActivationTime)
-            elapsedProcTimes.append(time.process_time() - startProcTime - envProcActivationTime)
+            runtime = sp.run([f'singularity run {config["CAT"]["CAT_sif"]} time CAT contigs -c {newFasta} -d {config["CAT"]["CAT_DB"]} --path_to_diamond {config["CAT"]["CAT_Diamond_DB"]} -t {config["CAT"]["CAT_Taxonomy_DB"]} --out_prefix "./output/{fastaName}/CAT/out.CAT" --block_size {config["CAT"]["Block_size"]} --index_chunks {config["CAT"]["Index_chunks"]}'], shell=True, capture_output=True, encoding="UTF-8").stderr
+            os.system(f'singularity run {config["CAT"]["CAT_sif"]} CAT add_fastaNames -i "./output/{fastaName}/CAT/out.CAT.contig2classification.txt" -o "./output/{fastaName}/CAT/out.CAT.lineage" -t {config["CAT"]["CAT_Taxonomy_DB"]} ')
+            elapsedTime, cpuTime = runtime.split("real\t")[1].split("s")[0].split("m"), runtime.split("sys\t")[1].split("s")[0].split("m")
+            elapsedTimes.append(int(elapsedTime[0]) * 60 + float(elapsedTime[1]))
+            elapsedProcTimes.append(int(cpuTime[0]) * 60 + float(cpuTime[1]))
         else :
             print("CAT predictions found...")
     else :
@@ -109,63 +120,48 @@ def main(fastaPath, ncontigs = None, minLength = None, maxLength = None, precisi
     
     if os.path.exists(f"output/{fastaName}/eukrep") is False :
         os.mkdir(f"output/{fastaName}/eukrep")
-        envStartTime, envStartProcTime = time.time(), time.process_time()
-        os.system(f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["EukRep"]}')
-        envActivationTime, envProcActivationTime = time.time() - envStartTime, time.process_time() - envStartProcTime
         print("Running EukRep...")
-        startTime, startProcTime = time.time(), time.process_time()
-        os.system(f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["EukRep"]} && EukRep -i {newFasta} -o output/{fastaName}/eukrep/eukrep.txt {toolsOutput}')
-        elapsedTimes.append(time.time() - startTime - envActivationTime)
-        elapsedProcTimes.append(time.process_time() - startProcTime - envProcActivationTime)
+        runtime = sp.run([f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["EukRep"]} && time EukRep -i {newFasta} -o output/{fastaName}/eukrep/eukrep.txt '], shell=True, capture_output=True, encoding="UTF-8").stderr
+        elapsedTime, cpuTime = runtime.split("real\t")[1].split("s")[0].split("m"), runtime.split("sys\t")[1].split("s")[0].split("m")
+        elapsedTimes.append(int(elapsedTime[0]) * 60 + float(elapsedTime[1]))
+        elapsedProcTimes.append(int(cpuTime[0]) * 60 + float(cpuTime[1]))
     else :
         print("EukRep predictions found...")
     
     if os.path.exists(f"output/{fastaName}/tiara") is False :
         os.mkdir(f"output/{fastaName}/tiara")
-        envStartTime, envStartProcTime = time.time(), time.process_time()
-        os.system(f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["Tiara"]}')
-        envActivationTime, envProcActivationTime = time.time() - envStartTime, time.process_time() - envStartProcTime
         print("Running Tiara...")
-        startTime, startProcTime = time.time(), time.process_time()
-        os.system(f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["Tiara"]} && tiara -i {newFasta} -o output/{fastaName}/tiara/tiara.txt {toolsOutput}')
-        elapsedTimes.append(time.time() - startTime - envActivationTime)
-        elapsedProcTimes.append(time.process_time() - startProcTime - envProcActivationTime)
+        runtime = sp.run([f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["Tiara"]} && time tiara -i {newFasta} -o output/{fastaName}/tiara/tiara.txt '], shell=True, capture_output=True, encoding="UTF-8").stderr
+        elapsedTime, cpuTime = runtime.split("real\t")[1].split("s")[0].split("m"), runtime.split("sys\t")[1].split("s")[0].split("m")
+        elapsedTimes.append(int(elapsedTime[0]) * 60 + float(elapsedTime[1]))
+        elapsedProcTimes.append(int(cpuTime[0]) * 60 + float(cpuTime[1]))
     else :
         print("Tiara predictions found...")
     
     if os.path.exists(f"output/{fastaName}/whokaryoteS") is False :
-        envStartTime, envStartProcTime = time.time(), time.process_time()
-        os.system(f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["Whokaryote"]}')
-        envActivationTime, envProcActivationTime = time.time() - envStartTime, time.process_time() - envStartProcTime
         print("Running Whokaryote...")
-        startTime, startProcTime = time.time(), time.process_time()
-        os.system(f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["Whokaryote"]} && whokaryote.py --contigs {newFasta} --outdir output/{fastaName}/whokaryoteS --model S --minsize {minLength} {toolsOutput}')
-        elapsedTimes.append(time.time() - startTime - envActivationTime)
-        elapsedProcTimes.append(time.process_time() - startProcTime - envProcActivationTime)
+        runtime = sp.run([f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["Whokaryote"]} && time whokaryote.py --contigs {newFasta} --outdir output/{fastaName}/whokaryoteS --model S --minsize {minLength}'], shell=True, capture_output=True, encoding="UTF-8").stderr
+        elapsedTime, cpuTime = runtime.split("real\t")[1].split("s")[0].split("m"), runtime.split("sys\t")[1].split("s")[0].split("m")
+        elapsedTimes.append(int(elapsedTime[0])*60+float(elapsedTime[1]))
+        elapsedProcTimes.append(int(cpuTime[0]) * 60 + float(cpuTime[1]))
     else :
         print("Whokaryote predictions found...")
     
     if os.path.exists(f"output/{fastaName}/whokaryoteT") is False :
-        envStartTime, envStartProcTime = time.time(), time.process_time()
-        os.system(f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["Whokaryote"]}')
-        envActivationTime, envProcActivationTime = time.time() - envStartTime, time.process_time() - envStartProcTime
         print("Running Whokaryote+Tiara...")
-        startTime, startProcTime = time.time(), time.process_time()
-        os.system(f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["Whokaryote"]} && whokaryote.py --contigs {newFasta} --outdir output/{fastaName}/whokaryoteT --model T --minsize {minLength} {toolsOutput}')
-        elapsedTimes.append(time.time() - startTime - envActivationTime)
-        elapsedProcTimes.append(time.process_time() - startProcTime - envProcActivationTime)
+        runtime = sp.run([f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["Whokaryote"]} && time whokaryote.py --contigs {newFasta} --outdir output/{fastaName}/whokaryoteT --model T --minsize {minLength}'], shell=True, capture_output=True, encoding="UTF-8").stderr
+        elapsedTime, cpuTime = runtime.split("real\t")[1].split("s")[0].split("m"), runtime.split("sys\t")[1].split("s")[0].split("m")
+        elapsedTimes.append(int(elapsedTime[0]) * 60 + float(elapsedTime[1]))
+        elapsedProcTimes.append(int(cpuTime[0]) * 60 + float(cpuTime[1]))
     else :
         print("Whokaryote+Tiara predictions found...")
-    
+
     if os.path.exists(f"output/{fastaName}/dmc") is False :
-        envStartTime, envStartProcTime = time.time(), time.process_time()
-        os.system(f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["DeepMicroClass"]}')
-        envActivationTime, envProcActivationTime = time.time() - envStartTime, time.process_time() - envStartProcTime
         print("Running DeepMicroClass...")
-        startTime, startProcTime = time.time(), time.process_time()
-        os.system(f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["DeepMicroClass"]} && DeepMicroClass predict -i {newFasta} -o output/{fastaName}/dmc/ {toolsOutput}')
-        elapsedTimes.append(time.time() - startTime - envActivationTime)
-        elapsedProcTimes.append(time.process_time() - startProcTime - envProcActivationTime)
+        runtime = sp.run([f'eval "$(conda shell.bash hook)" && conda activate {config["environment"]["DeepMicroClass"]} && time DeepMicroClass predict -i {newFasta} -o output/{fastaName}/dmc/ '], shell=True, capture_output=True, encoding="UTF-8").stderr
+        elapsedTime, cpuTime = runtime.split("real\t")[1].split("s")[0].split("m"), runtime.split("sys\t")[1].split("s")[0].split("m")
+        elapsedTimes.append(int(elapsedTime[0]) * 60 + float(elapsedTime[1]))
+        elapsedProcTimes.append(int(cpuTime[0]) * 60 + float(cpuTime[1]))
         os.remove("model.ckpt")
     else :
         print("DeepMicroClass predictions found...")
@@ -250,8 +246,7 @@ def main(fastaPath, ncontigs = None, minLength = None, maxLength = None, precisi
             dfTimes = pd.DataFrame.from_dict(times, orient="index")
             print(dfTimes)
             dfTimes.to_csv(f"output/{fastaName}/performances.tsv", sep="\t")
-            print("\nNote : the conda environment activation is substracted from the tool's execution times, which can sometimes result in negative CPU time.\n")
-    
+
         # Print the used parameters in a file
         resume = open(f"output/{fastaName}/params.tsv", "w")
         resume.write(f"inputPath\t{fastaPath}\ntruthPath\t{truthPath}\nnWantedcontigs\t{ncontigs}\nnFoundContigs\t{nFindContig}\nminimum\t{minLength}\nmaximum\t{maxLength}\nproportions\t{kingdomProp}\nof\t{kingdomList}")
@@ -269,13 +264,12 @@ def main(fastaPath, ncontigs = None, minLength = None, maxLength = None, precisi
         shutil.rmtree(f"output/{fastaName}/dmc/")
     
     # If it's a serie of benchmark, move all the output in the serie's directory
-    if exName != "" :
-        exName = exName[:-1]
-        if os.path.exists(f"output/{exName}") is False :
-            os.mkdir(f"output/{exName}")
+    if exName != None :
+        if os.path.exists(f"output/EX{exName}") is False :
+            os.mkdir(f"output/EX{exName}")
         for dir in os.listdir("output") :
-            if exName in dir and exName != dir :
-                shutil.move(f"output/{dir}", f"output/{exName}/{dir}")
+            if exName in dir and "EX"+exName != dir :
+                shutil.move(f"output/{dir}", f"output/EX{exName}/EX{dir}")
 
 def expert(mode, fastaPath, name, ncontigs = None, minLength=None, maxLength=None, positiveRef = None, debugMode = None, realKingdom = None, config = None, kingdomProp=None, kingdomList=None) :
     """
@@ -284,6 +278,9 @@ def expert(mode, fastaPath, name, ncontigs = None, minLength=None, maxLength=Non
     - length, to launch WizardEye on contigs of progressive length
     - proportion, to launch WizardEye on contigs with different proportions of known kingdoms
     """
+    print("Warning : be careful when setting up the parameters of the analysis and check if the number of contigs is compatible with your parameters.")
+    print("WizardEye can inform you if there aren't enougth contigs compatible with your search in the debug mode (-d y).\n")
+
     # Length mode
     if mode == "length":
         lengthRange = args.lengthrange
@@ -301,8 +298,7 @@ def expert(mode, fastaPath, name, ncontigs = None, minLength=None, maxLength=Non
 
         # Running the tools thanks to WizardEye
         for i in range(int(rep)):
-            if os.path.exists(
-                    f"output/EX{name}/EX{name}_{os.path.basename(fastaPath).split(".")[0]}_{ncontigs}seq_{minLatRep[i]}to{maxLatRep[i]}pb") is False:
+            if os.path.exists(f"output/EX{name}/EX{get_fasta_name(fastaPath, ncontigs, minLatRep[i], maxLatRep[i], kingdomList, kingdomProp, name)}") is False:
                 print(f"[{i + 1}/{int(rep)}] Launching WizardEye for contigs from {minLatRep[i]} to {maxLatRep[i]} pb")
                 if debugMode != "y" :
                     with HiddenPrints() :
@@ -328,13 +324,7 @@ def expert(mode, fastaPath, name, ncontigs = None, minLength=None, maxLength=Non
         print(f"WizardEye will be launched {int(rep)} times")
         for i in range(int(rep)):
             iprop = ":".join([dicTax[tax[ntax]][i] for ntax in range(len(tax))])
-            fastaName = f"EX{name}_{os.path.basename(fastaPath).split(".")[0]}_{ncontigs}seq_{minLength}pb"
-            if maxLength != None:
-                fastaName = fastaName[:-2] + f"to{maxLength}pb"
-            fastaName += "_"
-            for t in range(len(iprop.split(":"))):
-                fastaName += iprop.split(":")[t] + propK.split(":")[t][:4] + "-"
-            if os.path.exists(f"output/EX{name}/{fastaName[:-1]}") is False:
+            if os.path.exists(f"output/EX{name}/EX{get_fasta_name(fastaPath, ncontigs, minLength, maxLength, propK, iprop, name)}") is False:
                 print(
                     f"[{i + 1}/{int(rep)}] Launching WizardEye for proportions of {"% & ".join([dicTax[tax[ntax]][i] for ntax in range(len(tax))])}% (respectively for {" & ".join(tax)})")
                 if debugMode != "y":
@@ -351,16 +341,19 @@ def expert(mode, fastaPath, name, ncontigs = None, minLength=None, maxLength=Non
                     f"WizardEye already launched on {fastaPath} on {ncontigs} contigs from proportions of {"% & ".join([dicTax[tax[ntax]][i] for ntax in range(len(tax))])}% (respectively for {" & ".join(tax)})")
 
     # Save the metrics
-    f1score, accuracy, mcc, realTimes, cpuTimes, dfParams = {}, {}, {}, {}, {}, pd.DataFrame()
+    f1score, accuracy, mcc, realTimes, cpuTimes, dfParams, dfPreds = {}, {}, {}, {}, {}, pd.DataFrame(), pd.DataFrame()
     for dir in os.listdir(f"output/EX{name}/"):
-        label = dir.split("_")[-1]
+        label = dir.split("seq_")[-1]
         if os.path.exists(f"output/EX{name}/{dir}/predictions_metrics_{positiveRef}.tsv") is True:
             df = pd.read_csv(f"output/EX{name}/{dir}/predictions_metrics_{positiveRef}.tsv", sep="\t", index_col=0,
                              header=0)
             dfPerf = pd.read_csv(f"output/EX{name}/{dir}/performances.tsv", sep="\t", index_col=0, header=0)
+            preds = pd.read_csv(f"output/EX{name}/{dir}/predictions.tsv", sep="\t", index_col=0, header=0)
             params = pd.read_csv(f"output/EX{name}/{dir}/params.tsv", sep="\t", index_col=0, header=None)
+            preds["ID"] = label
             params.loc["ID"] = label
             dfParams = pd.concat([dfParams, params], axis=1)
+            dfPreds = pd.concat([dfPreds, preds])
             for col in df.columns:
                 if len(f1score.keys()) != len(df.columns):
                     f1score[col] = {}
@@ -383,6 +376,7 @@ def expert(mode, fastaPath, name, ncontigs = None, minLength=None, maxLength=Non
     dfrealTimes = pd.DataFrame.from_dict(realTimes)
     dfcpuTimes = pd.DataFrame.from_dict(cpuTimes)
     dfParams.transpose().to_csv(f"output/EX{name}/params.tsv", sep="\t")
+    dfPreds.to_csv(f"output/EX{name}/all_predictions.tsv", sep="\t")
     dfFscore.to_csv(f"output/EX{name}/f1score.tsv", sep="\t")
     dfAccuracy.to_csv(f"output/EX{name}/accuracy.tsv", sep="\t")
     dfMcc.to_csv(f"output/EX{name}/mcc.tsv", sep="\t")
@@ -391,6 +385,8 @@ def expert(mode, fastaPath, name, ncontigs = None, minLength=None, maxLength=Non
 
     # Copy the complete truth file in the directory
     shutil.copy(realKingdom, f"output/EX{name}/truth.tsv")
+    with open(f"output/EX{name}/{mode}.mode", "w"):
+        print("Finished.")
 
 if __name__ == "__main__" :
     # Parse arguments
@@ -423,7 +419,7 @@ if __name__ == "__main__" :
     args = parser.parse_args()
 
     # Print the name of the tool and its version
-    print("\n▄█     █▄   ▄█   ▄███████▄     ▄████████    ▄████████ ████████▄     ▄████████ ▄██   ▄      ▄████████\n███     ███ ███  ██▀     ▄██   ███    ███   ███    ███ ███   ▀███   ███    ███ ███   ██▄   ███    ███ \n███     ███ ███▌       ▄███▀   ███    ███   ███    ███ ███    ███   ███    █▀  ███▄▄▄███   ███    █▀ \n███     ███ ███▌  ▀█▀▄███▀▄▄   ███    ███  ▄███▄▄▄▄██▀ ███    ███  ▄███▄▄▄     ▀▀▀▀▀▀███  ▄███▄▄▄     \n███     ███ ███▌   ▄███▀   ▀ ▀███████████ ▀▀███▀▀▀▀▀   ███    ███ ▀▀███▀▀▀     ▄██   ███ ▀▀███▀▀▀     \n███     ███ ███  ▄███▀         ███    ███ ▀███████████ ███    ███   ███    █▄  ███   ███   ███    █▄  \n███ ▄█▄ ███ ███  ███▄     ▄█   ███    ███   ███    ███ ███   ▄███   ███    ███ ███   ███   ███    ███ \n▀███▀███▀  █▀    ▀████████▀   ███    █▀    ███    ███ ████████▀    ██████████  ▀█████▀    ██████████\n                                                                                                 v0.0.2 by TheLokj")
+    print("\n▄█     █▄   ▄█   ▄███████▄     ▄████████    ▄████████ ████████▄     ▄████████ ▄██   ▄      ▄████████\n███     ███ ███  ██▀     ▄██   ███    ███   ███    ███ ███   ▀███   ███    ███ ███   ██▄   ███    ███ \n███     ███ ███▌       ▄███▀   ███    ███   ███    ███ ███    ███   ███    █▀  ███▄▄▄███   ███    █▀ \n███     ███ ███▌  ▀█▀▄███▀▄▄   ███    ███  ▄███▄▄▄▄██▀ ███    ███  ▄███▄▄▄     ▀▀▀▀▀▀███  ▄███▄▄▄     \n███     ███ ███▌   ▄███▀   ▀ ▀███████████ ▀▀███▀▀▀▀▀   ███    ███ ▀▀███▀▀▀     ▄██   ███ ▀▀███▀▀▀     \n███     ███ ███  ▄███▀         ███    ███ ▀███████████ ███    ███   ███    █▄  ███   ███   ███    █▄  \n███ ▄█▄ ███ ███  ███▄     ▄█   ███    ███   ███    ███ ███   ▄███   ███    ███ ███   ███   ███    ███ \n▀███▀███▀  █▀    ▀████████▀   ███    █▀    ███    ███ ████████▀    ██████████  ▀█████▀    ██████████\n                                                                                                 v0.0.3 by TheLokj")
     print("\nMore information and updates on www.github.com/TheLokj/WizardEye/\n")
 
     # Read config file
@@ -447,13 +443,18 @@ if __name__ == "__main__" :
              cat=args.cat, precisionLevel=args.level,
              truthFormat=args.truthformat, realKingdom=args.truth,
              kingdomProp=args.kingdomprop, kingdomList=args.kingdomlist,
-             positiveRef=args.positiveref, exName=args.name,
-             debugMode=args.debug, clean=args.clean, config=config)
+             positiveRef=args.positiveref, exName=args.name, clean=args.clean, config=config)
     elif args.mode == "expert" :
-        # Launch the benchmarking function that launch ultiple times the main()
+        # Choose the argument to read according to the mode
+        if args.bmode == "length" :
+            kingdomProp, kingdomList = args.kingdomprop, args.kingdomlist
+        elif args.bmode == "proportion" :
+            kingdomProp, kingdomList = args.exkingdomprop, args.exkingdomlist
+
+        # Launch the benchmarking function that launch multiple times the main()
         expert(mode=args.bmode, fastaPath=args.input,
                name=args.name, ncontigs = args.ncontigs,
                minLength=args.minlength, maxLength=args.maxlength,
                positiveRef = args.positiveref, realKingdom = args.truth,
-               kingdomProp=args.exkingdomprop, kingdomList=args.exkingdomlist,
+               kingdomProp=kingdomProp, kingdomList=kingdomList,
                debugMode = args.debug, config=config)
