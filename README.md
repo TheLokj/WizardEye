@@ -1,3 +1,4 @@
+
 ﻿# WizardEye 
 
 ## Requirements
@@ -41,6 +42,10 @@ Before launching WizardEye, you will need to configure it in the `config.ini` fi
     CAT_Diamond_DB = /CAT_prepare/Diamond_X.X.X/diamond
     
     CAT_Taxonomy_DB = /CAT_taxonomy/
+		
+    Block_size = 4
+
+    Index_chunks = 2 
 
 In the case where you don't plan to use CAT, you can only keep the `[user]` and `[environment]` section.
 
@@ -92,7 +97,7 @@ The `OK` and `CAMI` modes automatically generate a `truth.tsv` with two colums :
 | ERZXXXXX.444 | prokaryote |
 | ERZXXXXX.3 | unknown |
 
-Finally, WizardEye in the benchmarking mode will compares the `predictions.tsv` and the `truth.tsv` and calculates scores where the kingdom of `-pr kingdom` is used to calculate the *True Positive*, *False Negative*. These results are saved at `performances.tsv`.
+Finally, WizardEye in the benchmarking mode will compares the `predictions.tsv` and the `truth.tsv` and calculates scores where the kingdom of `-s kingdom` is used to calculate the *True Positive*, *False Negative*. These results are saved at `performances.tsv`.
 
 |  | EukRep | Tiara | Whokaryote | Whokaryote+Tiara | DeepMicroClass |
 |--|--|--|--|--|--|
@@ -101,7 +106,7 @@ Finally, WizardEye in the benchmarking mode will compares the `predictions.tsv` 
 | FP | 3 | 3 | 24 | 7 | 2 |
 | FN | 1 | 0 | 3 | 0 | 9 |
 
-Each generated `truth.tsv`,  `performances.tsv` and tools output can be found in the directory output/`newName`/ where the `newName` is a name build with the original input name, the number of contigs, the minimum selected length, the maximum selected length and the wanted proportion as described below. 
+Each generated `truth.tsv`,  `predictions_metrics.tsv` and tools output can be found in the directory output/`newName`/ where the `newName` is a name build with the original input name, the number of contigs, the minimum selected length, the maximum selected length and the wanted proportion as described below. 
 
 ##### Use kingdom-specific proportions
 
@@ -113,6 +118,20 @@ Note that you can also add proportion parameters in this mode to select only a p
 | -kp | X:Y | The proportion of each kingdom | 
 
 Each kingdom and proportion need to be separated with `:`.
+
+Note that it's also possible to precise subdivision proportion with `..`, as following :
+
+    -kl eukaryote..fungi.chlorophyta..:prokaryote -kp 30..20.10..:70 
+
+In this case, the subdivision need to be precised in a specific column of the `truth.tsv` :
+
+| contig ID | division | subdivision |
+|--|--|--|
+| ERZXXXXX.1 | eukaryote | fungi |
+| ERZXXXXX.23 | unknown |  |
+| ERZXXXXX.3432 | prokaryote |  |
+| ERZXXXXX.434 | eukaryote | chlorophyta |
+| ERZXXXXX.3 | unknown |  |
 
 #### Expert benchmark mode : launch WizardEye several times adjusting the parameters at each iteration 
 
@@ -137,6 +156,27 @@ In this example, WizardEye will be launched 7 times, analysing firstly 200 conti
  
 The `proportion` mode allows WizardEye to be run several times, selecting contigs of `-ekl` kindgoms separated with `:` whose proportions are changing. The proportions are precised with the `-ekp` argument and each iteration is separated with a `,`, the `:` separing once again the kingdom.
  
-    python3 main.py expert -i example.fa -na PROP -mo proportion -t truth.tsv -ekl eukaryote:prokaryote -ekp 20,80,50,40:80,20,50,60 -mnl 3000 -mxl 10000 -n 200 -pr eukaryote
+    python3 main.py expert -i example.fa -na PROP -mo proportion -t truth.tsv -c n -ekl eukaryote:prokaryote -ekp 20,80,50,40:80,20,50,60 -mnl 3000 -mxl 10000 -n 200 -pr eukaryote
 
 In this example, WizardEye will be launched 4 times, analysing firstly 200 contigs between 3000 and 10000pb with 20% of eukaryotic contigs and 80% of prokaryotic contigs, then 200 contigs between 3000 and 10000pb with 80% of eukaryotic contigs and 20% of prokaryotic contigs... The positive refence to calculate the scores is `eukaryote`.
+
+#### Output of the benchmarking mode
+
+The benchmarking mode produces different files summarizing :
+
+- the parameters of the run ;
+ - the predictions per tool per contigs and the associated truth ;
+ - the accuracy, the F1-score and the MCC score representing the predictions correctness calculated thanks to the positive reference `-pr`  ;
+ - the running time (the real and the CPU's ones) per tool.
+
+When WizardEye is launched in the expert mode, each of these files are summarized in bigger files containing these results and the ID of the associated run (basically the length range in `length` mode and the proportion in `proportion` mode). It also produce an empty `.mode` file used by the R function to detect the benchmark nature. 
+
+#### Plot the results with the R script
+
+You can use the script `plot.R` to easily plot the results of an expert benchmark made by WizardEye. 
+
+As it isn't currently directly part of WizardEye, you will need to move by yourself the working directory to the output directory of your choice, by using the R `setwd(path)` command.
+
+Note that this script need the following librairies :
+
+    ggplot2, ggubr, stringr, tidyverse, plyr, reshape2
