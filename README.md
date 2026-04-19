@@ -4,6 +4,9 @@ WizardEye is a Python tool that filters aligned reads according to the risk of a
 
 <img src="wizardeye.png" alt="WizardEye" width="700" />
 
+**WizardEye is currently in beta and under active development. Future updates will bring new features, improve stability, and ensure robustness through comprehensive unit testing.**
+
+
 The tool is designed both to create a database containing several reference genomes and their associated risky sources, and to filter BAM files according to that stored information. By directly using `bwa`, WizardEye can empirically identify risky reads based on your frequently used alignment parameters.
 
 This tool is directly adapted from the script [generate_cross_mappability_filter_bwa.sh](https://github.com/TheLokj/generate_cross_mappability_filter/blob/master/BWA/generate_cross_mappability_filter_bwa.sh).
@@ -205,4 +208,4 @@ This command creates the target/track directory, copies the two BigWig files as 
 
 Note that you can specify a Kraken output using `-kro /path/to/input` and `-krl level_of_filtering` in order to complete your filtering using the Kraken evolution-related method. This combination is useful to remove both reads that belong to completely different organisms and reads that can be ambiguous between closely related organisms.
 
-*Last update of this documentation: 
+*Last update of this documentation: beta-0.0.1.*
