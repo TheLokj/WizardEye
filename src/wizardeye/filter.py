@@ -191,7 +191,7 @@ def _read_bed_intervals(bed_path: Path) -> List[Tuple[str, int, int]]:
     return intervals
 
 
-def _merge_bed_files(bed_files: List[Path], output_bed: Path) -> Path:
+def _merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path:
     output_bed.parent.mkdir(parents=True, exist_ok=True)
     if not bed_files:
         output_bed.write_text("", encoding="utf-8")
@@ -199,51 +199,77 @@ def _merge_bed_files(bed_files: List[Path], output_bed: Path) -> Path:
 
     bedtools = shutil.which("bedtools")
     if bedtools:
-        p_cat = subprocess.Popen(
-            ["cat", *[str(path) for path in bed_files]],
-            stdout=subprocess.PIPE,
-            text=True,
-        )
-        p_sort = subprocess.Popen(
-            ["sort", "-k1,1", "-k2,2n"],
-            stdin=p_cat.stdout,
-            stdout=subprocess.PIPE,
-            text=True,
-        )
-        with output_bed.open("w", encoding="utf-8") as out:
-            p_merge = subprocess.Popen(
-                [bedtools, "merge", "-i", "stdin"],
-                stdin=p_sort.stdout,
-                stdout=out,
-                text=True,
-            )
+        with tempfile.NamedTemporaryFile(prefix="wizardeye_", suffix=".bed", delete=False) as tmp_handle:
+            tmp_tagged_path = Path(tmp_handle.name)
 
-            if p_cat.stdout is not None:
-                p_cat.stdout.close()
-            if p_sort.stdout is not None:
-                p_sort.stdout.close()
+        try:
+            with tmp_tagged_path.open("w", encoding="utf-8") as tagged_out:
+                for track_name, bed_path in bed_files:
+                    with bed_path.open("r", encoding="utf-8") as handle:
+                        for line in handle:
+                            parts = line.strip().split("\t")
+                            if len(parts) < 3:
+                                continue
+                            start = int(parts[1])
+                            end = int(parts[2])
+                            if end <= start:
+                                continue
+                            tagged_out.write(f"{parts[0]}\t{start}\t{end}\t{track_name.split('_k')[0]}\n")
 
-            rc_merge = p_merge.wait()
-            rc_sort = p_sort.wait()
-            rc_cat = p_cat.wait()
-            if rc_cat != 0:
-                raise subprocess.CalledProcessError(rc_cat, ["cat", *[str(path) for path in bed_files]])
-            if rc_sort != 0:
-                raise subprocess.CalledProcessError(rc_sort, ["sort", "-k1,1", "-k2,2n"])
-            if rc_merge != 0:
-                raise subprocess.CalledProcessError(rc_merge, [bedtools, "merge", "-i", "stdin"])
-        return output_bed
+            with tmp_tagged_path.open("r", encoding="utf-8") as tagged_in:
+                p_sort = subprocess.Popen(
+                    ["sort", "-k1,1", "-k2,2n"],
+                    stdin=tagged_in,
+                    stdout=subprocess.PIPE,
+                    text=True,
+                )
+                with output_bed.open("w", encoding="utf-8") as out:
+                    p_merge = subprocess.Popen(
+                        [bedtools, "merge", "-i", "stdin", "-c", "4", "-o", "distinct"],
+                        stdin=p_sort.stdout,
+                        stdout=out,
+                        text=True,
+                    )
 
-    all_intervals: List[Tuple[str, int, int]] = []
-    for bed in bed_files:
-        all_intervals.extend(_read_bed_intervals(bed))
+                    if p_sort.stdout is not None:
+                        p_sort.stdout.close()
+
+                    rc_merge = p_merge.wait()
+                    rc_sort = p_sort.wait()
+                    if rc_sort != 0:
+                        raise subprocess.CalledProcessError(rc_sort, ["sort", "-k1,1", "-k2,2n"])
+                    if rc_merge != 0:
+                        raise subprocess.CalledProcessError(
+                            rc_merge,
+                            [bedtools, "merge", "-i", "stdin", "-c", "4", "-o", "distinct"],
+                        )
+            return output_bed
+        finally:
+            if tmp_tagged_path.exists():
+                tmp_tagged_path.unlink()
+
+    all_intervals: List[Tuple[str, int, int, Set[str]]] = []
+    for track_name, bed in bed_files:
+        for chrom, start, end in _read_bed_intervals(bed):
+            all_intervals.append((chrom, start, end, {track_name}))
 
     all_intervals.sort(key=lambda x: (x[0], x[1], x[2]))
-    merged_all: List[Tuple[str, int, int]] = []
-    for chrom, start, end in all_intervals:
-        _append_merged_interval(merged_all, chrom, start, end)
+    merged_all: List[Tuple[str, int, int, Set[str]]] = []
+    for chrom, start, end, tracks in all_intervals:
+        if not merged_all:
+            merged_all.append((chrom, start, end, set(tracks)))
+            continue
 
-    write_bed(merged_all, output_bed)
+        last_chrom, last_start, last_end, last_tracks = merged_all[-1]
+        if last_chrom == chrom and start <= last_end:
+            merged_all[-1] = (last_chrom, last_start, max(last_end, end), last_tracks | tracks)
+        else:
+            merged_all.append((chrom, start, end, set(tracks)))
+
+    with output_bed.open("w", encoding="utf-8") as out:
+        for chrom, start, end, tracks in merged_all:
+            joined_tracks = ",".join(sorted(tracks))
+            out.write(f"{chrom}\t{start}\t{end}\t{joined_tracks}\n")
     return output_bed
 
 
@@ -254,8 +280,8 @@ def _build_track_overlaps(
     kmer_length: int,
     offset_step: int,
     cross_stringency: float,
-) -> Path:
-    """Compute one track overlap BED for a selected input and return the BED path."""
+) -> Tuple[str, Path]:
+    """Compute one track overlap BED for a selected input and return (track name, BED path)."""
     track_dir = track.track_dir
     track_name = track.track_name
 
@@ -263,7 +289,7 @@ def _build_track_overlaps(
     per_input_bed = ref_dir / f"overlap_{track_name}_s{stringency_label}.bed"
     if per_input_bed.exists():
         log(f"Reusing existing overlap BED for track '{track_name}': {per_input_bed}", "I")
-        return per_input_bed
+        return track_name, per_input_bed
 
     uniq_bw = track_dir / "mappability_uniq.bw"
     if uniq_bw.exists():
@@ -295,7 +321,7 @@ def _build_track_overlaps(
             )
 
     log(f"Overlap BED written for track '{track_name}': {per_input_bed}", "S")
-    return per_input_bed
+    return track_name, per_input_bed
 
 def generate_mask(
     ref_species: str,
@@ -312,6 +338,9 @@ def generate_mask(
 ) -> Path:
     """
     Generate overlap BED files for selected inputs and one merged all-overlaps BED.
+
+    The merged output is a BED4 where column 4 contains comma-separated
+    track names contributing to each merged region.
 
     Selection is done on:
     - reference
@@ -381,7 +410,7 @@ def generate_mask(
 
     ref_dir = Path(db_root) / ref_species
     stringency_label = str(cross_stringency)
-    per_track_beds: List[Path] = []
+    per_track_beds: List[Tuple[str, Path]] = []
 
     if n_threads > 1 and len(selected_tracks) > 1:
         max_workers = min(n_threads, len(selected_tracks))
