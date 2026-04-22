@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import bisect
 import shutil
 import subprocess
 import tempfile
@@ -556,6 +557,12 @@ def _default_output_bam(input_bam: Path, suffix: str) -> Path:
     return Path(f"{str(input_bam)}.{suffix}.bam")
 
 
+def _default_output_table(input_bam: Path) -> Path:
+    if input_bam.suffix.lower() == ".bam":
+        return input_bam.with_suffix(".wizardeye.report.tsv")
+    return Path(f"{str(input_bam)}.wizardeye.report.tsv")
+
+
 def _normalize_contig_name(contig: str) -> str:
     """Normalize common naming variants (chr prefix and M/MT)."""
     normalized = contig.strip()
@@ -580,6 +587,131 @@ def _read_mask_contigs(mask_path: Path) -> Set[str]:
             if chrom:
                 contigs.add(chrom)
     return contigs
+
+
+def _load_mask_with_tracks(mask_path: Path) -> Dict[str, List[Tuple[int, int, Set[str]]]]:
+    """Load BED mask and keep optional track labels from column 4."""
+    by_chrom: Dict[str, List[Tuple[int, int, Set[str]]]] = {}
+    with mask_path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            chrom = parts[0]
+            start = int(parts[1])
+            end = int(parts[2])
+            if end <= start:
+                continue
+            tracks: Set[str] = set()
+            if len(parts) > 3 and parts[3].strip():
+                tracks = {track for track in parts[3].split(",") if track}
+            by_chrom.setdefault(chrom, []).append((start, end, tracks))
+
+    for chrom, intervals in by_chrom.items():
+        intervals.sort(key=lambda item: (item[0], item[1]))
+        by_chrom[chrom] = intervals
+    return by_chrom
+
+
+def _collect_overlapped_tracks(
+    chrom: str,
+    read_start: int,
+    read_end: int,
+    intervals_by_chrom: Dict[str, List[Tuple[int, int, Set[str]]]],
+) -> Set[str]:
+    """Return all track labels overlapping one read interval on one contig."""
+    if read_end <= read_start:
+        return set()
+
+    intervals = intervals_by_chrom.get(chrom)
+    if not intervals:
+        return set()
+
+    starts = [interval[0] for interval in intervals]
+    idx = bisect.bisect_left(starts, read_end)
+    overlapped: Set[str] = set()
+
+    probe = idx - 1
+    while probe >= 0:
+        start, end, tracks = intervals[probe]
+        if end <= read_start:
+            break
+        if start < read_end and end > read_start:
+            overlapped.update(tracks)
+        probe -= 1
+
+    probe = idx
+    while probe < len(intervals):
+        start, end, tracks = intervals[probe]
+        if start >= read_end:
+            break
+        if end > read_start:
+            overlapped.update(tracks)
+        probe += 1
+
+    return overlapped
+
+
+def _write_read_exclusion_report(
+    input_bam: Path,
+    mask_path: Path,
+    output_report_tsv: Path,
+    track_to_tags: Optional[Dict[str, Set[str]]] = None,
+) -> Path:
+    """Write one line per read_id with exclusion flag, overlapping tracks and tags."""
+    if pysam is None:
+        raise RuntimeError("pysam is required to generate read-level overlap reports")
+
+    track_to_tags = track_to_tags or {}
+    intervals_by_chrom = _load_mask_with_tracks(mask_path)
+    read_tracks: Dict[str, Set[str]] = {}
+    read_tags: Dict[str, Set[str]] = {}
+    read_seen_order: List[str] = []
+
+    with pysam.AlignmentFile(str(input_bam), "rb") as bam:
+        for read in bam.fetch(until_eof=True):
+            read_id = read.query_name
+            if not read_id:
+                continue
+
+            if read_id not in read_tracks:
+                read_tracks[read_id] = set()
+                read_tags[read_id] = set()
+                read_seen_order.append(read_id)
+
+            if read.is_unmapped or read.reference_name is None:
+                continue
+
+            read_start = read.reference_start
+            read_end = read.reference_end
+            if read_start is None or read_end is None:
+                continue
+
+            overlapped_tracks = _collect_overlapped_tracks(
+                chrom=read.reference_name,
+                read_start=read_start,
+                read_end=read_end,
+                intervals_by_chrom=intervals_by_chrom,
+            )
+            read_tracks[read_id].update(overlapped_tracks)
+            for track_name in overlapped_tracks:
+                read_tags[read_id].update(track_to_tags.get(track_name, set()))
+
+    output_report_tsv.parent.mkdir(parents=True, exist_ok=True)
+    with output_report_tsv.open("w", encoding="utf-8") as handle:
+        handle.write("read_id\texcluded\toverlapped\ttags\n")
+        for read_id in read_seen_order:
+            tracks = sorted(read_tracks.get(read_id, set()))
+            tags = sorted(read_tags.get(read_id, set()))
+            excluded = "true" if tracks else "false"
+            overlapped = ",".join(tracks)
+            joined_tags = ",".join(tags)
+            handle.write(f"{read_id}\t{excluded}\t{overlapped}\t{joined_tags}\n")
+
+    return output_report_tsv
 
 
 def _warn_if_contig_names_mismatch(mask_path: Path, bam_path: Path) -> None:
@@ -632,6 +764,7 @@ def filter_bam(
     n_threads: int = 1,
     output_filtered_bam: Optional[str] = None,
     output_excluded_bam: Optional[str] = None,
+    output_report_tsv: Optional[str] = None,
 ) -> Dict[str, object]:
     """Build a merged mask for selected tracks and filter one input BAM against it.
 
@@ -680,12 +813,32 @@ def filter_bam(
         bwa_seed_length=bwa_seed_length,
     )
 
+    tracks_for_params = get_tracks(
+        ref_species=ref,
+        kmer_length=kmer_length,
+        offset_step=offset_step,
+        db_root=db_root,
+        bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
+        bwa_max_gap_opens=bwa_max_gap_opens,
+        bwa_seed_length=bwa_seed_length,
+    )
+    normalized_requested_tracks = set(sorted_tracks)
+    track_to_tags: Dict[str, Set[str]] = {}
+    for track in tracks_for_params:
+        if track.track_name not in normalized_requested_tracks:
+            continue
+        tags = set(from_charlist_to_list(track.info.get("tags", []), lowercase=True))
+        for key in {track.track_name, track.identity.query_species, track.query_name, track.track_name.split("_k")[0]}:
+            track_to_tags.setdefault(key, set()).update(tags)
+
     _warn_if_contig_names_mismatch(merged_mask, input_bam_path)
 
     filtered_bam = Path(output_filtered_bam) if output_filtered_bam else _default_output_bam(input_bam_path, "filtered")
     excluded_bam = Path(output_excluded_bam) if output_excluded_bam else _default_output_bam(input_bam_path, "excluded")
+    report_tsv = Path(output_report_tsv) if output_report_tsv else _default_output_table(input_bam_path)
     filtered_bam.parent.mkdir(parents=True, exist_ok=True)
     excluded_bam.parent.mkdir(parents=True, exist_ok=True)
+    report_tsv.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
         "samtools",
@@ -717,10 +870,19 @@ def filter_bam(
         except subprocess.CalledProcessError:
             log(f"Could not index BAM (possibly unsorted): {bam_path}", "W")
 
+    report_path = _write_read_exclusion_report(
+        input_bam=input_bam_path,
+        mask_path=merged_mask,
+        output_report_tsv=report_tsv,
+        track_to_tags=track_to_tags,
+    )
+    log(f"Read exclusion report written: {report_path}", "S")
+
     return {
         "mask": merged_mask,
         "filtered_bam": filtered_bam,
         "excluded_bam": excluded_bam,
+        "report_tsv": report_path,
         "n_total": n_total,
         "n_filtered": n_filtered,
         "n_excluded": n_excluded,

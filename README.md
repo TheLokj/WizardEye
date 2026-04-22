@@ -179,6 +179,24 @@ If the `-by_tags` parameter is used, frequency is computed per tag rather than p
 wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -f 2 -by_tags Carnivora,Ruminant -d /path/to/database
 ```
 
+#### Output
+
+WizardEye produces three different outputs:
+
+- a BAM `excluded` with the reads excluded by the filtration,
+- a BAM `filtered` with the reads kept by the filtration,
+- a tabulation-separated report containing, for each read, the decision and the overlapping tracks and tags, such as follows: 
+
+
+| read_id                                  | excluded | overlapped | tags |
+|------------------------------------------|----------|------------|------|
+| read_1								   | true  	  | sus_scrofa,bos_taurus | Suina,Ruminantia |
+| read_2								   | false    |            |      |
+| read_3								   | true     | felis_catus | Feliformia     |
+| read_4								   | true     | bos_taurus | Ruminantia     |
+| read_5								   | true    | bos_taurus,ovis_aries           | Ruminantia     |
+| read_6								   | false    |          |      |
+
 ### Export a mask
 
 If you plan to use the same configuration often to filter your reads, it is highly recommended to export a mask in order to avoid recomputing it continuously:

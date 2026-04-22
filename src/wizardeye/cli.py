@@ -301,6 +301,11 @@ def filter(
 		"--excluded-output",
 		help="Output BAM for reads excluded by the generated mask.",
 	),
+	output_report_tsv: Optional[str] = typer.Option(
+		None,
+		"--report-output",
+		help="Output TSV report with columns: read_id, excluded, overlapped, tags.",
+	),
 	n_threads: int = typer.Option(
 		1,
 		"-j",
@@ -410,6 +415,7 @@ def filter(
 			n_threads=n_threads,
 			output_filtered_bam=output_filtered_bam,
 			output_excluded_bam=output_excluded_bam,
+			output_report_tsv=output_report_tsv,
 		)
 	except FileNotFoundError as e:
 		log(str(e), "E")
@@ -427,6 +433,7 @@ def filter(
 	log(f"Merged mask generated: {filter_result['mask']}", "S")
 	log(f"Filtered BAM (kept reads): {filter_result['filtered_bam']}", "S")
 	log(f"Excluded BAM (masked reads): {filter_result['excluded_bam']}", "S")
+	log(f"Read exclusion report (TSV): {filter_result['report_tsv']}", "S")
 	log(
 		"Read counts: "
 		f"total={filter_result['n_total']}, kept={filter_result['n_filtered']}, excluded={filter_result['n_excluded']}",
