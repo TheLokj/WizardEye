@@ -276,7 +276,6 @@ def _merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Pat
 
 def _build_track_overlaps(
     track: Any,
-    ref_dir: Path,
     stringency_label: str,
     kmer_length: int,
     offset_step: int,
@@ -286,8 +285,8 @@ def _build_track_overlaps(
     track_dir = track.track_dir
     track_name = track.track_name
 
-    # Use canonical track_name to avoid collisions between tracks sharing the same query/input name.
-    per_input_bed = ref_dir / f"overlap_{track_name}_s{stringency_label}.bed"
+    # Store overlap BED with the track data so lookup/save stay within the track folder.
+    per_input_bed = track_dir / f"overlap_{track_name}_s{stringency_label}.bed"
     if per_input_bed.exists():
         log(f"Reusing existing overlap BED for track '{track_name}': {per_input_bed}", "I")
         return track_name, per_input_bed
@@ -338,7 +337,7 @@ def generate_mask(
     bwa_seed_length: Optional[int] = None,
 ) -> Path:
     """
-    Generate overlap BED files for selected inputs and one merged all-overlaps BED.
+    Generate overlap BED files for selected inputs and one merged mask BED.
 
     The merged output is a BED4 where column 4 contains comma-separated
     track names contributing to each merged region.
@@ -411,6 +410,23 @@ def generate_mask(
 
     ref_dir = Path(db_root) / ref_species
     stringency_label = str(cross_stringency)
+
+    # Keep one deterministic merged-mask path per exact track selection/parameters.
+    sorted_track_names = sorted({track.track_name for track in selected_tracks})
+    track_fingerprint = hashlib.sha1(",".join(sorted_track_names).encode("utf-8")).hexdigest()[:12]
+
+    if output_file:
+        merged_mask_bed = Path(output_file)
+    else:
+        merged_mask_bed = ref_dir / (
+            f"mask_s{stringency_label}_k{kmer_length}_o{offset_step}"
+            f"_t{len(sorted_track_names)}_{track_fingerprint}.bed"
+        )
+
+    if merged_mask_bed.exists():
+        log(f"Reusing existing merged mask BED: {merged_mask_bed}", "I")
+        return merged_mask_bed
+
     per_track_beds: List[Tuple[str, Path]] = []
 
     if n_threads > 1 and len(selected_tracks) > 1:
@@ -424,7 +440,6 @@ def generate_mask(
                 pool.submit(
                     _build_track_overlaps,
                     track,
-                    ref_dir,
                     stringency_label,
                     kmer_length,
                     offset_step,
@@ -438,21 +453,15 @@ def generate_mask(
         for track in selected_tracks:
             per_track_beds.append(_build_track_overlaps(
                 track=track,
-                ref_dir=ref_dir,
                 stringency_label=stringency_label,
                 kmer_length=kmer_length,
                 offset_step=offset_step,
                 cross_stringency=cross_stringency,
             ))
 
-    if output_file:
-        all_overlaps_bed = Path(output_file)
-    else:
-        all_overlaps_bed = ref_dir / f"all_overlaps_mask_{stringency_label}_k{kmer_length}_o{offset_step}.bed"
-
-    _merge_bed_files(per_track_beds, all_overlaps_bed)
-    log(f"Merged all-overlaps BED written to: {all_overlaps_bed}", "S")
-    return all_overlaps_bed
+    _merge_bed_files(per_track_beds, merged_mask_bed)
+    log(f"Merged mask BED written to: {merged_mask_bed}", "S")
+    return merged_mask_bed
 
 
 def compute_stringency(
@@ -740,13 +749,7 @@ def filter_bam(
     reference_seq_sizes = ref_dir / f"{ref}.sizes"
     validate_initial_bam_reference_compatibility(input_bam_path, reference_seq_sizes)
 
-    # Keep the merged mask deterministic for one exact set of tracks and parameters.
     sorted_tracks = sorted(set(normalized_tracks))
-    track_fingerprint = hashlib.sha1(",".join(sorted_tracks).encode("utf-8")).hexdigest()[:12]
-    mask_path = ref_dir / (
-        f"all_overlaps_mask_s{stringency}_k{kmer_length}_o{offset_step}"
-        f"_t{len(sorted_tracks)}_{track_fingerprint}.bed"
-    )
 
     merged_mask = generate_mask(
         ref_species=ref,
@@ -756,7 +759,7 @@ def filter_bam(
         cross_stringency=stringency,
         n_threads=n_threads,
         db_root=db_root,
-        output_file=str(mask_path),
+        output_file=None,
         bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
         bwa_max_gap_opens=bwa_max_gap_opens,
         bwa_seed_length=bwa_seed_length,
