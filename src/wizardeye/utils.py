@@ -95,6 +95,51 @@ def parse_xa_tag(xa_value: str) -> List[Tuple[str, int, str]]:
 
 	return hits
 
+
+def read_bam_sq_lengths(bam_path: Path) -> Dict[str, int]:
+    """Read BAM header @SQ entries and return {SN: LN}."""
+    header = subprocess.check_output(["samtools", "view", "-H", str(bam_path)], text=True)
+    lengths: Dict[str, int] = {}
+
+    for raw_line in header.splitlines():
+        if not raw_line.startswith("@SQ"):
+            continue
+        fields = raw_line.split("\t")
+        sn = None
+        ln = None
+        for field in fields[1:]:
+            if field.startswith("SN:"):
+                sn = field[3:]
+            elif field.startswith("LN:"):
+                ln = field[3:]
+        if not sn or ln is None:
+            continue
+        lengths[sn] = int(ln)
+
+    if not lengths:
+        raise ValueError(f"No @SQ entries found in BAM header: {bam_path}")
+
+    return lengths
+
+
+def read_seq_sizes(seq_sizes_path: Path) -> Dict[str, int]:
+    """Read sizes file and return {seq: length}."""
+    sizes: Dict[str, int] = {}
+    with seq_sizes_path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                raise ValueError(f"Invalid sizes line in {seq_sizes_path}: {line}")
+            sizes[parts[0]] = int(parts[1])
+
+    if not sizes:
+        raise ValueError(f"Reference sizes is empty: {seq_sizes_path}")
+
+    return sizes
+
 def reference_len_from_cigar(cigar: Optional[str], default_k: int) -> int:
 	"""Return reference-consuming length from a CIGAR string."""
 	if not cigar:
@@ -166,8 +211,8 @@ def write_bedgraph(intervals: Iterable[Tuple[str, int, int]], out_path: Path) ->
 				if depth > 0 and next_pos > pos:
 					handle.write(f"{chrom}\t{pos}\t{next_pos}\t{depth}\n")
 
-def write_chrom_sizes_from_bam(bam_file: Path, out_path: Path) -> None:
-	"""Write chromosome sizes file required by bedGraphToBigWig."""
+def write_seq_sizes_from_bam(bam_file: Path, out_path: Path) -> None:
+	"""Write sequences sizes file required by bedGraphToBigWig."""
 	if pysam is None:
 		raise RuntimeError(
 			"pysam is required to export BigWig files. Install it with: pip install pysam"
@@ -178,17 +223,42 @@ def write_chrom_sizes_from_bam(bam_file: Path, out_path: Path) -> None:
 			handle.write(f"{chrom}\t{length}\n")
 
 
-def convert_bedgraph_to_bigwig(bedgraph_path: Path, chrom_sizes_path: Path, bigwig_path: Path) -> None:
+def write_seq_sizes_from_fasta(reference_fasta: Path, output_sizes: Path) -> None:
+	"""Write a chrom.sizes-style file (chrom\tlength) from FASTA using samtools faidx."""
+	if shutil.which("samtools") is None:
+		raise RuntimeError("samtools not found in PATH, cannot generate reference chrom sizes")
+
+	output_sizes.parent.mkdir(parents=True, exist_ok=True)
+	fai_path = Path(f"{reference_fasta}.fai")
+
+	log(f"samtools faidx {reference_fasta}", "C")
+	subprocess.run(["samtools", "faidx", str(reference_fasta)], check=True)
+
+	if not fai_path.exists():
+		raise RuntimeError(f"samtools faidx did not produce index: {fai_path}")
+
+	with fai_path.open("r", encoding="utf-8") as fai, output_sizes.open("w", encoding="utf-8") as out:
+		for raw_line in fai:
+			line = raw_line.strip()
+			if not line:
+				continue
+			parts = line.split("\t")
+			if len(parts) < 2:
+				raise ValueError(f"Invalid FASTA index line in {fai_path}: {line}")
+			out.write(f"{parts[0]}\t{parts[1]}\n")
+
+
+def convert_bedgraph_to_bigwig(bedgraph_path: Path, seq_sizes_path: Path, bigwig_path: Path) -> None:
 	"""Convert a bedGraph file to BigWig using bedGraphToBigWig."""
 	if shutil.which("bedGraphToBigWig") is None:
 		raise RuntimeError("bedGraphToBigWig not found in PATH, cannot produce .bw outputs")
 
-	log(f"bedGraphToBigWig {bedgraph_path} {chrom_sizes_path} {bigwig_path}", "C")
+	log(f"bedGraphToBigWig {bedgraph_path} {seq_sizes_path} {bigwig_path}", "C")
 	subprocess.run(
 		[
 			"bedGraphToBigWig",
 			str(bedgraph_path),
-			str(chrom_sizes_path),
+			str(seq_sizes_path),
 			str(bigwig_path),
 		],
 		check=True,
@@ -226,3 +296,46 @@ def get_unique_mapping_intervals(bam_file: Path, kmer_length: int) -> Iterable[T
 			ref_len = read.reference_length if read.reference_length and read.reference_length > 0 else kmer_length
 			start = read.reference_start
 			yield (read.reference_name, start, start + ref_len)
+
+def validate_initial_bam_reference_compatibility(
+	bam_path: Path,
+	reference_seq_sizes_path: Path,
+) -> None:
+	"""Fail fast by checking BAM @SQ SN/LN against reference sequence sizes."""
+	if not reference_seq_sizes_path.exists() or not reference_seq_sizes_path.is_file():
+		raise FileNotFoundError(
+			"Reference sequence sizes not found for compatibility check: "
+			f"{reference_seq_sizes_path}. Recreate or re-import this reference."
+		)
+
+	bam_sizes = read_bam_sq_lengths(bam_path)
+	ref_sizes = read_seq_sizes(reference_seq_sizes_path)
+
+	missing_in_ref = sorted([contig for contig in bam_sizes if contig not in ref_sizes])
+	length_mismatches = sorted(
+		[
+			(contig, bam_sizes[contig], ref_sizes[contig])
+			for contig in bam_sizes
+			if contig in ref_sizes and bam_sizes[contig] != ref_sizes[contig]
+		],
+		key=lambda x: x[0],
+	)
+
+	if missing_in_ref:
+		log(f"Sequences missing in reference: {', '.join(missing_in_ref)}.", "E")
+
+	if length_mismatches:
+		mismatch_lengths = ', '.join(
+			[f"{contig}(bam={bam_len},ref={ref_len})" for contig, bam_len, ref_len in length_mismatches[:8]]
+		)
+
+		log(f"Length mismatches: {mismatch_lengths}.", "E")
+
+	if not missing_in_ref and not length_mismatches:
+		return
+
+	raise ValueError(
+		"Initial files are incompatible. BAM header @SQ (SN/LN) does not match reference sequence sizes/lengths. \n"
+		"Please ensure the reference FASTA and BAM files are compatible and if so, edit the BAM file to match the reference sequences names and lengths."
+	)
+

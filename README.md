@@ -140,6 +140,8 @@ You can also filter out all reads based on specific tracks:
 wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -d /path/to/database
 ```
 
+If sequence naming differs between BAM and tracks (for example `chr1` vs `1`), filtering stops with an explicit error. Harmonize contig names beforehand.
+
 Note that, by default, the tool excludes a read if at least **one base** of the read overlaps one of the tracks. **[Not implemented yet]**: You will be able to specify `--trim` to be more tolerant and split reads according to the mask, keeping the parts of reads that are not present in tracks.
 
 #### Adjust the filter hardness

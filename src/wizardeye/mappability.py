@@ -20,7 +20,7 @@ from .utils import (
 	from_charlist_to_list,
 	write_bedgraph,
 	convert_bedgraph_to_bigwig,
-	write_chrom_sizes_from_bam,
+	write_seq_sizes_from_bam,
 	get_mapping_intervals,
 	get_unique_mapping_intervals,
 )
@@ -43,7 +43,7 @@ def export_mapping_bigwig_files(bam_file: Path, out_dir: Path, kmer_length: int)
 	cov_uniq_bg = out_dir / "mappability_uniq.bg"
 	cov_map_bw = out_dir / "mappability_all.bw"
 	cov_uniq_bw = out_dir / "mappability_uniq.bw"
-	chrom_sizes = out_dir / "chrom.sizes"
+	seq_sizes = out_dir / "chrom.sizes"
 
 	write_bedgraph(get_mapping_intervals(bam_file, kmer_length), cov_map_bg)
 	write_bedgraph(get_unique_mapping_intervals(bam_file, kmer_length), cov_uniq_bg)
@@ -51,12 +51,12 @@ def export_mapping_bigwig_files(bam_file: Path, out_dir: Path, kmer_length: int)
 		"mappability_all": count_covered_bases_from_bedgraph(cov_map_bg),
 		"mappability_uniq": count_covered_bases_from_bedgraph(cov_uniq_bg),
 	}
-	write_chrom_sizes_from_bam(bam_file, chrom_sizes)
+	write_seq_sizes_from_bam(bam_file, seq_sizes)
 
-	convert_bedgraph_to_bigwig(cov_map_bg, chrom_sizes, cov_map_bw)
-	convert_bedgraph_to_bigwig(cov_uniq_bg, chrom_sizes, cov_uniq_bw)
+	convert_bedgraph_to_bigwig(cov_map_bg, seq_sizes, cov_map_bw)
+	convert_bedgraph_to_bigwig(cov_uniq_bg, seq_sizes, cov_uniq_bw)
 
-	for tmp_file in (cov_map_bg, cov_uniq_bg, chrom_sizes):
+	for tmp_file in (cov_map_bg, cov_uniq_bg, seq_sizes):
 		if tmp_file.exists():
 			tmp_file.unlink()
 
@@ -198,6 +198,11 @@ def create_mappability_track(
 		yaml.safe_dump(target_meta_content, f, sort_keys=False)
 	with open(target_md5_file, "w", encoding="utf-8") as f:
 		f.write(f"{target_md5}  {input_target.name}\n")
+
+	target_seq_sizes = target_dir / f"{target_name}.sizes"
+	if not target_seq_sizes.exists():
+		log(f"Generating sequence sizes file for reference '{target_name}'...", "I")
+		write_seq_sizes_from_bam(input_target, target_seq_sizes)
 
 	# Create temporary directory in cluster TMPDIR or /tmp
 	tmp_root = Path(os.environ.get("TMPDIR", "/tmp"))

@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .db import get_tracks
 from .mappability import get_unique_mapping_intervals, pysam
-from .utils import log, from_charlist_to_list, write_bed
+from .utils import log, from_charlist_to_list, write_bed, validate_initial_bam_reference_compatibility, read_bam_sq_lengths, read_seq_sizes
 
 def _append_merged_interval(
     merged: List[Tuple[str, int, int]],
@@ -562,34 +562,9 @@ def _default_output_table(input_bam: Path) -> Path:
         return input_bam.with_suffix(".wizardeye.report.tsv")
     return Path(f"{str(input_bam)}.wizardeye.report.tsv")
 
-
-def _normalize_contig_name(contig: str) -> str:
-    """Normalize common naming variants (chr prefix and M/MT)."""
-    normalized = contig.strip()
-    if normalized.startswith("chr"):
-        normalized = normalized[3:]
-    if normalized == "M":
-        return "MT"
-    return normalized
-
-
-def _read_mask_contigs(mask_path: Path) -> Set[str]:
-    """Read chromosome names from a BED mask."""
-    contigs: Set[str] = set()
-    with mask_path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line or line.startswith("#"):
-                continue
-            parts = line.rstrip("\n").split("\t")
-            if not parts:
-                continue
-            chrom = parts[0].strip()
-            if chrom:
-                contigs.add(chrom)
-    return contigs
-
-
-def _load_mask_with_tracks(mask_path: Path) -> Dict[str, List[Tuple[int, int, Set[str]]]]:
+def _load_mask_with_tracks(
+    mask_path: Path,
+) -> Dict[str, List[Tuple[int, int, Set[str]]]]:
     """Load BED mask and keep optional track labels from column 4."""
     by_chrom: Dict[str, List[Tuple[int, int, Set[str]]]] = {}
     with mask_path.open("r", encoding="utf-8") as handle:
@@ -620,17 +595,17 @@ def _collect_overlapped_tracks(
     chrom: str,
     read_start: int,
     read_end: int,
-    intervals_by_chrom: Dict[str, List[Tuple[int, int, Set[str]]]],
+    interval_index_by_chrom: Dict[str, Tuple[List[int], List[Tuple[int, int, Set[str]]]]],
 ) -> Set[str]:
     """Return all track labels overlapping one read interval on one contig."""
     if read_end <= read_start:
         return set()
 
-    intervals = intervals_by_chrom.get(chrom)
-    if not intervals:
+    indexed = interval_index_by_chrom.get(chrom)
+    if indexed is None:
         return set()
 
-    starts = [interval[0] for interval in intervals]
+    starts, intervals = indexed
     idx = bisect.bisect_left(starts, read_end)
     overlapped: Set[str] = set()
 
@@ -667,9 +642,14 @@ def _write_read_exclusion_report(
 
     track_to_tags = track_to_tags or {}
     intervals_by_chrom = _load_mask_with_tracks(mask_path)
+    interval_index_by_chrom: Dict[str, Tuple[List[int], List[Tuple[int, int, Set[str]]]]] = {
+        chrom: ([interval[0] for interval in intervals], intervals)
+        for chrom, intervals in intervals_by_chrom.items()
+    }
     read_tracks: Dict[str, Set[str]] = {}
     read_tags: Dict[str, Set[str]] = {}
-    read_seen_order: List[str] = []
+
+    track_to_tags_get = track_to_tags.get
 
     with pysam.AlignmentFile(str(input_bam), "rb") as bam:
         for read in bam.fetch(until_eof=True):
@@ -680,7 +660,6 @@ def _write_read_exclusion_report(
             if read_id not in read_tracks:
                 read_tracks[read_id] = set()
                 read_tags[read_id] = set()
-                read_seen_order.append(read_id)
 
             if read.is_unmapped or read.reference_name is None:
                 continue
@@ -690,64 +669,30 @@ def _write_read_exclusion_report(
             if read_start is None or read_end is None:
                 continue
 
+            read_chrom = read.reference_name
+
             overlapped_tracks = _collect_overlapped_tracks(
-                chrom=read.reference_name,
+                chrom=read_chrom,
                 read_start=read_start,
                 read_end=read_end,
-                intervals_by_chrom=intervals_by_chrom,
+                interval_index_by_chrom=interval_index_by_chrom,
             )
             read_tracks[read_id].update(overlapped_tracks)
             for track_name in overlapped_tracks:
-                read_tags[read_id].update(track_to_tags.get(track_name, set()))
+                read_tags[read_id].update(track_to_tags_get(track_name, set()))
 
     output_report_tsv.parent.mkdir(parents=True, exist_ok=True)
     with output_report_tsv.open("w", encoding="utf-8") as handle:
         handle.write("read_id\texcluded\toverlapped\ttags\n")
-        for read_id in read_seen_order:
-            tracks = sorted(read_tracks.get(read_id, set()))
-            tags = sorted(read_tags.get(read_id, set()))
+        for read_id, track_set in read_tracks.items():
+            tracks = sorted(track_set)
+            tags = sorted(read_tags[read_id])
             excluded = "true" if tracks else "false"
             overlapped = ",".join(tracks)
             joined_tags = ",".join(tags)
             handle.write(f"{read_id}\t{excluded}\t{overlapped}\t{joined_tags}\n")
 
     return output_report_tsv
-
-
-def _warn_if_contig_names_mismatch(mask_path: Path, bam_path: Path) -> None:
-    """Warn when BED/BAM contig naming conventions are likely incompatible."""
-    if pysam is None:
-        return
-
-    try:
-        with pysam.AlignmentFile(str(bam_path), "rb") as bam:
-            bam_contigs = set(bam.references)
-    except Exception:
-        return
-
-    try:
-        mask_contigs = _read_mask_contigs(mask_path)
-    except Exception:
-        return
-
-    if not bam_contigs or not mask_contigs:
-        return
-
-    exact_overlap = bam_contigs & mask_contigs
-    if exact_overlap:
-        return
-
-    bam_norm = {_normalize_contig_name(contig) for contig in bam_contigs}
-    mask_norm = {_normalize_contig_name(contig) for contig in mask_contigs}
-    if bam_norm & mask_norm:
-        sample_bam = ", ".join(sorted(list(bam_contigs))[:5])
-        sample_mask = ", ".join(sorted(list(mask_contigs))[:5])
-        log(
-            "No exact chromosome-name overlap between BAM and mask, but overlap appears after normalization "
-            "(likely 'chr' prefix mismatch). Filtering may return excluded=0 unless contig names are harmonized. "
-            f"BAM sample: {sample_bam} | Mask sample: {sample_mask}",
-            "W",
-        )
 
 
 def filter_bam(
@@ -790,10 +735,14 @@ def filter_bam(
     if not normalized_tracks:
         raise ValueError("exclude_tracks cannot be empty")
 
+    # Fail fast on initial-file incompatibility before any mask computation.
+    ref_dir = Path(db_root) / ref
+    reference_seq_sizes = ref_dir / f"{ref}.sizes"
+    validate_initial_bam_reference_compatibility(input_bam_path, reference_seq_sizes)
+
     # Keep the merged mask deterministic for one exact set of tracks and parameters.
     sorted_tracks = sorted(set(normalized_tracks))
     track_fingerprint = hashlib.sha1(",".join(sorted_tracks).encode("utf-8")).hexdigest()[:12]
-    ref_dir = Path(db_root) / ref
     mask_path = ref_dir / (
         f"all_overlaps_mask_s{stringency}_k{kmer_length}_o{offset_step}"
         f"_t{len(sorted_tracks)}_{track_fingerprint}.bed"
@@ -830,8 +779,6 @@ def filter_bam(
         tags = set(from_charlist_to_list(track.info.get("tags", []), lowercase=True))
         for key in {track.track_name, track.identity.query_species, track.query_name, track.track_name.split("_k")[0]}:
             track_to_tags.setdefault(key, set()).update(tags)
-
-    _warn_if_contig_names_mismatch(merged_mask, input_bam_path)
 
     filtered_bam = Path(output_filtered_bam) if output_filtered_bam else _default_output_bam(input_bam_path, "filtered")
     excluded_bam = Path(output_excluded_bam) if output_excluded_bam else _default_output_bam(input_bam_path, "excluded")
