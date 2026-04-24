@@ -491,7 +491,6 @@ def get_corresponding_tracks(
 	
 	return tracks
 
-
 def from_tags_get_tracks(
 	ref_species: str,
 	tags: List[str],
@@ -530,6 +529,50 @@ def get_refs(db_root: str) -> List[str]:
 
 	refs = [d.name for d in db_root.iterdir() if d.is_dir() and not d.name.startswith('.')]
 	return sorted(refs)
+
+def resolve_requested_track_names(
+	requested_tracks: List[str],
+	available_tracks: List,
+	ref: str,
+	context: str,
+) -> List[str]:
+	"""Resolve user-provided identifiers to canonical track names.
+
+	Accepted identifiers for one track are:
+	- canonical track name (query_k..._w..._n..._o..._l...)
+	- query species identifier
+	- query/input name from param.yaml
+	"""
+	resolved: List[str] = []
+	for requested in requested_tracks:
+		matches = [
+			track for track in available_tracks
+			if requested in {track.track_name, track.identity.query_species, track.query_name}
+		]
+		if not matches:
+			log(
+				f"Track '{requested}' does not exist for reference '{ref}' with specified parameters and will be ignored in {context}.",
+				"W",
+			)
+			continue
+
+		if len(matches) > 1 and not any(track.track_name == requested for track in matches):
+			matching_names = ", ".join(sorted(track.track_name for track in matches))
+			log(
+				f"Track identifier '{requested}' is ambiguous for reference '{ref}' in {context}. "
+				f"Use one canonical track name: {matching_names}",
+				"E",
+			)
+			raise ValueError(f"Ambiguous track identifier '{requested}' for reference '{ref}' in {context}")
+
+		if any(track.track_name == requested for track in matches):
+			matches = [track for track in matches if track.track_name == requested]
+
+		for match in matches:
+			if match.track_name not in resolved:
+				resolved.append(match.track_name)
+
+	return resolved
 
 # Display functions
 def print_available_species(ref_species: str, db_root: Union[str, Path]) -> Path:

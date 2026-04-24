@@ -183,11 +183,7 @@ wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus
 
 #### Output
 
-WizardEye produces three different outputs:
-
-- a BAM `excluded` with the reads excluded by the filtration,
-- a BAM `filtered` with the reads kept by the filtration,
-- a tabulation-separated report containing, for each read, the decision and the overlapping tracks and tags, such as follows: 
+WizardEye produces a tabulation-separated report containing, for each read, the decision and the overlapping tracks and tags, such as follows: 
 
 
 | read_id                                  | excluded | overlapped | tags |
@@ -198,6 +194,11 @@ WizardEye produces three different outputs:
 | read_4								   | true     | bos_taurus | Ruminantia     |
 | read_5								   | true    | bos_taurus,ovis_aries           | Ruminantia     |
 | read_6								   | false    |          |      |
+
+With `--export-bam`, WizardEye produces two more files:
+
+- a BAM `excluded` with the reads excluded by the filtration,
+- a BAM `filtered` with the reads kept by the filtration,
 
 ### Export a mask
 
@@ -228,4 +229,4 @@ This command creates the target/track directory, copies the two BigWig files as 
 
 Note that you can specify a Kraken output using `-kro /path/to/input` and `-krl level_of_filtering` in order to complete your filtering using the Kraken evolution-related method. This combination is useful to remove both reads that belong to completely different organisms and reads that can be ambiguous between closely related organisms.
 
-*Last update of this documentation: beta-0.0.1.*
+*Last update of this documentation: beta-0.0.2.*

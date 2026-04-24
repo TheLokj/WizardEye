@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import subprocess
+import time
 import typer
 
 from importlib import metadata
@@ -18,58 +19,15 @@ from .db import (
 	from_tags_get_tracks,
 	get_refs,
 	get_tracks,
+	resolve_requested_track_names
 )
 from .filter import generate_mask, filter_bam
-from .utils import from_charlist_to_list, log
+from .utils import from_charlist_to_list, log, print_starter_message
 from .version import DISPLAY_VERSION, PACKAGE_VERSION
 
 app = typer.Typer(help="Cross-mappability helper CLI.")
 
-
-def _resolve_requested_track_names(
-	requested_tracks: List[str],
-	available_tracks: List,
-	ref: str,
-	context: str,
-) -> List[str]:
-	"""Resolve user-provided identifiers to canonical track names.
-
-	Accepted identifiers for one track are:
-	- canonical track name (query_k..._w..._n..._o..._l...)
-	- query species identifier
-	- query/input name from param.yaml
-	"""
-	resolved: List[str] = []
-	for requested in requested_tracks:
-		matches = [
-			track for track in available_tracks
-			if requested in {track.track_name, track.identity.query_species, track.query_name}
-		]
-		if not matches:
-			log(
-				f"Track '{requested}' does not exist for reference '{ref}' with specified parameters and will be ignored in {context}.",
-				"W",
-			)
-			continue
-
-		if len(matches) > 1 and not any(track.track_name == requested for track in matches):
-			matching_names = ", ".join(sorted(track.track_name for track in matches))
-			log(
-				f"Track identifier '{requested}' is ambiguous for reference '{ref}' in {context}. "
-				f"Use one canonical track name: {matching_names}",
-				"E",
-			)
-			raise typer.Exit(code=1)
-
-		if any(track.track_name == requested for track in matches):
-			matches = [track for track in matches if track.track_name == requested]
-
-		for match in matches:
-			if match.track_name not in resolved:
-				resolved.append(match.track_name)
-
-	return resolved
-
+# -- Helper functions --
 
 def _get_runtime_version() -> str:
 	"""Return installed package version, or fallback display version in source mode."""
@@ -81,14 +39,13 @@ def _get_runtime_version() -> str:
 	except metadata.PackageNotFoundError:
 		return DISPLAY_VERSION
 
-
 def _version_callback(value: bool) -> None:
 	if value:
 		typer.echo(f"WizardEye version: {_get_runtime_version()}")
 		raise typer.Exit(code=0)
 
-
-@app.callback()
+# -- CLI commands --
+@app.callback(invoke_without_command=True)
 def common_options(
 	version: Optional[bool] = typer.Option(
 		None,
@@ -101,13 +58,13 @@ def common_options(
 	"""Global CLI options shared by all commands."""
 	return
 
-# -- CLI commands --
-@app.command()
+@app.command(help="Initialize, validate, or inspect the WizardEye database.")
 def database(
 	init: bool = typer.Option(False, help="Path to the database root directory."),
 	catalogue: bool = typer.Option(False, "-c", "--catalogue", help="Print the full database catalogue after initialization."),
 	db_root: str = typer.Option(..., "-d", "--db-root", help="Path to the database root directory."),
 	):
+	print_starter_message()
 	
 	if init:
 		try:
@@ -127,7 +84,7 @@ def database(
 
 # Main alignment command with all parameters for track generation
 # Same behavior that generate_cross_mappability_filter_bwa.sh 
-@app.command()
+@app.command(help="Generate cross-mappability tracks from input FASTA files using bwa aln parameters.")
 def align(
 	# Input parameters
 	input_fasta: Optional[List[str]] = typer.Option(
@@ -166,6 +123,8 @@ def align(
 	db_root: str = typer.Option(..., "-d", "--db-root", help="Path to the database root directory."),
 	force: bool = typer.Option(None, help="Force track creation even if it already exists."),
 ):
+	print_starter_message()
+	start_time = time.perf_counter()
 
 	if input_fasta and input_target and kmer_length:
 		if not valid_database(db_root):
@@ -256,13 +215,16 @@ def align(
 				log(str(e), "E")
 				raise typer.Exit(code=2)
 
+		elapsed = time.perf_counter() - start_time
+		log(f"Alignment completed in {elapsed:.2f}s", "S")
 		raise typer.Exit(code=0)
 
 	log(f"align requires BAM generation arguments (-i, -r, -k)", "E")
 	raise typer.Exit(code=1)
 
-@app.command()
+@app.command(help="Filter an input BAM using selected cross-mappability tracks and stringency.")
 def filter(
+
 	# Alignment parameters used to construct the BAM file
 	input_bam = typer.Option(None, "-i", "--input", help="Path to the BAM file to filter."),
 	ref: Optional[str] = typer.Option(None, "-r", help="Reference used for alignment."),
@@ -306,6 +268,11 @@ def filter(
 		"--report-output",
 		help="Output TSV report with columns: read_id, excluded, overlapped, tags.",
 	),
+	export_bam: bool = typer.Option(
+		False,
+		"--export-bam",
+		help="Write filtered/excluded BAM outputs. By default, only the TSV report is generated.",
+	),
 	n_threads: int = typer.Option(
 		1,
 		"-j",
@@ -315,6 +282,10 @@ def filter(
 	kmer_length: Optional[int] = typer.Option(None, "-k", help="K-mer length to filter on. Must match track generation parameter."),
 	offset_step: Optional[int] = typer.Option(None, "-w", "--offset-step", "--sliding-window", help="Offset/sliding window to filter on. Smaller, more sensitive."),
 ):
+	print_starter_message()
+
+	start_time = time.perf_counter()
+
 	if ref is None:
 		log("Reference (-r) must be specified.", "E")
 		raise typer.Exit(code=1)
@@ -322,6 +293,12 @@ def filter(
 	if ref not in get_refs(db_root):
 		log(f"Reference '{ref}' not found in database '{db_root}'.", "E")
 		raise typer.Exit(code=1)
+	
+	log(f"Input alignment file to filter: {input_bam}", "I")
+	log(f"Target reference used: {ref}", "I")
+	log(f"Associated BWA parameters: -n {bwa_missing_prob_err_rate}, -o {bwa_max_gap_opens}, -l {bwa_seed_length}", "I")
+	log(f"Requested track generation parameters: -k {kmer_length}, -w {offset_step}", "I")
+	log(f"Requested stringency threshold: {cross_stringency}", "I")
 
 	if exclude_tags and exclude_tracks:
 		log("Cannot use both --exclude-tags and --exclude-tracks at the same time for filtering. Please choose one.", "E")
@@ -359,7 +336,7 @@ def filter(
 			bwa_max_gap_opens=bwa_max_gap_opens,
 			bwa_seed_length=bwa_seed_length,
 		)
-		valid_tracks = _resolve_requested_track_names(
+		valid_tracks = resolve_requested_track_names(
 			requested_tracks=requested_tracks,
 			available_tracks=available_tracks,
 			ref=ref,
@@ -394,7 +371,11 @@ def filter(
 		log("Please provide either --exclude-tags or --exclude-tracks.", "E")
 		raise typer.Exit(code=1)
 
-	log(f"Following tracks will be excluded from filtering: {', '.join(valid_tracks)}", "I")
+	excluded_tracks = "\n\t- ".join(valid_tracks)
+	log(f"Following tracks will be used in filtering:\n\t- {excluded_tracks}", "I")
+	print("-" * 80)
+	
+	log(f"Starting filtration...", "I")
 
 	if not input_bam:
 		log("Input BAM (-i/--input) must be specified.", "E")
@@ -416,6 +397,7 @@ def filter(
 			output_filtered_bam=output_filtered_bam,
 			output_excluded_bam=output_excluded_bam,
 			output_report_tsv=output_report_tsv,
+			export_bam=export_bam,
 		)
 	except FileNotFoundError as e:
 		log(str(e), "E")
@@ -430,20 +412,24 @@ def filter(
 		log(f"Subprocess failed: {e}", "E")
 		raise typer.Exit(code=2)
 
-	log(f"Merged mask generated: {filter_result['mask']}", "S")
-	log(f"Filtered BAM (kept reads): {filter_result['filtered_bam']}", "S")
-	log(f"Excluded BAM (masked reads): {filter_result['excluded_bam']}", "S")
-	log(f"Read exclusion report (TSV): {filter_result['report_tsv']}", "S")
-	log(
-		"Read counts: "
-		f"total={filter_result['n_total']}, kept={filter_result['n_filtered']}, excluded={filter_result['n_excluded']}",
-		"I",
-	)
+	elapsed = time.perf_counter() - start_time
+	print("-" * 80)
+	
+	log(f"Filtration completed in {elapsed:.2f}s:\n\
+	 	\tTotal reads before filtration: {filter_result['n_total']}\n\
+	 	\tTotal reads after filtration: {filter_result['n_filtered']}\n\
+		\tTotal reads excluded: {filter_result['n_excluded']}", "S",)
+
+	log(f"Read exclusion report saved at {filter_result['report_tsv']}", "S")
+	if filter_result["filtered_bam"] is not None and filter_result["excluded_bam"] is not None:
+		log(f"Filtered BAM (kept reads): {filter_result['filtered_bam']}", "S")
+		log(f"Excluded BAM (masked reads): {filter_result['excluded_bam']}", "S")
+
+	log("Thank you for using WizardEye!", "S")
 
 	raise typer.Exit(code=0)
 
-
-@app.command()
+@app.command(help="Export a merged BED mask using the same track-selection logic as filter.")
 def export(
 	ref: str = typer.Option(..., "-r", "--ref", help="Reference species name."),
 	# Same selector interface as `filter`.
@@ -485,6 +471,7 @@ def export(
 		help="Number of threads for parallel overlap extraction from BigWig tracks.",
 	),
 ):
+	print_starter_message()
 	"""Export a merged BED mask using the same track-selection logic as `filter`."""
 	if not valid_database(db_root):
 		log(f"To initialize the database, run 'database --init {db_root}'", "E")
@@ -533,7 +520,7 @@ def export(
 			bwa_max_gap_opens=bwa_max_gap_opens,
 			bwa_seed_length=bwa_seed_length,
 		)
-		valid_tracks = _resolve_requested_track_names(
+		valid_tracks = resolve_requested_track_names(
 			requested_tracks=requested_tracks,
 			available_tracks=available_tracks,
 			ref=ref,
@@ -592,7 +579,7 @@ def export(
 	log(f"Export completed. Merged file: {merged_bed}", "S")
  
 
-@app.command("import")
+@app.command("import", help="Import a track manually by providing BigWig files and generation parameters.")
 def import_tracks(
 	ref: str = typer.Option(..., "-r", "--ref", help="Reference species/target name in the database."),
 	query: str = typer.Option(..., "-i", "--input", help="Query/input species name for the track."),
@@ -653,6 +640,7 @@ def import_tracks(
 	),
 	force: bool = typer.Option(False, help="Overwrite imported track files/metadata if the track already exists."),
 ):
+	print_starter_message()
 	"""Import a track manually by providing BigWig files and generation parameters."""
 	if not valid_database(db_root):
 		log(f"To initialize the database, run 'database --init {db_root}'", "E")
@@ -695,6 +683,8 @@ def import_tracks(
 	log(f"mappability_all BigWig stored at: {result['mappability_all_bw']}", "S")
 	log(f"mappability_uniq BigWig stored at: {result['mappability_uniq_bw']}", "S")
 	raise typer.Exit(code=0)
+
+# -- Entry point --
 
 if __name__ == "__main__":
 	app()

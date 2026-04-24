@@ -76,6 +76,7 @@ def align_chunk_to_bam(
 	bam_file = chunk_fasta.with_suffix(".bam")
 
 	with sai_file.open("w", encoding="utf-8") as sai_out:
+		log(f"bwa aln -t 1 -n {bwa_missing_prob_err_rate} -o {bwa_max_gap_opens} -l {bwa_seed_length} {input_target} {chunk_fasta}", "C")
 		subprocess.run(
 			[
 				"bwa",
@@ -96,6 +97,7 @@ def align_chunk_to_bam(
 		)
 
 	with bam_file.open("wb") as bam_out:
+		log(f"bwa samse -n 1000000 {input_target} {sai_file} {chunk_fasta}", "C")
 		bwa_samse = subprocess.Popen(
 			[
 				"bwa",
@@ -109,6 +111,7 @@ def align_chunk_to_bam(
 			stdout=subprocess.PIPE,
 		)
 		try:
+			log(f"samtools view -b -F 4 -", "C")
 			subprocess.run(
 				["samtools", "view", "-b", "-F", "4", "-"],
 				check=True,
@@ -294,12 +297,13 @@ def create_mappability_track(
 	bam_file = tmp_dir / f"{input_name}_{kmer_length}{f'_s{offset_step}' if offset_step != 1 else ''}_{Path(input_target).stem}.bam"
 	
 	log(f"Merging {len(chunk_bams)} chunk BAM files into one unique BAM...", "I")
-	log(f"samtools cat {' '.join(str(path) for path in chunk_bams)} | samtools sort -@ {workers} -o {bam_file} -", "C")
+	log(f"samtools cat {' '.join(str(path) for path in chunk_bams)}", "C")
 	samtools_cat = subprocess.Popen(
 		["samtools", "cat", *[str(path) for path in chunk_bams]],
 		stdout=subprocess.PIPE,
 	)
 	try:
+		log(f"samtools sort -@ {workers} -o {bam_file} -", "C")
 		subprocess.run(
 			["samtools", "sort", "-@", str(workers), "-o", str(bam_file), "-"],
 			check=True,

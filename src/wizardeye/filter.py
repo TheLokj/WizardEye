@@ -13,315 +13,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .db import get_tracks
-from .mappability import get_unique_mapping_intervals, pysam
-from .utils import log, from_charlist_to_list, write_bed, validate_initial_bam_reference_compatibility, read_bam_sq_lengths, read_seq_sizes
+from .mappability import pysam
+from .utils import (
+    log,
+    from_charlist_to_list,
+    validate_initial_bam_reference_compatibility,
+    merge_bed_files,
+    append_merged_interval,
+)
 
-def _append_merged_interval(
-    merged: List[Tuple[str, int, int]],
-    chrom: str,
-    start: int,
-    end: int,
-) -> None:
-    """Append interval and merge with previous one when overlapping/adjacent."""
-    if end <= start:
-        return
-
-    if not merged:
-        merged.append((chrom, start, end))
-        return
-
-    last_chrom, last_start, last_end = merged[-1]
-    if last_chrom == chrom and start <= last_end:
-        merged[-1] = (last_chrom, last_start, max(last_end, end))
-        return
-
-    merged.append((chrom, start, end))
-
-
-def _compute_overlap_intervals_from_bam(
-    bam_file: Path,
-    kmer_length: int,
-    offset_step: int,
-    cross_stringency: float,
-) -> List[Tuple[str, int, int]]:
-    """Compute stringency-filtered overlap intervals directly from BAM unique mappings."""
-    if pysam is None:
-        log("pysam is required to compute overlaps from BAM. Install it with: pip install pysam", "FE")
-
-    if cross_stringency == 0.0:
-        intervals: List[Tuple[str, int, int]] = []
-        with pysam.AlignmentFile(str(bam_file), "rb") as bam:
-            for chrom, length in sorted(zip(bam.references, bam.lengths), key=lambda x: x[0]):
-                if length and length > 0:
-                    intervals.append((chrom, 0, int(length)))
-        return intervals
-
-    events_by_chrom: Dict[str, Dict[int, int]] = {}
-    for chrom, start, end in get_unique_mapping_intervals(bam_file, kmer_length):
-        if end <= start:
-            continue
-        chrom_events = events_by_chrom.setdefault(chrom, {})
-        chrom_events[start] = chrom_events.get(start, 0) + 1
-        chrom_events[end] = chrom_events.get(end, 0) - 1
-
-    threshold = cross_stringency * (kmer_length / offset_step)
-    merged: List[Tuple[str, int, int]] = []
-
-    for chrom in sorted(events_by_chrom):
-        events = events_by_chrom[chrom]
-        positions = sorted(events)
-        depth = 0
-        for idx in range(len(positions) - 1):
-            pos = positions[idx]
-            next_pos = positions[idx + 1]
-            depth += events[pos]
-            if next_pos <= pos:
-                continue
-            if depth >= threshold:
-                _append_merged_interval(merged, chrom, pos, next_pos)
-
-    return merged
-
-
-def _compute_overlap_intervals_from_bigwig(
-    uniq_bw: Path,
-    kmer_length: int,
-    offset_step: int,
-    cross_stringency: float,
-) -> List[Tuple[str, int, int]]:
-    
-    """Compute stringency-filtered overlap intervals from mappability_uniq.bw."""
-    tool = shutil.which("bigWigToBedGraph")
-    if tool is None:
-        log("bigWigToBedGraph not found in PATH and BAM file is unavailable: cannot compute overlaps.", "FE")
-
-    with tempfile.NamedTemporaryFile(prefix="wizardeye_", suffix=".bg", delete=False) as tmp_handle:
-        tmp_bg_path = Path(tmp_handle.name)
-
-    try:
-        log(f"Converting track to bedGraph for overlap computation: {uniq_bw}", "I")
-        log(f"{tool} {str(uniq_bw)} {str(tmp_bg_path)}", "C")
-        subprocess.run([tool, str(uniq_bw), str(tmp_bg_path)], check=True)
-
-        threshold = cross_stringency * (kmer_length / offset_step)
-        merged: List[Tuple[str, int, int]] = []
-        with tmp_bg_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split("\t")
-                if len(parts) < 4:
-                    continue
-                chrom, start, end, depth = parts[0], int(parts[1]), int(parts[2]), float(parts[3])
-                if end <= start:
-                    continue
-                if depth >= threshold:
-                    _append_merged_interval(merged, chrom, start, end)
-        return merged
-    finally:
-        if tmp_bg_path.exists():
-            tmp_bg_path.unlink()
-
-
-def _compute_overlap_bed_from_bigwig(
-    uniq_bw: Path,
-    kmer_length: int,
-    offset_step: int,
-    cross_stringency: float,
-    output_bed: Path,
-) -> Path:
-    """Compute one overlap BED directly from BigWig with a fast awk/bedtools path when available."""
-    tool = shutil.which("bigWigToBedGraph")
-    if tool is None:
-        log("bigWigToBedGraph not found in PATH and BAM file is unavailable: cannot compute overlaps.", "FE")
-
-    output_bed.parent.mkdir(parents=True, exist_ok=True)
-
-    with tempfile.NamedTemporaryFile(prefix="wizardeye_", suffix=".bg", delete=False) as tmp_handle:
-        tmp_bg_path = Path(tmp_handle.name)
-
-    try:
-        log(f"Converting track to bedGraph for overlap computation: {uniq_bw}", "I")
-        log(f"{tool} {str(uniq_bw)} {str(tmp_bg_path)}", "C")
-        subprocess.run([tool, str(uniq_bw), str(tmp_bg_path)], check=True)
-
-        threshold = cross_stringency * (kmer_length / offset_step)
-        bedtools = shutil.which("bedtools")
-        awk = shutil.which("awk")
-        if bedtools and awk:
-            awk_script = f'OFS="\\t" {{ if (($4 + 0) >= {threshold:.12f}) print $1, $2, $3; }}'
-            with tmp_bg_path.open("r", encoding="utf-8") as bg_in, output_bed.open("w", encoding="utf-8") as out:
-                p1 = subprocess.Popen([awk, awk_script], stdin=bg_in, stdout=subprocess.PIPE, text=True)
-                p2 = subprocess.Popen([bedtools, "merge", "-i", "stdin"], stdin=p1.stdout, stdout=out, text=True)
-                if p1.stdout is not None:
-                    p1.stdout.close()
-                rc2 = p2.wait()
-                rc1 = p1.wait()
-                if rc1 != 0:
-                    raise subprocess.CalledProcessError(rc1, [awk, awk_script])
-                if rc2 != 0:
-                    raise subprocess.CalledProcessError(rc2, [bedtools, "merge", "-i", "stdin"])
-            return output_bed
-
-        # Fallback: Python thresholding/merging when bedtools/awk are unavailable.
-        intervals = _compute_overlap_intervals_from_bigwig(
-            uniq_bw=uniq_bw,
-            kmer_length=kmer_length,
-            offset_step=offset_step,
-            cross_stringency=cross_stringency,
-        )
-        write_bed(intervals, output_bed)
-        return output_bed
-    finally:
-        if tmp_bg_path.exists():
-            tmp_bg_path.unlink()
-
-
-def _read_bed_intervals(bed_path: Path) -> List[Tuple[str, int, int]]:
-    intervals: List[Tuple[str, int, int]] = []
-    with bed_path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            parts = line.strip().split("\t")
-            if len(parts) < 3:
-                continue
-            start = int(parts[1])
-            end = int(parts[2])
-            if end > start:
-                intervals.append((parts[0], start, end))
-    return intervals
-
-
-def _merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path:
-    output_bed.parent.mkdir(parents=True, exist_ok=True)
-    if not bed_files:
-        output_bed.write_text("", encoding="utf-8")
-        return output_bed
-
-    bedtools = shutil.which("bedtools")
-    if bedtools:
-        with tempfile.NamedTemporaryFile(prefix="wizardeye_", suffix=".bed", delete=False) as tmp_handle:
-            tmp_tagged_path = Path(tmp_handle.name)
-
-        try:
-            with tmp_tagged_path.open("w", encoding="utf-8") as tagged_out:
-                for track_name, bed_path in bed_files:
-                    with bed_path.open("r", encoding="utf-8") as handle:
-                        for line in handle:
-                            parts = line.strip().split("\t")
-                            if len(parts) < 3:
-                                continue
-                            start = int(parts[1])
-                            end = int(parts[2])
-                            if end <= start:
-                                continue
-                            tagged_out.write(f"{parts[0]}\t{start}\t{end}\t{track_name.split('_k')[0]}\n")
-
-            with tmp_tagged_path.open("r", encoding="utf-8") as tagged_in:
-                p_sort = subprocess.Popen(
-                    ["sort", "-k1,1", "-k2,2n"],
-                    stdin=tagged_in,
-                    stdout=subprocess.PIPE,
-                    text=True,
-                )
-                with output_bed.open("w", encoding="utf-8") as out:
-                    p_merge = subprocess.Popen(
-                        [bedtools, "merge", "-i", "stdin", "-c", "4", "-o", "distinct"],
-                        stdin=p_sort.stdout,
-                        stdout=out,
-                        text=True,
-                    )
-
-                    if p_sort.stdout is not None:
-                        p_sort.stdout.close()
-
-                    rc_merge = p_merge.wait()
-                    rc_sort = p_sort.wait()
-                    if rc_sort != 0:
-                        raise subprocess.CalledProcessError(rc_sort, ["sort", "-k1,1", "-k2,2n"])
-                    if rc_merge != 0:
-                        raise subprocess.CalledProcessError(
-                            rc_merge,
-                            [bedtools, "merge", "-i", "stdin", "-c", "4", "-o", "distinct"],
-                        )
-            return output_bed
-        finally:
-            if tmp_tagged_path.exists():
-                tmp_tagged_path.unlink()
-
-    all_intervals: List[Tuple[str, int, int, Set[str]]] = []
-    for track_name, bed in bed_files:
-        for chrom, start, end in _read_bed_intervals(bed):
-            all_intervals.append((chrom, start, end, {track_name}))
-
-    all_intervals.sort(key=lambda x: (x[0], x[1], x[2]))
-    merged_all: List[Tuple[str, int, int, Set[str]]] = []
-    for chrom, start, end, tracks in all_intervals:
-        if not merged_all:
-            merged_all.append((chrom, start, end, set(tracks)))
-            continue
-
-        last_chrom, last_start, last_end, last_tracks = merged_all[-1]
-        if last_chrom == chrom and start <= last_end:
-            merged_all[-1] = (last_chrom, last_start, max(last_end, end), last_tracks | tracks)
-        else:
-            merged_all.append((chrom, start, end, set(tracks)))
-
-    with output_bed.open("w", encoding="utf-8") as out:
-        for chrom, start, end, tracks in merged_all:
-            joined_tracks = ",".join(sorted(tracks))
-            out.write(f"{chrom}\t{start}\t{end}\t{joined_tracks}\n")
-    return output_bed
-
-
-def _build_track_overlaps(
-    track: Any,
-    stringency_label: str,
-    kmer_length: int,
-    offset_step: int,
-    cross_stringency: float,
-) -> Tuple[str, Path]:
-    """Compute one track overlap BED for a selected input and return (track name, BED path)."""
-    track_dir = track.track_dir
-    track_name = track.track_name
-
-    # Store overlap BED with the track data so lookup/save stay within the track folder.
-    per_input_bed = track_dir / f"overlap_{track_name}_s{stringency_label}.bed"
-    if per_input_bed.exists():
-        log(f"Reusing existing overlap BED for track '{track_name}': {per_input_bed}", "I")
-        return track_name, per_input_bed
-
-    uniq_bw = track_dir / "mappability_uniq.bw"
-    if uniq_bw.exists():
-        _compute_overlap_bed_from_bigwig(
-            uniq_bw=uniq_bw,
-            kmer_length=kmer_length,
-            offset_step=offset_step,
-            cross_stringency=cross_stringency,
-            output_bed=per_input_bed,
-        )
-    else:
-        bam_candidates = list(track_dir.glob("*.bam"))
-        if not bam_candidates:
-            raise ValueError(
-                f"No mappability_uniq.bw or BAM found for selected track '{track_name}' in {track_dir}"
-            )
-        input_intervals = _compute_overlap_intervals_from_bam(
-            bam_file=bam_candidates[0],
-            kmer_length=kmer_length,
-            offset_step=offset_step,
-            cross_stringency=cross_stringency,
-        )
-        write_bed(input_intervals, per_input_bed)
-        if not input_intervals:
-            threshold = cross_stringency * (kmer_length / offset_step)
-            log(
-                f"No interval passed stringency for track '{track_name}' (threshold unique-depth >= {threshold:.4f}).",
-                "W",
-            )
-
-    log(f"Overlap BED written for track '{track_name}': {per_input_bed}", "S")
-    return track_name, per_input_bed
+# -- Filtration-mask creation related functions --
 
 def generate_mask(
     ref_species: str,
@@ -424,7 +125,7 @@ def generate_mask(
         )
 
     if merged_mask_bed.exists():
-        log(f"Reusing existing merged mask BED: {merged_mask_bed}", "I")
+        log(f"Reusing existing mask... \033[0;90m({merged_mask_bed})\033[0m", "I")
         return merged_mask_bed
 
     per_track_beds: List[Tuple[str, Path]] = []
@@ -438,7 +139,7 @@ def generate_mask(
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [
                 pool.submit(
-                    _build_track_overlaps,
+                    _build_mask_from_track,
                     track,
                     stringency_label,
                     kmer_length,
@@ -451,7 +152,7 @@ def generate_mask(
                 per_track_beds.append(future.result())
     else:
         for track in selected_tracks:
-            per_track_beds.append(_build_track_overlaps(
+            per_track_beds.append(_build_mask_from_track(
                 track=track,
                 stringency_label=stringency_label,
                 kmer_length=kmer_length,
@@ -459,10 +160,9 @@ def generate_mask(
                 cross_stringency=cross_stringency,
             ))
 
-    _merge_bed_files(per_track_beds, merged_mask_bed)
-    log(f"Merged mask BED written to: {merged_mask_bed}", "S")
+    merge_bed_files(per_track_beds, merged_mask_bed)
+    log(f"Merged mask BED written to {merged_mask_bed}", "S")
     return merged_mask_bed
-
 
 def compute_stringency(
 	uniq_track: Path,
@@ -513,6 +213,7 @@ def compute_stringency(
 		with tempfile.NamedTemporaryFile(suffix=".bg", delete=False) as tmp_handle:
 			tmp_bg_path = Path(tmp_handle.name)
 		bg_path = tmp_bg_path
+		log(f"{tool} {str(uniq_track)} {str(bg_path)}", "C")
 		subprocess.run([tool, str(uniq_track), str(bg_path)], check=True)
 	else:
 		raise ValueError(
@@ -542,7 +243,7 @@ def compute_stringency(
 		selected.sort(key=lambda interval: (interval[0], interval[1], interval[2]))
 		merged: List[Tuple[str, int, int]] = []
 		for chrom, start, end in selected:
-			_append_merged_interval(merged, chrom, start, end)
+			append_merged_interval(merged, chrom, start, end)
 
 		output_bed.parent.mkdir(parents=True, exist_ok=True)
 		with output_bed.open("w", encoding="utf-8") as handle:
@@ -571,7 +272,89 @@ def _default_output_table(input_bam: Path) -> Path:
         return input_bam.with_suffix(".wizardeye.report.tsv")
     return Path(f"{str(input_bam)}.wizardeye.report.tsv")
 
-def _load_mask_with_tracks(
+def _build_mask_from_track(
+    track: Any,
+    stringency_label: str,
+    kmer_length: int,
+    offset_step: int,
+    cross_stringency: float,
+) -> Tuple[str, Path]:
+    """Compute one track BED mask for a selected input and return (track name, BED path)."""
+    track_dir = track.track_dir
+    track_name = track.track_name
+
+    # Store overlap BED with the track data so lookup/save stay within the track folder.
+    per_input_bed = track_dir / f"overlap_{track_name}_s{stringency_label}.bed"
+    if per_input_bed.exists():
+        log(f"Reusing existing mask for {track_name}... \n\033[0;90m({per_input_bed})\033[0m", "I")
+        return track_name, per_input_bed
+
+    uniq_bw = track_dir / "mappability_uniq.bw"
+    if not uniq_bw.exists():
+        raise ValueError(
+            f"Missing required mappability_uniq.bw for selected track '{track_name}' in {track_dir}"
+        )
+
+    compute_mask_bed_from_bigwig(
+        uniq_bw=uniq_bw,
+        kmer_length=kmer_length,
+        offset_step=offset_step,
+        cross_stringency=cross_stringency,
+        output_bed=per_input_bed,
+    )
+
+    log(f"Overlap BED written for track '{track_name}': {per_input_bed}", "S")
+    return track_name, per_input_bed
+
+def compute_mask_bed_from_bigwig(
+    uniq_bw: Path,
+    kmer_length: int,
+    offset_step: int,
+    cross_stringency: float,
+    output_bed: Path,
+) -> Path:
+    """Compute one overlap BED directly from BigWig with a fast awk/bedtools path when available."""
+    tool = shutil.which("bigWigToBedGraph")
+    if tool is None:
+        log("bigWigToBedGraph not found in PATH and BAM file is unavailable: cannot compute overlaps.", "FE")
+
+    output_bed.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.NamedTemporaryFile(prefix="wizardeye_", suffix=".bg", delete=False) as tmp_handle:
+        tmp_bg_path = Path(tmp_handle.name)
+
+    try:
+        log(f"Converting track to bedGraph for overlap computation: {uniq_bw}", "I")
+        log(f"{tool} {str(uniq_bw)} {str(tmp_bg_path)}", "C")
+        subprocess.run([tool, str(uniq_bw), str(tmp_bg_path)], check=True)
+
+        threshold = cross_stringency * (kmer_length / offset_step)
+        bedtools = shutil.which("bedtools")
+        awk = shutil.which("awk")
+        if not (bedtools and awk):
+            raise RuntimeError(
+                "bedtools and awk are required to compute mask from mappability_uniq.bw"
+            )
+
+        awk_script = f'OFS="\\t" {{ if (($4 + 0) >= {threshold:.12f}) print $1, $2, $3; }}'
+        with tmp_bg_path.open("r", encoding="utf-8") as bg_in, output_bed.open("w", encoding="utf-8") as out:
+            log(f"{awk} '{awk_script}' {tmp_bg_path} | {bedtools} merge -i stdin", "C")
+            p1 = subprocess.Popen([awk, awk_script], stdin=bg_in, stdout=subprocess.PIPE, text=True)
+            p2 = subprocess.Popen([bedtools, "merge", "-i", "stdin"], stdin=p1.stdout, stdout=out, text=True)
+            if p1.stdout is not None:
+                p1.stdout.close()
+            rc2 = p2.wait()
+            rc1 = p1.wait()
+            if rc1 != 0:
+                raise subprocess.CalledProcessError(rc1, [awk, awk_script])
+            if rc2 != 0:
+                raise subprocess.CalledProcessError(rc2, [bedtools, "merge", "-i", "stdin"])
+        return output_bed
+    finally:
+        if tmp_bg_path.exists():
+            tmp_bg_path.unlink()
+
+def _load_mask_from_tracks(
     mask_path: Path,
 ) -> Dict[str, List[Tuple[int, int, Set[str]]]]:
     """Load BED mask and keep optional track labels from column 4."""
@@ -600,7 +383,7 @@ def _load_mask_with_tracks(
     return by_chrom
 
 
-def _collect_overlapped_tracks(
+def _collect_overlapping_tracks(
     chrom: str,
     read_start: int,
     read_end: int,
@@ -639,70 +422,7 @@ def _collect_overlapped_tracks(
     return overlapped
 
 
-def _write_read_exclusion_report(
-    input_bam: Path,
-    mask_path: Path,
-    output_report_tsv: Path,
-    track_to_tags: Optional[Dict[str, Set[str]]] = None,
-) -> Path:
-    """Write one line per read_id with exclusion flag, overlapping tracks and tags."""
-    if pysam is None:
-        raise RuntimeError("pysam is required to generate read-level overlap reports")
-
-    track_to_tags = track_to_tags or {}
-    intervals_by_chrom = _load_mask_with_tracks(mask_path)
-    interval_index_by_chrom: Dict[str, Tuple[List[int], List[Tuple[int, int, Set[str]]]]] = {
-        chrom: ([interval[0] for interval in intervals], intervals)
-        for chrom, intervals in intervals_by_chrom.items()
-    }
-    read_tracks: Dict[str, Set[str]] = {}
-    read_tags: Dict[str, Set[str]] = {}
-
-    track_to_tags_get = track_to_tags.get
-
-    with pysam.AlignmentFile(str(input_bam), "rb") as bam:
-        for read in bam.fetch(until_eof=True):
-            read_id = read.query_name
-            if not read_id:
-                continue
-
-            if read_id not in read_tracks:
-                read_tracks[read_id] = set()
-                read_tags[read_id] = set()
-
-            if read.is_unmapped or read.reference_name is None:
-                continue
-
-            read_start = read.reference_start
-            read_end = read.reference_end
-            if read_start is None or read_end is None:
-                continue
-
-            read_chrom = read.reference_name
-
-            overlapped_tracks = _collect_overlapped_tracks(
-                chrom=read_chrom,
-                read_start=read_start,
-                read_end=read_end,
-                interval_index_by_chrom=interval_index_by_chrom,
-            )
-            read_tracks[read_id].update(overlapped_tracks)
-            for track_name in overlapped_tracks:
-                read_tags[read_id].update(track_to_tags_get(track_name, set()))
-
-    output_report_tsv.parent.mkdir(parents=True, exist_ok=True)
-    with output_report_tsv.open("w", encoding="utf-8") as handle:
-        handle.write("read_id\texcluded\toverlapped\ttags\n")
-        for read_id, track_set in read_tracks.items():
-            tracks = sorted(track_set)
-            tags = sorted(read_tags[read_id])
-            excluded = "true" if tracks else "false"
-            overlapped = ",".join(tracks)
-            joined_tags = ",".join(tags)
-            handle.write(f"{read_id}\t{excluded}\t{overlapped}\t{joined_tags}\n")
-
-    return output_report_tsv
-
+# -- Main filtration logic --
 
 def filter_bam(
     input_bam: str,
@@ -719,15 +439,17 @@ def filter_bam(
     output_filtered_bam: Optional[str] = None,
     output_excluded_bam: Optional[str] = None,
     output_report_tsv: Optional[str] = None,
+    export_bam: bool = False,
 ) -> Dict[str, object]:
     """Build a merged mask for selected tracks and filter one input BAM against it.
 
-    Output BAM files:
+    If export_bam is enabled, writes two BAM files:
     - filtered: reads that do NOT overlap the generated mask
     - excluded: reads that DO overlap the generated mask
+    Otherwise, only the read exclusion report is generated.
     """
-    if shutil.which("samtools") is None:
-        raise RuntimeError("samtools not found in PATH, cannot filter BAM")
+    if pysam is None:
+        raise RuntimeError("pysam is required for report generation and BAM filtering")
 
     input_bam_path = Path(input_bam)
     if not input_bam_path.exists() or not input_bam_path.is_file():
@@ -747,7 +469,13 @@ def filter_bam(
     # Fail fast on initial-file incompatibility before any mask computation.
     ref_dir = Path(db_root) / ref
     reference_seq_sizes = ref_dir / f"{ref}.sizes"
-    validate_initial_bam_reference_compatibility(input_bam_path, reference_seq_sizes)
+    validate_initial_bam_reference_compatibility(
+        input_bam_path,
+        reference_seq_sizes,
+        bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
+        bwa_max_gap_opens=bwa_max_gap_opens,
+        bwa_seed_length=bwa_seed_length,
+    )
 
     sorted_tracks = sorted(set(normalized_tracks))
 
@@ -783,50 +511,39 @@ def filter_bam(
         for key in {track.track_name, track.identity.query_species, track.query_name, track.track_name.split("_k")[0]}:
             track_to_tags.setdefault(key, set()).update(tags)
 
-    filtered_bam = Path(output_filtered_bam) if output_filtered_bam else _default_output_bam(input_bam_path, "filtered")
-    excluded_bam = Path(output_excluded_bam) if output_excluded_bam else _default_output_bam(input_bam_path, "excluded")
     report_tsv = Path(output_report_tsv) if output_report_tsv else _default_output_table(input_bam_path)
-    filtered_bam.parent.mkdir(parents=True, exist_ok=True)
-    excluded_bam.parent.mkdir(parents=True, exist_ok=True)
     report_tsv.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        "samtools",
-        "view",
-        "-h",
-        "-b",
-        "-L",
-        str(merged_mask),
-        "-U",
-        str(filtered_bam),
-        "-o",
-        str(excluded_bam),
-        str(input_bam_path),
-    ]
-    log(" ".join(cmd), "C")
-    subprocess.run(cmd, check=True)
-
-    log(f"samtools view -c {str(input_bam_path)}", "C")
-    n_total = int(subprocess.check_output(["samtools", "view", "-c", str(input_bam_path)], text=True).strip())
-    log(f"samtools view -c {str(filtered_bam)}", "C")
-    n_filtered = int(subprocess.check_output(["samtools", "view", "-c", str(filtered_bam)], text=True).strip())
-    log(f"samtools view -c {str(excluded_bam)}", "C")
-    n_excluded = int(subprocess.check_output(["samtools", "view", "-c", str(excluded_bam)], text=True).strip())
-
-    for bam_path in (filtered_bam, excluded_bam):
-        try:
-            log(f"samtools index {str(bam_path)}", "C")
-            subprocess.run(["samtools", "index", str(bam_path)], check=True)
-        except subprocess.CalledProcessError:
-            log(f"Could not index BAM (possibly unsorted): {bam_path}", "W")
-
-    report_path = _write_read_exclusion_report(
+    filtered_bam: Optional[Path] = None
+    excluded_bam: Optional[Path] = None
+    read_tracks, read_tags, excluded_read_ids, n_total, n_excluded, n_total_records = _filter_bam_with_mask(
         input_bam=input_bam_path,
         mask_path=merged_mask,
-        output_report_tsv=report_tsv,
         track_to_tags=track_to_tags,
     )
-    log(f"Read exclusion report written: {report_path}", "S")
+    report_path = write_filtration_report(
+        output_report_tsv=report_tsv,
+        read_tracks=read_tracks,
+        read_tags=read_tags,
+    )
+    n_filtered = max(0, n_total - n_excluded)
+
+    if export_bam:
+        filtered_bam = Path(output_filtered_bam) if output_filtered_bam else _default_output_bam(input_bam_path, "filtered")
+        excluded_bam = Path(output_excluded_bam) if output_excluded_bam else _default_output_bam(input_bam_path, "excluded")
+        log("Filtering BAM from excluded read IDs...", "I")
+        filter_bam_from_reads_id(
+            input_bam=input_bam_path,
+            excluded_read_ids=excluded_read_ids,
+            output_filtered_bam=filtered_bam,
+            output_excluded_bam=excluded_bam,
+        )
+
+        for bam_path in (filtered_bam, excluded_bam):
+            try:
+                pysam.index(str(bam_path))
+            except Exception:
+                log(f"Could not index BAM (possibly unsorted): {bam_path}", "W")
 
     return {
         "mask": merged_mask,
@@ -836,5 +553,132 @@ def filter_bam(
         "n_total": n_total,
         "n_filtered": n_filtered,
         "n_excluded": n_excluded,
+        "n_total_records": n_total_records,
     }
+
+# -- Report generation related functions --
+
+def write_filtration_report(
+    output_report_tsv: Path,
+    read_tracks: Dict[str, Set[str]],
+    read_tags: Dict[str, Set[str]],
+) -> Path:
+    """Write one line per read_id with exclusion flag, overlapping tracks and tags."""
+    output_report_tsv.parent.mkdir(parents=True, exist_ok=True)
+    with output_report_tsv.open("w", encoding="utf-8") as handle:
+        handle.write("read_id\texcluded\toverlapped\ttags\n")
+        for read_id, track_set in read_tracks.items():
+            tracks = sorted(track_set)
+            tags = sorted(read_tags.get(read_id, set()))
+            excluded = "true" if tracks else "false"
+            overlapped = ",".join(tracks)
+            joined_tags = ",".join(tags)
+            handle.write(f"{read_id}\t{excluded}\t{overlapped}\t{joined_tags}\n")
+    return output_report_tsv
+
+# -- Filtration related functions --
+
+def _filter_bam_with_mask(
+    input_bam: Path,
+    mask_path: Path,
+    track_to_tags: Optional[Dict[str, Set[str]]] = None,
+) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Set[str], int, int, int]:
+    """Compute per-read overlaps/tags and read-id exclusion set in one BAM pass."""
+    if pysam is None:
+        raise RuntimeError("pysam is required to compute read-level overlap data")
+
+    log("Identifying overlapping reads...", "I")
+    track_to_tags = track_to_tags or {}
+    intervals_by_chrom = _load_mask_from_tracks(mask_path)
+    interval_index_by_chrom: Dict[str, Tuple[List[int], List[Tuple[int, int, Set[str]]]]] = {
+        chrom: ([interval[0] for interval in intervals], intervals)
+        for chrom, intervals in intervals_by_chrom.items()
+    }
+    read_tracks: Dict[str, Set[str]] = {}
+    read_tags: Dict[str, Set[str]] = {}
+    excluded_read_ids: Set[str] = set()
+    n_total_records = 0
+    n_excluded_records = 0
+
+    track_to_tags_get = track_to_tags.get
+
+    with pysam.AlignmentFile(str(input_bam), "rb") as bam:
+        for read in bam.fetch(until_eof=True):
+            n_total_records += 1
+            read_id = read.query_name
+            if not read_id:
+                continue
+
+            if read_id not in read_tracks:
+                read_tracks[read_id] = set()
+                read_tags[read_id] = set()
+
+            if read.is_unmapped or read.reference_name is None:
+                continue
+
+            read_start = read.reference_start
+            read_end = read.reference_end
+            if read_start is None or read_end is None:
+                continue
+
+            read_chrom = read.reference_name
+
+            overlapped_tracks = _collect_overlapping_tracks(
+                chrom=read_chrom,
+                read_start=read_start,
+                read_end=read_end,
+                interval_index_by_chrom=interval_index_by_chrom,
+            )
+            if overlapped_tracks:
+                excluded_read_ids.add(read_id)
+                n_excluded_records += 1
+            read_tracks[read_id].update(overlapped_tracks)
+            for track_name in overlapped_tracks:
+                read_tags[read_id].update(track_to_tags_get(track_name, set()))
+
+    n_total_reads = len(read_tracks)
+    n_excluded_reads = len(excluded_read_ids)
+    return (
+        read_tracks,
+        read_tags,
+        excluded_read_ids,
+        n_total_reads,
+        n_excluded_reads,
+        n_total_records,
+    )
+
+
+def filter_bam_from_reads_id(
+    input_bam: Path,
+    excluded_read_ids: Set[str],
+    output_filtered_bam: Path,
+    output_excluded_bam: Path,
+) -> Tuple[int, int, int]:
+    """Split BAM in one pysam pass using excluded read IDs."""
+
+    log(f"Splitting BAM into excluded/filtered files based on filtration...", "I")
+
+    if pysam is None:
+        raise RuntimeError("pysam is required to filter BAM from read IDs")
+
+    output_filtered_bam.parent.mkdir(parents=True, exist_ok=True)
+    output_excluded_bam.parent.mkdir(parents=True, exist_ok=True)
+
+    n_total_records = 0
+    n_excluded_records = 0
+
+    with pysam.AlignmentFile(str(input_bam), "rb") as bam:
+        with pysam.AlignmentFile(str(output_filtered_bam), "wb", template=bam) as filtered_handle:
+            with pysam.AlignmentFile(str(output_excluded_bam), "wb", template=bam) as excluded_handle:
+                for read in bam.fetch(until_eof=True):
+                    n_total_records += 1
+                    read_id = read.query_name
+                    if read_id and read_id in excluded_read_ids:
+                        excluded_handle.write(read)
+                        n_excluded_records += 1
+                    else:
+                        filtered_handle.write(read)
+
+    n_filtered_records = n_total_records - n_excluded_records
+    return n_total_records, n_filtered_records, n_excluded_records
 
