@@ -69,6 +69,29 @@ def valid_database(db_root: Union[str, Path]) -> bool:
 		return False
 	return True
 
+def clean_db(db_root: Path) -> int:
+	"""Delete all BED files inside one WizardEye database root."""
+	bed_files = sorted(path for path in Path(db_root).rglob("*.bed") if path.is_file())
+
+	if not bed_files:
+		log(f"No BED file found under database'{db_root}'.", "I")
+		return 0
+
+	deleted = 0
+	total_bytes_deleted = 0
+	for bed_path in bed_files:
+		total_bytes_deleted += bed_path.stat().st_size
+		bed_path.unlink()
+		deleted += 1
+
+	log(f"Deleted {deleted} BED file(s) from database '{db_root}'.", "S")
+	log(
+		f"Disk space saved: {total_bytes_deleted / (1024 * 1024):.2f} Mo "
+		f"({total_bytes_deleted} bytes).",
+		"S",
+	)
+	return deleted
+
 # -- Track classes and functions --
 @dataclass(frozen=True)
 class TrackParameters:
@@ -124,12 +147,12 @@ class Track:
 		return self.track_dir / "param.yaml"
 
 	@property
-	def mappability_all_bw(self) -> Path:
-		return self.track_dir / "mappability_all.bw"
+	def map_all_bw(self) -> Path:
+		return self.track_dir / "map_all.bw"
 
 	@property
-	def mappability_uniq_bw(self) -> Path:
-		return self.track_dir / "mappability_uniq.bw"
+	def map_uniq_bw(self) -> Path:
+		return self.track_dir / "map_uniq.bw"
 
 	@property
 	def query_name(self) -> str:
@@ -137,7 +160,7 @@ class Track:
 		return str(query_name)
 
 	def exists(self) -> bool:
-		return self.mappability_all_bw.exists() and self.mappability_uniq_bw.exists()
+		return self.map_all_bw.exists() and self.map_uniq_bw.exists()
 
 	def to_dict(self) -> Dict:
 		return {
@@ -298,8 +321,8 @@ def import_track(
 	query_species: str,
 	kmer_length: int,
 	offset_step: int,
-	mappability_all_bw: Union[str, Path],
-	mappability_uniq_bw: Union[str, Path],
+	map_all_bw: Union[str, Path],
+	map_uniq_bw: Union[str, Path],
 	db_root: Union[str, Path],
 	input_fasta: Optional[Union[str, Path]] = None,
 	reference_fasta: Optional[Union[str, Path]] = None,
@@ -315,12 +338,12 @@ def import_track(
 	"""Import an externally generated track by copying BigWig files and writing param.yaml."""
 	db_root = Path(db_root)
 
-	all_bw_src = Path(mappability_all_bw)
-	uniq_bw_src = Path(mappability_uniq_bw)
+	all_bw_src = Path(map_all_bw)
+	uniq_bw_src = Path(map_uniq_bw)
 	if not all_bw_src.exists() or not all_bw_src.is_file():
-		raise FileNotFoundError(f"mappability_all.bw source file not found: {all_bw_src}")
+		raise FileNotFoundError(f"map_all.bw source file not found: {all_bw_src}")
 	if not uniq_bw_src.exists() or not uniq_bw_src.is_file():
-		raise FileNotFoundError(f"mappability_uniq.bw source file not found: {uniq_bw_src}")
+		raise FileNotFoundError(f"map_uniq.bw source file not found: {uniq_bw_src}")
 
 	track = Track.from_param(
 		db_root=db_root,
@@ -344,8 +367,8 @@ def import_track(
 		)
 	track_dir.mkdir(parents=True, exist_ok=True)
 
-	all_bw_dst = track_dir / "mappability_all.bw"
-	uniq_bw_dst = track_dir / "mappability_uniq.bw"
+	all_bw_dst = track_dir / "map_all.bw"
+	uniq_bw_dst = track_dir / "map_uniq.bw"
 	shutil.copy2(all_bw_src, all_bw_dst)
 	shutil.copy2(uniq_bw_src, uniq_bw_dst)
 
@@ -377,7 +400,7 @@ def import_track(
 
 	track.info = {
 		"generation_date": datetime.now().isoformat(timespec="seconds"),
-		"wizardeye_version": "dev",
+		"wizardeye_version": PACKAGE_VERSION,
 		"reference": str(reference_path) if reference_path else ref_species,
 		"reference_fasta_md5": computed_ref_md5,
 		"input": str(input_path) if input_path else query_species,
@@ -393,8 +416,8 @@ def import_track(
 		},
 		"imported_track": True,
 		"import_sources": {
-			"mappability_all_bw": str(all_bw_src.resolve()),
-			"mappability_uniq_bw": str(uniq_bw_src.resolve()),
+			"map_all_bw": str(all_bw_src.resolve()),
+			"map_uniq_bw": str(uniq_bw_src.resolve()),
 		},
 	}
 
@@ -403,8 +426,8 @@ def import_track(
 	return {
 		"track_dir": track_dir,
 		"param_yaml": param_yaml,
-		"mappability_all_bw": all_bw_dst,
-		"mappability_uniq_bw": uniq_bw_dst,
+		"map_all_bw": all_bw_dst,
+		"map_uniq_bw": uniq_bw_dst,
 	}
 
 def get_tracks(
@@ -650,10 +673,10 @@ def print_available_species(ref_species: str, db_root: Union[str, Path]) -> Path
 		return " | ".join(str(v).ljust(widths[i]) for i, v in enumerate(values))
 
 	log(f"> {ref_species}", "I")
-	log(_format_row(headers), "I")
-	log("-+-".join("-" * w for w in widths), "I")
+	print(_format_row(headers))
+	print("-+-".join("-" * w for w in widths))
 	for row in rows:
-		log(_format_row(row), "I")
+		print(_format_row(row))
 
 
 def print_full_catalogue(db_root: Union[str, Path]) -> None:

@@ -13,6 +13,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from .version import PACKAGE_VERSION
 from .utils import log
 from .utils import file_md5
 from .utils import (
@@ -39,17 +40,17 @@ def export_mapping_bigwig_files(bam_file: Path, out_dir: Path, kmer_length: int)
 			"pysam is required to export BigWig files. Install it with: pip install pysam"
 		)
 
-	cov_map_bg = out_dir / "mappability_all.bg"
-	cov_uniq_bg = out_dir / "mappability_uniq.bg"
-	cov_map_bw = out_dir / "mappability_all.bw"
-	cov_uniq_bw = out_dir / "mappability_uniq.bw"
+	cov_map_bg = out_dir / "map_all.bg"
+	cov_uniq_bg = out_dir / "map_uniq.bg"
+	cov_map_bw = out_dir / "map_all.bw"
+	cov_uniq_bw = out_dir / "map_uniq.bw"
 	seq_sizes = out_dir / "chrom.sizes"
 
 	write_bedgraph(get_mapping_intervals(bam_file, kmer_length), cov_map_bg)
 	write_bedgraph(get_unique_mapping_intervals(bam_file, kmer_length), cov_uniq_bg)
 	covered_bp = {
-		"mappability_all": count_covered_bases_from_bedgraph(cov_map_bg),
-		"mappability_uniq": count_covered_bases_from_bedgraph(cov_uniq_bg),
+		"map_all": count_covered_bases_from_bedgraph(cov_map_bg),
+		"map_uniq": count_covered_bases_from_bedgraph(cov_uniq_bg),
 	}
 	write_seq_sizes_from_bam(bam_file, seq_sizes)
 
@@ -334,7 +335,7 @@ def create_mappability_track(
 	param_yaml = out_dir / "param.yaml"
 	param_content = {
 		"generation_date": datetime.now().isoformat(timespec="seconds"),
-		"wizardeye_version": "dev",
+		"wizardeye_version": PACKAGE_VERSION,
 		"reference": str(input_target),
 		"reference_fasta_md5": target_md5,
 		"track_id": str(manual_track_id) if manual_track_id else None,
@@ -352,8 +353,8 @@ def create_mappability_track(
 			"-t": n_threads,
 		},
 		"covered_bases": {
-			"mappability_all_bp": covered_bp["mappability_all"],
-			"mappability_uniq_bp": covered_bp["mappability_uniq"],
+			"map_all_bp": covered_bp["map_all"],
+			"map_uniq_bp": covered_bp["map_uniq"],
 		},
 	}
 	if param_content["track_id"] is None:

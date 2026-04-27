@@ -12,6 +12,7 @@ from .mappability import create_mappability_track
 from .db import (
 	import_track,
 	init_db,
+	clean_db,
 	print_full_catalogue,
 	update_track_tags,
 	valid_database,
@@ -45,6 +46,7 @@ def _version_callback(value: bool) -> None:
 		raise typer.Exit(code=0)
 
 # -- CLI commands --
+
 @app.callback(invoke_without_command=True)
 def common_options(
 	version: Optional[bool] = typer.Option(
@@ -62,9 +64,35 @@ def common_options(
 def database(
 	init: bool = typer.Option(False, help="Path to the database root directory."),
 	catalogue: bool = typer.Option(False, "-c", "--catalogue", help="Print the full database catalogue after initialization."),
+	clean: bool = typer.Option(False, "--clean", help="Delete all .bed files from the database (asks for confirmation)."),
+	update_track_tags_action: bool = typer.Option(
+		False,
+		"--update-track-tags",
+		help="Replace tags for one existing track (requires full track parameters).",
+	),
+	update_ref: Optional[str] = typer.Option(None, "-r", "--ref", help="Reference identifier of the track to update."),
+	update_track: Optional[str] = typer.Option(None, "--track", help="Track query identifier to update."),
+	update_kmer_length: Optional[int] = typer.Option(None, "-k", "--kmer-length", help="Track k-mer length."),
+	update_offset_step: Optional[int] = typer.Option(None, "-w", "--offset-step", help="Track sliding window/offset step."),
+	update_bwa_missing_prob_err_rate: Optional[float] = typer.Option(None, "-bn", help="Track BWA aln -n value."),
+	update_bwa_max_gap_opens: Optional[int] = typer.Option(None, "-bo", help="Track BWA aln -o value."),
+	update_bwa_seed_length: Optional[int] = typer.Option(None, "-bl", help="Track BWA aln -l value."),
+	new_tags: Optional[List[str]] = typer.Option(
+		None,
+		"-t",
+		"--tag",
+		"--tags",
+		help="Replacement tags for the track (comma-separated).",
+	),
+	yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt for --clean."),
 	db_root: str = typer.Option(..., "-d", "--db-root", help="Path to the database root directory."),
 	):
 	print_starter_message()
+
+	selected_actions = sum([1 if init else 0, 1 if catalogue else 0, 1 if clean else 0, 1 if update_track_tags_action else 0])
+	if selected_actions > 1:
+		log("Please choose only one database action among --init, --catalogue, --clean, and --update-track-tags.", "E")
+		raise typer.Exit(code=1)
 	
 	if init:
 		try:
@@ -74,6 +102,92 @@ def database(
 			raise typer.Exit(code=1)
 	elif catalogue:
 		print_full_catalogue(db_root)
+		raise typer.Exit(code=0)
+	elif clean:
+		if not valid_database(db_root):
+			log(f"To initialize the database, run 'database --init {db_root}'", "E")
+			raise typer.Exit(code=1)
+		
+		if not yes:
+			log(
+				f"About to delete the masks cached in '{db_root}'. This will only impact filtering time.",
+				"W",
+			)
+			answer = typer.prompt("Enter 'yes' to confirm cleanup", default="No")
+			if answer.lower() not in ["yes", "y"]:
+				log("Cleanup cancelled.", "I")
+				raise typer.Exit(code=0)
+		
+		clean_db(db_root=db_root)
+		raise typer.Exit(code=0)
+	elif update_track_tags_action:
+		if not valid_database(db_root):
+			log(f"To initialize the database, run 'database --init {db_root}'", "E")
+			raise typer.Exit(code=1)
+
+		required_params = {
+			"--ref": update_ref,
+			"--track": update_track,
+			"--kmer-length": update_kmer_length,
+			"--offset-step": update_offset_step,
+			"-bn": update_bwa_missing_prob_err_rate,
+			"-bo": update_bwa_max_gap_opens,
+			"-bl": update_bwa_seed_length,
+			"--tags": new_tags,
+		}
+		missing = [name for name, value in required_params.items() if value is None]
+		if missing:
+			log(
+				"--update-track-tags requires all track parameters. Missing: " + ", ".join(missing),
+				"E",
+			)
+			raise typer.Exit(code=1)
+
+		parsed_new_tags = from_charlist_to_list(new_tags, lowercase=True)
+		if not parsed_new_tags:
+			log("No replacement tags provided. Use --tags with at least one tag.", "E")
+			raise typer.Exit(code=1)
+
+		if not check_track_exists(
+			ref_species=update_ref,
+			query_species=update_track,
+			kmer_length=update_kmer_length,
+			offset_step=update_offset_step,
+			db_root=db_root,
+			bwa_missing_prob_err_rate=update_bwa_missing_prob_err_rate,
+			bwa_max_gap_opens=update_bwa_max_gap_opens,
+			bwa_seed_length=update_bwa_seed_length,
+		):
+			log(
+				f"Track does not exist for ref='{update_ref}', track='{update_track}', "
+				f"k={update_kmer_length}, w={update_offset_step}, "
+				f"-n={float(update_bwa_missing_prob_err_rate):g}, "
+				f"-o={update_bwa_max_gap_opens}, -l={update_bwa_seed_length}.",
+				"E",
+			)
+			raise typer.Exit(code=1)
+
+		try:
+			updated_yaml, old_tags, updated_tags = update_track_tags(
+				ref_species=update_ref,
+				query_species=update_track,
+				kmer_length=update_kmer_length,
+				offset_step=update_offset_step,
+				tags=parsed_new_tags,
+				db_root=db_root,
+				bwa_missing_prob_err_rate=update_bwa_missing_prob_err_rate,
+				bwa_max_gap_opens=update_bwa_max_gap_opens,
+				bwa_seed_length=update_bwa_seed_length,
+			)
+		except FileNotFoundError as e:
+			log(str(e), "E")
+			raise typer.Exit(code=1)
+
+		old_tags_str = ", ".join(old_tags) if old_tags else "-"
+		new_tags_str = ", ".join(updated_tags) if updated_tags else "-"
+		log(f"Track tags updated in: {updated_yaml}", "S")
+		log(f"Previous tags: {old_tags_str}", "I")
+		log(f"New tags: {new_tags_str}", "I")
 		raise typer.Exit(code=0)
 	elif not valid_database(db_root):
 		log(f"To initialize the database, run 'database --init {db_root}'", "E")
@@ -252,6 +366,17 @@ def filter(
 		"--cross-stringency",
 		help="Stringency threshold in [0.0, 1.0].",
 	),
+	considere_all: bool = typer.Option(
+		False,
+		"--considere_all",
+		"--considere-all",
+		help="Use map_all.bw instead of map_uniq.bw to build the exclusion mask.",
+	),
+	no_cache: bool = typer.Option(
+		False,
+		"--no-cache",
+		help="Disable mask caching: recompute track masks and avoid writing cache files.",
+	),
 	output_filtered_bam: Optional[str] = typer.Option(
 		None,
 		"-o",
@@ -299,6 +424,8 @@ def filter(
 	log(f"Associated BWA parameters: -n {bwa_missing_prob_err_rate}, -o {bwa_max_gap_opens}, -l {bwa_seed_length}", "I")
 	log(f"Requested track generation parameters: -k {kmer_length}, -w {offset_step}", "I")
 	log(f"Requested stringency threshold: {cross_stringency}", "I")
+	log(f"Mask source mode: {'all k-mers (hard filtering)' if considere_all else 'unique k-mers (default filtering)'}", "I")
+	log(f"Mask cache mode: {'disabled (--no-cache)' if no_cache else 'enabled (default)'}", "I")
 
 	if exclude_tags and exclude_tracks:
 		log("Cannot use both --exclude-tags and --exclude-tracks at the same time for filtering. Please choose one.", "E")
@@ -393,6 +520,8 @@ def filter(
 			bwa_max_gap_opens=bwa_max_gap_opens,
 			bwa_seed_length=bwa_seed_length,
 			stringency=cross_stringency,
+			consider_all=considere_all,
+			no_cache=no_cache,
 			n_threads=n_threads,
 			output_filtered_bam=output_filtered_bam,
 			output_excluded_bam=output_excluded_bam,
@@ -457,6 +586,12 @@ def export(
 		"-rc",
 		"--cross-stringency",
 		help="Stringency threshold in [0.0, 1.0].",
+	),
+	considere_all: bool = typer.Option(
+		False,
+		"--considere_all",
+		"--considere-all",
+		help="Use map_all.bw instead of map_uniq.bw to build the exported mask.",
 	),
 	db_root: str = typer.Option(..., "-d", "--db-root", help="Path to the database root directory."),
 	output_bed: Optional[str] = typer.Option(
@@ -551,7 +686,8 @@ def export(
 		log(f"Specified tags: {', '.join(requested_tags)}", "I")
 
 	log(f"Following tracks will be exported: {', '.join(valid_tracks)}", "I")
-
+	log(f"Mask source mode: {'all k-mers (hard filtering)' if considere_all else 'unique k-mers (default filtering)'}", "I")
+	
 	try:
 		merged_bed = generate_mask(
 			ref_species=ref,
@@ -559,6 +695,7 @@ def export(
 			kmer_length=kmer_length,
 			offset_step=offset_step,
 			cross_stringency=cross_stringency,
+			consider_all=considere_all,
 			n_threads=n_threads,
 			db_root=db_root,
 			output_file=output_bed,
@@ -585,11 +722,11 @@ def import_tracks(
 	query: str = typer.Option(..., "-i", "--input", help="Query/input species name for the track."),
 	kmer_length: int = typer.Option(..., "-k", help="K-mer size used to generate the imported track."),
 	offset_step: int = typer.Option(..., "-w", "--offset-step", "--sliding-window", help="Offset/sliding window used to generate the imported track."),
-	mappability_all_bw: str = typer.Option(
-		..., "-ma", "--mappability-all-bw", help="Path to mappability_all.bw generated externally."
+	map_all_bw: str = typer.Option(
+		..., "-ma", "--map-all-bw", help="Path to map_all.bw generated externally."
 	),
-	mappability_uniq_bw: str = typer.Option(
-		..., "-mu", "--mappability-uniq-bw", help="Path to mappability_uniq.bw generated externally."
+	map_uniq_bw: str = typer.Option(
+		..., "-mu", "--map-uniq-bw", help="Path to map_uniq.bw generated externally."
 	),
 	input_fasta: Optional[str] = typer.Option(
 		None,
@@ -654,8 +791,8 @@ def import_tracks(
 			query_species=query,
 			kmer_length=kmer_length,
 			offset_step=offset_step,
-			mappability_all_bw=mappability_all_bw,
-			mappability_uniq_bw=mappability_uniq_bw,
+			map_all_bw=map_all_bw,
+			map_uniq_bw=map_uniq_bw,
 			db_root=db_root,
 			input_fasta=input_fasta,
 			reference_fasta=reference_fasta,
@@ -680,8 +817,8 @@ def import_tracks(
 
 	log(f"Track imported in: {result['track_dir']}", "S")
 	log(f"param.yaml written to: {result['param_yaml']}", "S")
-	log(f"mappability_all BigWig stored at: {result['mappability_all_bw']}", "S")
-	log(f"mappability_uniq BigWig stored at: {result['mappability_uniq_bw']}", "S")
+	log(f"map_all BigWig stored at: {result['map_all_bw']}", "S")
+	log(f"map_uniq BigWig stored at: {result['map_uniq_bw']}", "S")
 	raise typer.Exit(code=0)
 
 # -- Entry point --

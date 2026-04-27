@@ -89,8 +89,8 @@ The database is a directory containing sub-directories representing targets and 
 database/
 ├── hg19/                           # reference
 │   ├── sus_scrofa_k35_w1_n1_o2_l1/ # a track divided and aligned on the reference
-│   │   ├── mappability_all.bw      # all overlapping k-mers
-│   │   ├── mappability_uniq.bw     # unique overlapping k-mers
+│   │   ├── map_all.bw      	    # all overlapping k-mers
+│   │   ├── map_uniq.bw             # unique overlapping k-mers
 │   │   └── info.yaml               # information about the track
 ...
 │   ├── ref.md5                     # reference md5
@@ -98,7 +98,25 @@ database/
 └──  info.yaml                      # information about the database
 ```
 
-Every subdirectory contains two `bigWig` files that can be opened in a traditional genome browser. The `mappability_all.bw` file represents, for every position of the `reference.fa` genome, the number of overlapping k-mers from the `risky` sequences, while `mappability_uniq.bw` contains only unique k-mers, i.e., k-mers that overlap only this area of the genome. These two files allow you to compute stringency.
+Every subdirectory contains two `bigWig` files that can be opened in a traditional genome browser. The `map_all.bw` file represents, for every position of the `reference.fa` genome, the number of overlapping k-mers from the `risky` sequences, while `map_uniq.bw` contains only unique k-mers, i.e., k-mers that overlap only this area of the genome. These two files allow you to compute stringency.
+
+##### Update a track
+
+You can update tags of an existing track from the database command by providing the full track-defining parameters and the replacement tags:
+
+```
+wizardeye database --update-track-tags -d /path/to/database \
+	-r hg19 --track bos_taurus -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 \
+	--tags Mammalia,Ruminantia
+```
+
+##### Database cache
+
+Note that masks generated during filtration are cached in the database, to make next filtrations quicker. You can avoid that specifying `--no-cache` before filtration> You can delete the cache using the following command:
+
+```
+wizardeye database --clean -d /path/to/database
+```
 
 ### Create a new track
 
@@ -130,11 +148,13 @@ Once you have a representative database, you can use it to filter out reads from
 wizardeye filter -i alignment.bam -r hg19 --exclude-tags Cave -k 35 -s 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database
 ```
 
-This will filter out all reads that can be ambiguously aligned to your target if they come from a source with a tag listed in `--exclude-tags`.
+This will filter out all reads that can be ambiguously aligned to your target if they come from a source with a tag listed in `--exclude-tags`. 
 
 For `filter`, `-r` must be the reference identifier already present in your WizardEye database (for example `hg19`), and `-d/--db-root` is mandatory.
 
-You can also filter out all reads based on specific tracks:
+By default, WizardEye only considers reads that can be aligned with a single position in the reference. However, if you want to exclude reads that can be aligned with multiple positions, and then be even more restrictive, specify the additional parameter `--considere-all`.
+
+You can also filter out reads based on specific tracks:
 
 ```
 wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -d /path/to/database
@@ -164,6 +184,7 @@ Unique k-mers are defined as the k-mers without BWA `XA` tag and with `MAPQ>0`.
 
 This behavior aims to reproduce the [Heng Li's seqbility](https://github.com/lh3/misc/tree/cc0f36a9a19f35765efb9387389d9f3a6756f08f/seq/seqbility) logic, which is not directly usable in a cross-mappability context. 
 
+If `--considere-all` is used, the same behavior and formulae are still used but uniqueness is simply no longer required.
 
 ##### Frequency
 
@@ -214,14 +235,14 @@ If you already computed a track outside WizardEye, you can import it manually by
 
 ```
 wizardeye import -d /path/to/database -r ref -i input -k 35 -w 20 \
-	--mappability-all-bw /path/to/mappability_all.bw \
-	--mappability-uniq-bw /path/to/mappability_uniq.bw \
+	--map-all-bw /path/to/map_all.bw \
+	--map-uniq-bw /path/to/map_uniq.bw \
 	--reference-fasta /path/to/reference.fa \
 	--input-fasta /path/to/input.fa \
 	-bn 0.01 -bo 2 -bl 16500 -j 8 \
 	-t Mammalia,Carnivora
 ```
-This command creates the target/track directory, copies the two BigWig files as `mappability_all.bw` and `mappability_uniq.bw`, and writes a `param.yaml` with the provided generation metadata.
+This command creates the target/track directory, copies the two BigWig files as `map_all.bw` and `map_uniq.bw`, and writes a `param.yaml` with the provided generation metadata.
 
 # Go beyond WizardEye limits
 
@@ -229,4 +250,4 @@ This command creates the target/track directory, copies the two BigWig files as 
 
 Note that you can specify a Kraken output using `-kro /path/to/input` and `-krl level_of_filtering` in order to complete your filtering using the Kraken evolution-related method. This combination is useful to remove both reads that belong to completely different organisms and reads that can be ambiguous between closely related organisms.
 
-*Last update of this documentation: beta-0.0.2.*
+*Last update of this documentation: beta-0.0.3.*

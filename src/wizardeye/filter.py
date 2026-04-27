@@ -30,12 +30,14 @@ def generate_mask(
     kmer_length: int,
     offset_step: int,
     cross_stringency: float,
+    consider_all: bool = False,
     n_threads: int = 1,
     db_root: str = "database",
     output_file: Optional[str] = None,
     bwa_missing_prob_err_rate: Optional[float] = None,
     bwa_max_gap_opens: Optional[int] = None,
     bwa_seed_length: Optional[int] = None,
+    no_cache: bool = False,
 ) -> Path:
     """
     Generate overlap BED files for selected inputs and one merged mask BED.
@@ -111,6 +113,7 @@ def generate_mask(
 
     ref_dir = Path(db_root) / ref_species
     stringency_label = str(cross_stringency)
+    source_label = "all" if consider_all else "uniq"
 
     # Keep one deterministic merged-mask path per exact track selection/parameters.
     sorted_track_names = sorted({track.track_name for track in selected_tracks})
@@ -118,15 +121,21 @@ def generate_mask(
 
     if output_file:
         merged_mask_bed = Path(output_file)
+    elif no_cache:
+        with tempfile.NamedTemporaryFile(prefix="wizardeye_mask_", suffix=".bed", delete=False) as tmp_handle:
+            merged_mask_bed = Path(tmp_handle.name)
     else:
         merged_mask_bed = ref_dir / (
             f"mask_s{stringency_label}_k{kmer_length}_o{offset_step}"
-            f"_t{len(sorted_track_names)}_{track_fingerprint}.bed"
+            f"_{source_label}_t{len(sorted_track_names)}_{track_fingerprint}.bed"
         )
 
-    if merged_mask_bed.exists():
+    if not no_cache and merged_mask_bed.exists():
         log(f"Reusing existing mask... \033[0;90m({merged_mask_bed})\033[0m", "I")
         return merged_mask_bed
+
+    if no_cache:
+        merged_mask_bed.parent.mkdir(parents=True, exist_ok=True)
 
     per_track_beds: List[Tuple[str, Path]] = []
 
@@ -145,6 +154,8 @@ def generate_mask(
                     kmer_length,
                     offset_step,
                     cross_stringency,
+                    consider_all,
+                    no_cache,
                 )
                 for track in selected_tracks
             ]
@@ -158,10 +169,22 @@ def generate_mask(
                 kmer_length=kmer_length,
                 offset_step=offset_step,
                 cross_stringency=cross_stringency,
+                consider_all=consider_all,
+                no_cache=no_cache,
             ))
 
-    merge_bed_files(per_track_beds, merged_mask_bed)
-    log(f"Merged mask BED written to {merged_mask_bed}", "S")
+    try:
+        log(f"Merging {len(per_track_beds)} BED masks into one unique mask...", "I")
+        merge_bed_files(per_track_beds, merged_mask_bed)
+    finally:
+        if no_cache:
+            for _, per_track_bed in per_track_beds:
+                try:
+                    per_track_bed.unlink(missing_ok=True)
+                except TypeError:
+                    if per_track_bed.exists():
+                        per_track_bed.unlink()
+    log(f"Merged BED mask cached to {merged_mask_bed}", "S")
     return merged_mask_bed
 
 def compute_stringency(
@@ -278,36 +301,45 @@ def _build_mask_from_track(
     kmer_length: int,
     offset_step: int,
     cross_stringency: float,
+    consider_all: bool = False,
+    no_cache: bool = False,
 ) -> Tuple[str, Path]:
     """Compute one track BED mask for a selected input and return (track name, BED path)."""
     track_dir = track.track_dir
     track_name = track.track_name
+    source_label = "all" if consider_all else "uniq"
 
     # Store overlap BED with the track data so lookup/save stay within the track folder.
-    per_input_bed = track_dir / f"overlap_{track_name}_s{stringency_label}.bed"
-    if per_input_bed.exists():
+    if no_cache:
+        with tempfile.NamedTemporaryFile(prefix=f"wizardeye_{track_name}_", suffix=".bed", delete=False) as tmp_handle:
+            per_input_bed = Path(tmp_handle.name)
+    else:
+        per_input_bed = track_dir / f"mask_{track_name}_s{stringency_label}_{source_label}.bed"
+
+    if not no_cache and per_input_bed.exists():
         log(f"Reusing existing mask for {track_name}... \n\033[0;90m({per_input_bed})\033[0m", "I")
         return track_name, per_input_bed
 
-    uniq_bw = track_dir / "mappability_uniq.bw"
-    if not uniq_bw.exists():
+    source_bw_name = "map_all.bw" if consider_all else "map_uniq.bw"
+    source_bw = track_dir / source_bw_name
+    if not source_bw.exists():
         raise ValueError(
-            f"Missing required mappability_uniq.bw for selected track '{track_name}' in {track_dir}"
+            f"Missing required {source_bw_name} for selected track '{track_name}' in {track_dir}"
         )
 
     compute_mask_bed_from_bigwig(
-        uniq_bw=uniq_bw,
+        source_bw=source_bw,
         kmer_length=kmer_length,
         offset_step=offset_step,
         cross_stringency=cross_stringency,
         output_bed=per_input_bed,
     )
 
-    log(f"Overlap BED written for track '{track_name}': {per_input_bed}", "S")
+    log(f"BED mask cached for '{track_name}': {per_input_bed}", "S")
     return track_name, per_input_bed
 
 def compute_mask_bed_from_bigwig(
-    uniq_bw: Path,
+    source_bw: Path,
     kmer_length: int,
     offset_step: int,
     cross_stringency: float,
@@ -324,16 +356,16 @@ def compute_mask_bed_from_bigwig(
         tmp_bg_path = Path(tmp_handle.name)
 
     try:
-        log(f"Converting track to bedGraph for overlap computation: {uniq_bw}", "I")
-        log(f"{tool} {str(uniq_bw)} {str(tmp_bg_path)}", "C")
-        subprocess.run([tool, str(uniq_bw), str(tmp_bg_path)], check=True)
+        log(f"Converting track to bedGraph for overlap computation: {source_bw}", "I")
+        log(f"{tool} {str(source_bw)} {str(tmp_bg_path)}", "C")
+        subprocess.run([tool, str(source_bw), str(tmp_bg_path)], check=True)
 
         threshold = cross_stringency * (kmer_length / offset_step)
         bedtools = shutil.which("bedtools")
         awk = shutil.which("awk")
         if not (bedtools and awk):
             raise RuntimeError(
-                "bedtools and awk are required to compute mask from mappability_uniq.bw"
+                "bedtools and awk are required to compute mask from map_uniq.bw"
             )
 
         awk_script = f'OFS="\\t" {{ if (($4 + 0) >= {threshold:.12f}) print $1, $2, $3; }}'
@@ -435,6 +467,8 @@ def filter_bam(
     bwa_max_gap_opens: Optional[int] = None,
     bwa_seed_length: Optional[int] = None,
     stringency: float = 0.99,
+    consider_all: bool = False,
+    no_cache: bool = False,
     n_threads: int = 1,
     output_filtered_bam: Optional[str] = None,
     output_excluded_bam: Optional[str] = None,
@@ -485,12 +519,14 @@ def filter_bam(
         kmer_length=kmer_length,
         offset_step=offset_step,
         cross_stringency=stringency,
+        consider_all=consider_all,
         n_threads=n_threads,
         db_root=db_root,
         output_file=None,
         bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
         bwa_max_gap_opens=bwa_max_gap_opens,
         bwa_seed_length=bwa_seed_length,
+        no_cache=no_cache,
     )
 
     tracks_for_params = get_tracks(
@@ -516,34 +552,43 @@ def filter_bam(
 
     filtered_bam: Optional[Path] = None
     excluded_bam: Optional[Path] = None
-    read_tracks, read_tags, excluded_read_ids, n_total, n_excluded, n_total_records = _filter_bam_with_mask(
-        input_bam=input_bam_path,
-        mask_path=merged_mask,
-        track_to_tags=track_to_tags,
-    )
-    report_path = write_filtration_report(
-        output_report_tsv=report_tsv,
-        read_tracks=read_tracks,
-        read_tags=read_tags,
-    )
-    n_filtered = max(0, n_total - n_excluded)
-
-    if export_bam:
-        filtered_bam = Path(output_filtered_bam) if output_filtered_bam else _default_output_bam(input_bam_path, "filtered")
-        excluded_bam = Path(output_excluded_bam) if output_excluded_bam else _default_output_bam(input_bam_path, "excluded")
-        log("Filtering BAM from excluded read IDs...", "I")
-        filter_bam_from_reads_id(
+    try:
+        read_tracks, read_tags, excluded_read_ids, n_total, n_excluded, n_total_records = _filter_bam_with_mask(
             input_bam=input_bam_path,
-            excluded_read_ids=excluded_read_ids,
-            output_filtered_bam=filtered_bam,
-            output_excluded_bam=excluded_bam,
+            mask_path=merged_mask,
+            track_to_tags=track_to_tags,
         )
+        report_path = write_filtration_report(
+            output_report_tsv=report_tsv,
+            read_tracks=read_tracks,
+            read_tags=read_tags,
+        )
+        n_filtered = max(0, n_total - n_excluded)
 
-        for bam_path in (filtered_bam, excluded_bam):
+        if export_bam:
+            filtered_bam = Path(output_filtered_bam) if output_filtered_bam else _default_output_bam(input_bam_path, "filtered")
+            excluded_bam = Path(output_excluded_bam) if output_excluded_bam else _default_output_bam(input_bam_path, "excluded")
+            log("Filtering BAM from excluded read IDs...", "I")
+            filter_bam_from_reads_id(
+                input_bam=input_bam_path,
+                excluded_read_ids=excluded_read_ids,
+                output_filtered_bam=filtered_bam,
+                output_excluded_bam=excluded_bam,
+            )
+
+            for bam_path in (filtered_bam, excluded_bam):
+                try:
+                    pysam.index(str(bam_path))
+                except Exception:
+                    log(f"Could not index BAM (possibly unsorted): {bam_path}", "W")
+    finally:
+        if no_cache:
+            # Clean up any temporary mask generated when cache is disabled.
             try:
-                pysam.index(str(bam_path))
-            except Exception:
-                log(f"Could not index BAM (possibly unsorted): {bam_path}", "W")
+                merged_mask.unlink(missing_ok=True)
+            except TypeError:
+                if merged_mask.exists():
+                    merged_mask.unlink()
 
     return {
         "mask": merged_mask,
@@ -587,7 +632,7 @@ def _filter_bam_with_mask(
     if pysam is None:
         raise RuntimeError("pysam is required to compute read-level overlap data")
 
-    log("Identifying overlapping reads...", "I")
+    log("Identifying overlapped reads...", "I")
     track_to_tags = track_to_tags or {}
     intervals_by_chrom = _load_mask_from_tracks(mask_path)
     interval_index_by_chrom: Dict[str, Tuple[List[int], List[Tuple[int, int, Set[str]]]]] = {
@@ -635,6 +680,9 @@ def _filter_bam_with_mask(
             read_tracks[read_id].update(overlapped_tracks)
             for track_name in overlapped_tracks:
                 read_tags[read_id].update(track_to_tags_get(track_name, set()))
+
+            if n_total_records % 100000 == 0:
+                log(f"\t\t{n_total_records} reads processed...", "I")
 
     n_total_reads = len(read_tracks)
     n_excluded_reads = len(excluded_read_ids)
