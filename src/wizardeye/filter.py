@@ -7,10 +7,11 @@ import bisect
 import shutil
 import subprocess
 import tempfile
+import math
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .db import get_tracks
 from .mappability import pysam
@@ -295,6 +296,12 @@ def _default_output_table(input_bam: Path) -> Path:
         return input_bam.with_suffix(".wizardeye.report.tsv")
     return Path(f"{str(input_bam)}.wizardeye.report.tsv")
 
+
+def _default_output_count_table(input_bam: Path) -> Path:
+    if input_bam.suffix.lower() == ".bam":
+        return input_bam.with_suffix(".wizardeye.counts.tsv")
+    return Path(f"{str(input_bam)}.wizardeye.counts.tsv")
+
 def _build_mask_from_track(
     track: Any,
     stringency_label: str,
@@ -337,6 +344,471 @@ def _build_mask_from_track(
 
     log(f"BED mask cached for '{track_name}': {per_input_bed}", "S")
     return track_name, per_input_bed
+
+def _format_count_value(value: float) -> str:
+    if math.isfinite(value) and abs(value - round(value)) <= 1e-9:
+        return str(int(round(value)))
+    return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def write_count_only_report(
+    output_report_tsv: Path,
+    rows: Iterable[Tuple[str, str, int, int, Dict[str, float]]],
+    track_columns: List[str],
+) -> Path:
+    """Write count-only report with one alignment line and one column per selected track."""
+    output_report_tsv.parent.mkdir(parents=True, exist_ok=True)
+    with output_report_tsv.open("w", encoding="utf-8") as handle:
+        header = ["read_id", "chr", "start", "stop"] + track_columns
+        handle.write("\t".join(header) + "\n")
+        for read_id, chrom, start, end, counts in rows:
+            values = [
+                read_id,
+                chrom,
+                str(start),
+                str(end),
+            ]
+            for track_name in track_columns:
+                values.append(_format_count_value(counts.get(track_name, 0.0)))
+            handle.write("\t".join(values) + "\n")
+    return output_report_tsv
+
+
+def _generate_count_only_report(
+    input_bam: Path,
+    selected_tracks: List[Any],
+    consider_all: bool,
+    output_report_tsv: Path,
+    n_threads: int,
+) -> Dict[str, int]:
+    """Generate per-alignment overlap counts from one selected BigWig source per track.
+
+    This implementation uses:
+    1) bigWigToBedGraph on selected source (`map_uniq.bw` or `map_all.bw`)
+    2) bedtools unionbedg to align depth columns across tracks
+    3) bedtools intersect to map aligned depth segments onto reads
+    """
+    if pysam is None:
+        raise RuntimeError("pysam is required for count-only report generation")
+
+    bigwig_to_bedgraph = shutil.which("bigWigToBedGraph")
+    if bigwig_to_bedgraph is None:
+        raise RuntimeError("bigWigToBedGraph not found in PATH, cannot produce count-only report")
+
+    bedtools = shutil.which("bedtools")
+    if bedtools is None:
+        raise RuntimeError("bedtools not found in PATH, cannot produce count-only report")
+
+    source_bw_name = "map_all.bw" if consider_all else "map_uniq.bw"
+    log(f"Count-mode enabled. Note that this process may take some time.", "W")
+
+    track_names: List[str] = []
+    tmp_bg_files: List[Path] = []
+    reads_bed_path: Optional[Path] = None
+    tmp_extra_files: List[Path] = []
+
+    def _convert_one_track_to_bg(track: Any) -> Tuple[str, Path]:
+        track_name = track.track_name
+        source_bw = track.map_all_bw if consider_all else track.map_uniq_bw
+        if not source_bw.exists():
+            raise FileNotFoundError(f"Missing required file for count-only mode: {source_bw}")
+
+        with tempfile.NamedTemporaryFile(prefix=f"wizardeye_{track_name}_", suffix=".bg", delete=False) as tmp_handle:
+            bg_path = Path(tmp_handle.name)
+
+        log(f"{bigwig_to_bedgraph} {source_bw} {bg_path}", "C")
+        subprocess.run([bigwig_to_bedgraph, str(source_bw), str(bg_path)], check=True)
+        return track_name, bg_path
+
+    try:
+        if n_threads > 1 and len(selected_tracks) > 1:
+            max_workers = min(n_threads, len(selected_tracks))
+            log(
+                f"Converting BigWig tracks in parallel for count-only mode ({len(selected_tracks)} tracks, {max_workers} workers)...",
+                "I",
+            )
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = [pool.submit(_convert_one_track_to_bg, track) for track in selected_tracks]
+                for future in as_completed(futures):
+                    track_name, bg_path = future.result()
+                    track_names.append(track_name)
+                    tmp_bg_files.append(bg_path)
+        else:
+            for track in selected_tracks:
+                track_name, bg_path = _convert_one_track_to_bg(track)
+                track_names.append(track_name)
+                tmp_bg_files.append(bg_path)
+
+        with tempfile.NamedTemporaryFile(prefix="wizardeye_reads_", suffix=".bed", delete=False) as tmp_reads:
+            reads_bed_path = Path(tmp_reads.name)
+
+        records: List[Tuple[int, str, str, int, int]] = []
+        read_contigs: Set[str] = set()
+        rec_indices_by_contig: Dict[str, List[int]] = {}
+        n_total_records = 0
+        n_mapped_records = 0
+        with reads_bed_path.open("w", encoding="utf-8") as reads_out:
+            with pysam.AlignmentFile(str(input_bam), "rb") as bam:
+                for read in bam.fetch(until_eof=True):
+                    n_total_records += 1
+                    read_id = read.query_name or ""
+                    if not read_id:
+                        continue
+                    if read.is_unmapped or read.reference_name is None:
+                        continue
+
+                    read_start = read.reference_start
+                    read_end = read.reference_end
+                    if read_start is None or read_end is None or read_end <= read_start:
+                        continue
+
+                    rec_idx = len(records)
+                    chrom = read.reference_name
+                    read_contigs.add(chrom)
+                    records.append((rec_idx, read_id, chrom, read_start, read_end))
+                    rec_indices_by_contig.setdefault(chrom, []).append(rec_idx)
+                    reads_out.write(f"{chrom}\t{read_start}\t{read_end}\t{rec_idx}\n")
+                    n_mapped_records += 1
+
+                    if n_total_records % 100000 == 0:
+                        log(f"\t\t{n_total_records} reads processed for count-only report...", "I")
+
+        # Split each bedGraph by contig with awk, restricted to contigs present in reads.
+        split_by_track: List[Dict[str, Path]] = [{} for _ in tmp_bg_files]
+        sorted_read_contigs = sorted(read_contigs)
+
+        def _split_one_track_by_contig(track_idx: int, bg_path: Path) -> Tuple[int, Dict[str, Path], List[Path]]:
+            created_paths: List[Path] = []
+            per_contig_paths: Dict[str, Path] = {}
+
+            # Keep only contigs that are present both in reads and in this track.
+            awk_unique_contigs = 'BEGIN{FS="\\t"} NF>=4{seen[$1]=1} END{for(c in seen) print c}'
+            log(f"awk '{awk_unique_contigs}' {bg_path}", "C")
+            contigs_output = subprocess.check_output(
+                ["awk", awk_unique_contigs, str(bg_path)],
+                text=True,
+            )
+            track_contigs = {line.strip() for line in contigs_output.splitlines() if line.strip()}
+            target_contigs = sorted(track_contigs.intersection(read_contigs))
+
+            with tempfile.NamedTemporaryFile(prefix=f"wizardeye_t{track_idx}_contigs_", suffix=".tsv", delete=False) as tmp_map:
+                contig_map_path = Path(tmp_map.name)
+            created_paths.append(contig_map_path)
+
+            with contig_map_path.open("w", encoding="utf-8") as map_out:
+                for contig in target_contigs:
+                    with tempfile.NamedTemporaryFile(
+                        prefix=f"wizardeye_t{track_idx}_",
+                        suffix=".bg",
+                        delete=False,
+                    ) as tmp_split:
+                        split_path = Path(tmp_split.name)
+                    created_paths.append(split_path)
+                    per_contig_paths[contig] = split_path
+                    map_out.write(f"{contig}\t{split_path}\n")
+
+            if target_contigs:
+                awk_script = (
+                    "BEGIN{FS=OFS=\"\\t\"} "
+                    "NR==FNR{map[$1]=$2; next} "
+                    "($1 in map){print >> map[$1]; close(map[$1])}"
+                )
+                log(
+                    f"awk '{awk_script}' {contig_map_path} {bg_path}",
+                    "C",
+                )
+                subprocess.run(
+                    ["awk", awk_script, str(contig_map_path), str(bg_path)],
+                    check=True,
+                )
+
+            return track_idx, per_contig_paths, created_paths
+
+        if n_threads > 1 and len(tmp_bg_files) > 1:
+            max_workers = min(n_threads, len(tmp_bg_files))
+            log(
+                f"Splitting tracks by contig in parallel ({len(tmp_bg_files)} tracks, {max_workers} workers)...",
+                "I",
+            )
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = [pool.submit(_split_one_track_by_contig, idx, bg) for idx, bg in enumerate(tmp_bg_files)]
+                for future in as_completed(futures):
+                    track_idx, per_contig_paths, created_paths = future.result()
+                    split_by_track[track_idx] = per_contig_paths
+                    tmp_extra_files.extend(created_paths)
+        else:
+            for idx, bg in enumerate(tmp_bg_files):
+                track_idx, per_contig_paths, created_paths = _split_one_track_by_contig(idx, bg)
+                split_by_track[track_idx] = per_contig_paths
+                tmp_extra_files.extend(created_paths)
+
+        # Keep only contigs that are present in reads and have data in at least one track.
+        all_contigs: Set[str] = set()
+        for contig in sorted_read_contigs:
+            for per_contig_paths in split_by_track:
+                split_path = per_contig_paths.get(contig)
+                if split_path is not None and split_path.exists() and split_path.stat().st_size > 0:
+                    all_contigs.add(contig)
+                    break
+
+        if all_contigs:
+            with tempfile.NamedTemporaryFile(prefix="wizardeye_empty_", suffix=".bg", delete=False) as tmp_empty:
+                empty_bg = Path(tmp_empty.name)
+            tmp_extra_files.append(empty_bg)
+
+            contig_union_outputs: Dict[str, Path] = {}
+
+            def _run_unionbedg_for_contig(contig: str) -> Tuple[str, Path]:
+                input_paths: List[Path] = []
+                for per_contig_paths in split_by_track:
+                    input_paths.append(per_contig_paths.get(contig, empty_bg))
+
+                with tempfile.NamedTemporaryFile(
+                    prefix=f"wizardeye_union_{contig}_",
+                    suffix=".bg",
+                    delete=False,
+                ) as tmp_contig_union:
+                    contig_out = Path(tmp_contig_union.name)
+                tmp_extra_files.append(contig_out)
+
+                log(
+                    f"{bedtools} unionbedg -i {' '.join(str(path) for path in input_paths)} > {contig_out}",
+                    "C",
+                )
+                with contig_out.open("w", encoding="utf-8") as contig_handle:
+                    subprocess.run(
+                        [bedtools, "unionbedg", "-i", *[str(path) for path in input_paths]],
+                        check=True,
+                        stdout=contig_handle,
+                    )
+                return contig, contig_out
+
+            sorted_contigs = sorted(all_contigs)
+            log(
+                f"Count-only contig set reduced to {len(sorted_contigs)} contigs present in both reads and tracks.",
+                "I",
+            )
+            if n_threads > 1 and len(sorted_contigs) > 1:
+                max_workers = min(n_threads, len(sorted_contigs))
+                log(
+                    f"Running unionbedg in parallel by contig ({len(sorted_contigs)} contigs, {max_workers} workers)...",
+                    "I",
+                )
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = [pool.submit(_run_unionbedg_for_contig, contig) for contig in sorted_contigs]
+                    for future in as_completed(futures):
+                        contig, contig_out = future.result()
+                        contig_union_outputs[contig] = contig_out
+            else:
+                for contig in sorted_contigs:
+                    contig, contig_out = _run_unionbedg_for_contig(contig)
+                    contig_union_outputs[contig] = contig_out
+
+        else:
+            sorted_contigs = []
+
+        records_by_idx: Dict[int, Tuple[str, str, int, int]] = {
+            rec_idx: (read_id, chrom, read_start, read_end)
+            for rec_idx, read_id, chrom, read_start, read_end in records
+        }
+
+        # Intersect reads with union bedgraph per contig in parallel to save memory
+        sorted_report_contigs = sorted_contigs
+        contig_intersect_files: Dict[str, Path] = {}
+
+        def _run_intersect_for_contig(contig: str) -> Tuple[str, Path]:
+            """Run bedtools intersect for a specific contig between its reads and union bedgraph."""
+            # Create temporary BED file for reads in this contig only
+            with tempfile.NamedTemporaryFile(
+                prefix=f"wizardeye_reads_{contig}_",
+                suffix=".bed",
+                delete=False,
+            ) as tmp_reads_contig:
+                reads_contig_path = Path(tmp_reads_contig.name)
+            tmp_extra_files.append(reads_contig_path)
+
+            # Write reads for this contig
+            with reads_contig_path.open("w", encoding="utf-8") as reads_contig_out:
+                for rec_idx in rec_indices_by_contig.get(contig, []):
+                    _, read_id, chrom, read_start, read_end = records[rec_idx]
+                    reads_contig_out.write(f"{chrom}\t{read_start}\t{read_end}\t{rec_idx}\n")
+
+            # Get union bedgraph for this contig
+            union_contig = contig_union_outputs.get(contig)
+            if union_contig is None or not union_contig.exists():
+                # Empty intersection file for this contig
+                with tempfile.NamedTemporaryFile(
+                    prefix=f"wizardeye_intersect_{contig}_",
+                    suffix=".tsv",
+                    delete=False,
+                ) as tmp_contig_intersect:
+                    contig_intersect = Path(tmp_contig_intersect.name)
+                tmp_extra_files.append(contig_intersect)
+                return contig, contig_intersect
+
+            # Run bedtools intersect for this contig
+            with tempfile.NamedTemporaryFile(
+                prefix=f"wizardeye_intersect_{contig}_",
+                suffix=".tsv",
+                delete=False,
+            ) as tmp_contig_intersect:
+                contig_intersect = Path(tmp_contig_intersect.name)
+            tmp_extra_files.append(contig_intersect)
+
+            log(
+                f"{bedtools} intersect -a {reads_contig_path} -b {union_contig} -wa -wb > {contig_intersect}",
+                "C",
+            )
+            with contig_intersect.open("w", encoding="utf-8") as intersect_out:
+                subprocess.run(
+                    [bedtools, "intersect", "-a", str(reads_contig_path), "-b", str(union_contig), "-wa", "-wb"],
+                    check=True,
+                    stdout=intersect_out,
+                )
+
+            return contig, contig_intersect
+
+        # Run intersects in parallel by contig
+        if n_threads > 1 and len(sorted_report_contigs) > 1:
+            max_workers = min(n_threads, len(sorted_report_contigs))
+            log(
+                f"Running bedtools intersect in parallel by contig ({len(sorted_report_contigs)} contigs, {max_workers} workers)...",
+                "I",
+            )
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = [pool.submit(_run_intersect_for_contig, contig) for contig in sorted_report_contigs]
+                for future in as_completed(futures):
+                    contig, contig_intersect = future.result()
+                    contig_intersect_files[contig] = contig_intersect
+        else:
+            for contig in sorted_report_contigs:
+                contig, contig_intersect = _run_intersect_for_contig(contig)
+                contig_intersect_files[contig] = contig_intersect
+
+        contig_output_files: Dict[str, Path] = {}
+
+        def _build_contig_table(contig: str) -> Tuple[str, Path]:
+            intersect_contig = contig_intersect_files.get(contig)
+            rec_indices = rec_indices_by_contig.get(contig, [])
+            counts_by_rec: Dict[int, List[float]] = {}
+
+            if intersect_contig is not None and intersect_contig.exists() and intersect_contig.stat().st_size > 0:
+                with intersect_contig.open("r", encoding="utf-8") as handle:
+                    for raw_line in handle:
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        parts = line.split("\t")
+                        if len(parts) < 7 + len(track_names):
+                            continue
+                        try:
+                            a_start = int(parts[1])
+                            a_end = int(parts[2])
+                            rec_idx = int(parts[3])
+                            b_start = int(parts[5])
+                            b_end = int(parts[6])
+                        except ValueError:
+                            continue
+
+                        overlap_start = max(a_start, b_start)
+                        overlap_end = min(a_end, b_end)
+                        overlap_len = overlap_end - overlap_start
+                        if overlap_len <= 0:
+                            continue
+
+                        if rec_idx not in counts_by_rec:
+                            counts_by_rec[rec_idx] = [0.0 for _ in track_names]
+                        counts_row = counts_by_rec[rec_idx]
+                        for col_idx in range(len(track_names)):
+                            try:
+                                depth = float(parts[7 + col_idx])
+                            except ValueError:
+                                continue
+                            if depth > 0:
+                                counts_row[col_idx] += overlap_len * depth
+
+            with tempfile.NamedTemporaryFile(prefix=f"wizardeye_report_{contig}_", suffix=".tsv", delete=False) as tmp_contig_out:
+                contig_out = Path(tmp_contig_out.name)
+            tmp_extra_files.append(contig_out)
+
+            with contig_out.open("w", encoding="utf-8") as out:
+                for rec_idx in rec_indices:
+                    rec_meta = records_by_idx.get(rec_idx)
+                    if rec_meta is None:
+                        continue
+                    read_id, chrom, read_start, read_end = rec_meta
+                    values = [read_id, chrom, str(read_start), str(read_end)]
+                    counts_row = counts_by_rec.get(rec_idx)
+                    if counts_row is None:
+                        counts_row = [0.0 for _ in track_names]
+                    values.extend(_format_count_value(value) for value in counts_row)
+                    out.write("\t".join(values) + "\n")
+
+            return contig, contig_out
+
+        if n_threads > 1 and len(sorted_report_contigs) > 1:
+            max_workers = min(n_threads, len(sorted_report_contigs))
+            log(
+                f"Building per-contig count tables in parallel ({len(sorted_report_contigs)} contigs, {max_workers} workers)...",
+                "I",
+            )
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = [pool.submit(_build_contig_table, contig) for contig in sorted_report_contigs]
+                for future in as_completed(futures):
+                    contig, contig_out = future.result()
+                    contig_output_files[contig] = contig_out
+        else:
+            for contig in sorted_report_contigs:
+                contig, contig_out = _build_contig_table(contig)
+                contig_output_files[contig] = contig_out
+
+        # Merge final report as requested: header + simple cat of per-contig files.
+        with tempfile.NamedTemporaryFile(prefix="wizardeye_report_header_", suffix=".tsv", delete=False) as tmp_header:
+            header_path = Path(tmp_header.name)
+        tmp_extra_files.append(header_path)
+        header_line = "\t".join(["read_id", "chr", "start", "stop"] + track_names) + "\n"
+        header_path.write_text(header_line, encoding="utf-8")
+
+        ordered_contig_outputs = [contig_output_files[contig] for contig in sorted_report_contigs if contig in contig_output_files]
+        cat_inputs = [header_path] + ordered_contig_outputs
+        if cat_inputs:
+            log(
+                f"cat {' '.join(str(path) for path in cat_inputs)} > {output_report_tsv}",
+                "C",
+            )
+            with output_report_tsv.open("w", encoding="utf-8") as final_out:
+                subprocess.run(
+                    ["cat", *[str(path) for path in cat_inputs]],
+                    check=True,
+                    stdout=final_out,
+                )
+
+        return {
+            "n_total_records": n_total_records,
+            "n_mapped_records": n_mapped_records,
+            "n_rows": n_mapped_records,
+        }
+    finally:
+        for extra_tmp in (reads_bed_path,):
+            if extra_tmp is None:
+                continue
+            try:
+                extra_tmp.unlink(missing_ok=True)
+            except TypeError:
+                if extra_tmp.exists():
+                    extra_tmp.unlink()
+        for path in tmp_extra_files:
+            try:
+                path.unlink(missing_ok=True)
+            except TypeError:
+                if path.exists():
+                    path.unlink()
+        for path in tmp_bg_files:
+            try:
+                path.unlink(missing_ok=True)
+            except TypeError:
+                if path.exists():
+                    path.unlink()
 
 def compute_mask_bed_from_bigwig(
     source_bw: Path,
@@ -474,6 +946,7 @@ def filter_bam(
     output_excluded_bam: Optional[str] = None,
     output_report_tsv: Optional[str] = None,
     export_bam: bool = False,
+    count_only: bool = False,
 ) -> Dict[str, object]:
     """Build a merged mask for selected tracks and filter one input BAM against it.
 
@@ -513,22 +986,6 @@ def filter_bam(
 
     sorted_tracks = sorted(set(normalized_tracks))
 
-    merged_mask = generate_mask(
-        ref_species=ref,
-        inputs=sorted_tracks,
-        kmer_length=kmer_length,
-        offset_step=offset_step,
-        cross_stringency=stringency,
-        consider_all=consider_all,
-        n_threads=n_threads,
-        db_root=db_root,
-        output_file=None,
-        bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-        bwa_max_gap_opens=bwa_max_gap_opens,
-        bwa_seed_length=bwa_seed_length,
-        no_cache=no_cache,
-    )
-
     tracks_for_params = get_tracks(
         ref_species=ref,
         kmer_length=kmer_length,
@@ -547,8 +1004,56 @@ def filter_bam(
         for key in {track.track_name, track.identity.query_species, track.query_name, track.track_name.split("_k")[0]}:
             track_to_tags.setdefault(key, set()).update(tags)
 
-    report_tsv = Path(output_report_tsv) if output_report_tsv else _default_output_table(input_bam_path)
+    if count_only:
+        report_tsv = Path(output_report_tsv) if output_report_tsv else _default_output_count_table(input_bam_path)
+    else:
+        report_tsv = Path(output_report_tsv) if output_report_tsv else _default_output_table(input_bam_path)
     report_tsv.parent.mkdir(parents=True, exist_ok=True)
+
+    # Count-only mode: produce one report from selected BigWig source, no mask/exclusion split.
+    if count_only:
+        selected_tracks = [
+            track
+            for track in tracks_for_params
+            if track.track_name in normalized_requested_tracks
+        ]
+        if not selected_tracks:
+            raise ValueError("No selected tracks available to compute count-only report")
+
+        stats = _generate_count_only_report(
+            input_bam=input_bam_path,
+            selected_tracks=selected_tracks,
+            consider_all=consider_all,
+            output_report_tsv=report_tsv,
+            n_threads=n_threads,
+        )
+        return {
+            "mask": None,
+            "filtered_bam": None,
+            "excluded_bam": None,
+            "report_tsv": report_tsv,
+            "n_total": stats["n_mapped_records"],
+            "n_filtered": stats["n_mapped_records"],
+            "n_excluded": 0,
+            "n_total_records": stats["n_total_records"],
+            "count_only": True,
+        }
+
+    merged_mask = generate_mask(
+        ref_species=ref,
+        inputs=sorted_tracks,
+        kmer_length=kmer_length,
+        offset_step=offset_step,
+        cross_stringency=stringency,
+        consider_all=consider_all,
+        n_threads=n_threads,
+        db_root=db_root,
+        output_file=None,
+        bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
+        bwa_max_gap_opens=bwa_max_gap_opens,
+        bwa_seed_length=bwa_seed_length,
+        no_cache=no_cache,
+    )
 
     filtered_bam: Optional[Path] = None
     excluded_bam: Optional[Path] = None

@@ -221,6 +221,19 @@ With `--export-bam`, WizardEye produces two more files:
 - a BAM `excluded` with the reads excluded by the filtration,
 - a BAM `filtered` with the reads kept by the filtration,
 
+With `--count-only`, WizardEye writes a per-alignment count matrix report (TSV) and does not generate filtered/excluded BAM files. In this mode, WizardEye reads only one BigWig source per selected track:
+
+- `map_uniq.bw` by default,
+- `map_all.bw` when `--considere-all` is enabled.
+
+Example:
+
+```
+wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos \
+	-k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database \
+	--count-only --report-output alignment.wizardeye.counts.tsv
+```
+
 ### Export a mask
 
 If you plan to use the same configuration often to filter your reads, it is highly recommended to export a mask in order to avoid recomputing it continuously:

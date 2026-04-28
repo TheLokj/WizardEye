@@ -393,6 +393,11 @@ def filter(
 		"--report-output",
 		help="Output TSV report with columns: read_id, excluded, overlapped, tags.",
 	),
+	count_only: bool = typer.Option(
+		False,
+		"--count-only",
+		help="Generate only a per-read/per-track overlap-count report from one track source (map_uniq.bw by default, map_all.bw with --considere-all).",
+	),
 	export_bam: bool = typer.Option(
 		False,
 		"--export-bam",
@@ -426,9 +431,15 @@ def filter(
 	log(f"Requested stringency threshold: {cross_stringency}", "I")
 	log(f"Mask source mode: {'all k-mers (hard filtering)' if considere_all else 'unique k-mers (default filtering)'}", "I")
 	log(f"Mask cache mode: {'disabled (--no-cache)' if no_cache else 'enabled (default)'}", "I")
+	if count_only:
+		log("Report mode: count-only (no filtered/excluded BAM generation).", "I")
 
 	if exclude_tags and exclude_tracks:
 		log("Cannot use both --exclude-tags and --exclude-tracks at the same time for filtering. Please choose one.", "E")
+		raise typer.Exit(code=1)
+
+	if count_only and export_bam:
+		log("--count-only cannot be combined with --export-bam. Disable one of them.", "E")
 		raise typer.Exit(code=1)
 
 	if exclude_tracks or exclude_tags:
@@ -527,6 +538,7 @@ def filter(
 			output_excluded_bam=output_excluded_bam,
 			output_report_tsv=output_report_tsv,
 			export_bam=export_bam,
+			count_only=count_only,
 		)
 	except FileNotFoundError as e:
 		log(str(e), "E")
@@ -544,15 +556,24 @@ def filter(
 	elapsed = time.perf_counter() - start_time
 	print("-" * 80)
 	
-	log(f"Filtration completed in {elapsed:.2f}s:\n\
-	 	\tTotal reads before filtration: {filter_result['n_total']}\n\
-	 	\tTotal reads after filtration: {filter_result['n_filtered']}\n\
-		\tTotal reads excluded: {filter_result['n_excluded']}", "S",)
+	if count_only:
+		log(
+			f"Count-only report completed in {elapsed:.2f}s:\n\
+	 		Total BAM records processed: {filter_result['n_total_records']}\n\
+	 		Mapped records reported: {filter_result['n_total']}",
+			"S",
+		)
+		log(f"Read overlap-count report saved at {filter_result['report_tsv']}", "S")
+	else:
+		log(f"Filtration completed in {elapsed:.2f}s:\n\
+	 		Total reads before filtration: {filter_result['n_total']}\n\
+	 		Total reads after filtration: {filter_result['n_filtered']}\n\
+			Total reads excluded: {filter_result['n_excluded']}", "S",)
 
-	log(f"Read exclusion report saved at {filter_result['report_tsv']}", "S")
-	if filter_result["filtered_bam"] is not None and filter_result["excluded_bam"] is not None:
-		log(f"Filtered BAM (kept reads): {filter_result['filtered_bam']}", "S")
-		log(f"Excluded BAM (masked reads): {filter_result['excluded_bam']}", "S")
+		log(f"Read exclusion report saved at {filter_result['report_tsv']}", "S")
+		if filter_result["filtered_bam"] is not None and filter_result["excluded_bam"] is not None:
+			log(f"Filtered BAM (kept reads): {filter_result['filtered_bam']}", "S")
+			log(f"Excluded BAM (masked reads): {filter_result['excluded_bam']}", "S")
 
 	log("Thank you for using WizardEye!", "S")
 
