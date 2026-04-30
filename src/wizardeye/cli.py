@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 
+"""Command line interface for WizardEye.
+"""
+
 import subprocess
 import time
 import typer
-
+import sys 
 from importlib import metadata
 from pathlib import Path
 from typing import List, Optional
@@ -22,16 +25,20 @@ from .db import (
 	get_tracks,
 	resolve_requested_track_names
 )
-from .filter import generate_mask, filter_bam
-from .utils import from_charlist_to_list, log, print_starter_message
-from .version import DISPLAY_VERSION, PACKAGE_VERSION
+from .filter import generate_global_mask, filter_bam, count_k_mers_on_bam
+from .utils import from_charlist_to_list, log
+from .version import DISPLAY_VERSION, PACKAGE_VERSION, print_version_message
 
-app = typer.Typer(help="Cross-mappability helper CLI.")
+app = typer.Typer(help="A Python tool to create, manage, and filter by cross-mappability tracks.")
 
 # -- Helper functions --
 
 def _get_runtime_version() -> str:
-	"""Return installed package version, or fallback display version in source mode."""
+	"""Get installed package version, or fallback display version in source mode.
+	
+	Returns:
+		str: The installed package version or the display version.
+	"""
 	try:
 		installed_version = metadata.version("wizardeye")
 		if installed_version == PACKAGE_VERSION:
@@ -41,9 +48,175 @@ def _get_runtime_version() -> str:
 		return DISPLAY_VERSION
 
 def _version_callback(value: bool) -> None:
+	"""Callback function to display version information if requested and exit.
+	
+	Args:
+		value (bool): The version flag value.
+	"""
 	if value:
 		typer.echo(f"WizardEye version: {_get_runtime_version()}")
 		raise typer.Exit(code=0)
+
+# -- Helper functions --
+
+def _get_valid_tracks_from_exclude_tracks(
+	exclude_tracks: Optional[List[str]],
+	ref: str,
+	kmer_length: Optional[int],
+	offset_step: Optional[int],
+	db_root: str,
+	bwa_missing_prob_err_rate: Optional[float],
+	bwa_max_gap_opens: Optional[int],
+	bwa_seed_length: Optional[int],
+	context: str = "filtering",
+) -> List[str]:
+	"""Get valid tracks from exclude_tracks parameter."""
+	if exclude_tracks is None:
+		return []
+	
+	requested_tracks = from_charlist_to_list(exclude_tracks)
+	available_tracks = get_tracks(
+		ref_species=ref,
+		kmer_length=kmer_length,
+		offset_step=offset_step,
+		db_root=db_root,
+		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
+		bwa_max_gap_opens=bwa_max_gap_opens,
+		bwa_seed_length=bwa_seed_length,
+	)
+	return resolve_requested_track_names(
+		requested_tracks=requested_tracks,
+		available_tracks=available_tracks,
+		ref=ref,
+		context=context,
+	)
+
+def _get_valid_tracks_from_exclude_tags(
+	exclude_tags: Optional[List[str]],
+	ref: str,
+	kmer_length: Optional[int],
+	offset_step: Optional[int],
+	db_root: str,
+	bwa_missing_prob_err_rate: Optional[float],
+	bwa_max_gap_opens: Optional[int],
+	bwa_seed_length: Optional[int],
+) -> List[str]:
+	"""Get valid tracks from exclude_tags parameter."""
+	if exclude_tags is None:
+		return []
+	
+	requested_tags = from_charlist_to_list(exclude_tags)
+	return from_tags_get_tracks(
+		ref_species=ref,
+		tags=requested_tags,
+		kmer_length=kmer_length,
+		offset_step=offset_step,
+		db_root=db_root,
+		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
+		bwa_max_gap_opens=bwa_max_gap_opens,
+		bwa_seed_length=bwa_seed_length,
+	)
+
+def _request_tracks_from_args(ref: str, input_bam: str, db_root: str, 
+	exclude_tags: str, exclude_tracks: str,
+	bwa_missing_prob_err_rate: float, bwa_max_gap_opens: int, bwa_seed_length:int ,
+	kmer_length: int, offset_step: int, 
+	considere_all: bool, no_cache: bool, 
+	cross_stringency: float) -> List[str]:
+	"""Validate CLI arguments and get corresponding tracks from database."""
+
+	# Control input
+	if ref is None:
+		log("Reference (-r) must be specified.", "E")
+		raise typer.Exit(code=1)
+
+	if ref not in get_refs(db_root):
+		log(f"Reference '{ref}' not found in database '{db_root}'.", "E")
+		raise typer.Exit(code=1)
+	
+	if not input_bam:
+		log("Input BAM (-i/--input) must be specified.", "E")
+		raise typer.Exit(code=1)
+
+	if exclude_tags and exclude_tracks:
+		log("Cannot use both --exclude-tags and --exclude-tracks at the same time for filtering. Please choose one.", "E")
+		raise typer.Exit(code=1)
+	
+	if exclude_tags is None and exclude_tracks is None:
+		log("Please provide either --exclude-tags or --exclude-tracks.", "E")
+		raise typer.Exit(code=1)
+	
+	if exclude_tracks or exclude_tags:
+		missing_params: List[str] = []
+		if kmer_length is None:
+			missing_params.append("-k")
+		if offset_step is None:
+			missing_params.append("-w")
+		if bwa_missing_prob_err_rate is None:
+			missing_params.append("-bn")
+		if bwa_max_gap_opens is None:
+			missing_params.append("-bo")
+		if bwa_seed_length is None:
+			missing_params.append("-bl")
+
+		if missing_params:
+			log(
+				"For safety, all requested track generation parameters are mandatory. "
+				f"Missing: {', '.join(missing_params)}",
+				"E",
+			)
+			raise typer.Exit(code=1)
+	
+	# Log requested parameters
+	colorful = (sys.stdout.isatty() and sys.stderr.isatty())
+	default = "\033[0;90m(default)\033[0m" if colorful else "(default)"
+	hard = "\033[0;33m(hard)\033[0m" if colorful else "(hard)"
+
+	log(f"Reference used: {ref}", "I")
+	log(f"Input alignment file to process: {input_bam}", "I")
+	log(f"Associated BWA parameters: -n {bwa_missing_prob_err_rate}, -o {bwa_max_gap_opens}, -l {bwa_seed_length}", "I")
+	log(f"Requested track generation parameters: -k {kmer_length}, -w {offset_step}", "I")
+	log(f"Mask source mode: {f'all k-mers {hard}' if considere_all else f'uniquely aligned k-mers {default}'}", "I")
+	log(f"Mask cache mode: {'disabled (--no-cache)' if no_cache else f'enabled {default}'}", "I")
+	if cross_stringency:
+		log(f"Requested mask stringency threshold: {cross_stringency}", "I")
+
+	if exclude_tracks:
+		valid_tracks = _get_valid_tracks_from_exclude_tracks(
+			exclude_tracks=exclude_tracks,
+			ref=ref,
+			kmer_length=kmer_length,
+			offset_step=offset_step,
+			db_root=db_root,
+			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
+			bwa_max_gap_opens=bwa_max_gap_opens,
+			bwa_seed_length=bwa_seed_length,
+			context="filtering",
+		)
+
+	if exclude_tags:
+		requested_tags = from_charlist_to_list(exclude_tags)
+		valid_tracks = _get_valid_tracks_from_exclude_tags(
+			exclude_tags=exclude_tags,
+			ref=ref,
+			kmer_length=kmer_length,
+			offset_step=offset_step,
+			db_root=db_root,
+			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
+			bwa_max_gap_opens=bwa_max_gap_opens,
+			bwa_seed_length=bwa_seed_length,
+		)
+
+		log(f"Requested tags to filter out: {', '.join(requested_tags)}", "I")
+	
+	if not valid_tracks:
+		log("No valid tracks were found from tags and parameters. Export cannot proceed.", "E")
+		raise typer.Exit(code=1)
+
+	excluded_tracks = "\n\t- ".join(valid_tracks)
+	log(f"Following tracks will be used in the calculation:\n\t- {excluded_tracks}", "I")
+
+	return valid_tracks
 
 # -- CLI commands --
 
@@ -57,19 +230,21 @@ def common_options(
 		is_eager=True,
 	),
 ):
-	"""Global CLI options shared by all commands."""
-	return
+    """Global CLI options shared by all commands."""
+    return
 
-@app.command(help="Initialize, validate, or inspect the WizardEye database.")
+@app.command(help="Initialize, validate, or inspect tracks in a WizardEye database.")
 def database(
+	db_root: str = typer.Option(..., "-d", "--db-root", help="Path to the database root directory."),
+
+	# Database management actions (mutually exclusive)
 	init: bool = typer.Option(False, help="Path to the database root directory."),
 	catalogue: bool = typer.Option(False, "-c", "--catalogue", help="Print the full database catalogue after initialization."),
 	clean: bool = typer.Option(False, "--clean", help="Delete all .bed files from the database (asks for confirmation)."),
-	update_track_tags_action: bool = typer.Option(
-		False,
-		"--update-track-tags",
-		help="Replace tags for one existing track (requires full track parameters).",
-	),
+	clean_yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt for --clean."),
+	
+	# Update track tags action (requires full track parameters
+	update_track_tags_action: bool = typer.Option(False, "--update-track-tags", help="Replace tags for one existing track (requires full track parameters)."),
 	update_ref: Optional[str] = typer.Option(None, "-r", "--ref", help="Reference identifier of the track to update."),
 	update_track: Optional[str] = typer.Option(None, "--track", help="Track query identifier to update."),
 	update_kmer_length: Optional[int] = typer.Option(None, "-k", "--kmer-length", help="Track k-mer length."),
@@ -77,23 +252,16 @@ def database(
 	update_bwa_missing_prob_err_rate: Optional[float] = typer.Option(None, "-bn", help="Track BWA aln -n value."),
 	update_bwa_max_gap_opens: Optional[int] = typer.Option(None, "-bo", help="Track BWA aln -o value."),
 	update_bwa_seed_length: Optional[int] = typer.Option(None, "-bl", help="Track BWA aln -l value."),
-	new_tags: Optional[List[str]] = typer.Option(
-		None,
-		"-t",
-		"--tag",
-		"--tags",
-		help="Replacement tags for the track (comma-separated).",
-	),
-	yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt for --clean."),
-	db_root: str = typer.Option(..., "-d", "--db-root", help="Path to the database root directory."),
+	new_tags: Optional[List[str]] = typer.Option(None, "-t", "--tag", "--tags", help="Replacement tags for the track (comma-separated).")
 	):
-	print_starter_message()
 
 	selected_actions = sum([1 if init else 0, 1 if catalogue else 0, 1 if clean else 0, 1 if update_track_tags_action else 0])
 	if selected_actions > 1:
 		log("Please choose only one database action among --init, --catalogue, --clean, and --update-track-tags.", "E")
 		raise typer.Exit(code=1)
 	
+	print_version_message()
+
 	if init:
 		try:
 			init_db(db_root)
@@ -108,11 +276,8 @@ def database(
 			log(f"To initialize the database, run 'database --init {db_root}'", "E")
 			raise typer.Exit(code=1)
 		
-		if not yes:
-			log(
-				f"About to delete the masks cached in '{db_root}'. This will only impact filtering time.",
-				"W",
-			)
+		if not clean_yes:
+			log(f"About to delete the masks cached in '{db_root}'. This will only impact filtering time.", "W")
 			answer = typer.prompt("Enter 'yes' to confirm cleanup", default="No")
 			if answer.lower() not in ["yes", "y"]:
 				log("Cleanup cancelled.", "I")
@@ -137,10 +302,7 @@ def database(
 		}
 		missing = [name for name, value in required_params.items() if value is None]
 		if missing:
-			log(
-				"--update-track-tags requires all track parameters. Missing: " + ", ".join(missing),
-				"E",
-			)
+			log("--update-track-tags requires all track parameters. Missing: " + ", ".join(missing), "E")
 			raise typer.Exit(code=1)
 
 		parsed_new_tags = from_charlist_to_list(new_tags, lowercase=True)
@@ -198,7 +360,7 @@ def database(
 
 # Main alignment command with all parameters for track generation
 # Same behavior that generate_cross_mappability_filter_bwa.sh 
-@app.command(help="Generate cross-mappability tracks from input FASTA files using bwa aln parameters.")
+@app.command(help="Generate cross-mappability tracks from input FASTA files using specific bwa aln parameters.")
 def align(
 	# Input parameters
 	input_fasta: Optional[List[str]] = typer.Option(
@@ -219,7 +381,7 @@ def align(
 	kmer_length: int = typer.Option(None, "-k", help="Length of k-mers to produce."),
 	offset_step: int = typer.Option(1, "-w", "--offset-step", "--sliding-window", help="Offset/sliding window step for k-mers."),
 	
-	#  Alignment parameters
+	# Alignment parameters
 	bwa_missing_prob_err_rate: float = typer.Option(0.01, "-bn", help="BWA aln -n."),
 	bwa_max_gap_opens: int = typer.Option(2, "-bo", help="BWA aln -o."),
 	bwa_seed_length: int = typer.Option(16500, "-bl", help="BWA aln -l."),
@@ -237,7 +399,7 @@ def align(
 	db_root: str = typer.Option(..., "-d", "--db-root", help="Path to the database root directory."),
 	force: bool = typer.Option(None, help="Force track creation even if it already exists."),
 ):
-	print_starter_message()
+	print_version_message()
 	start_time = time.perf_counter()
 
 	if input_fasta and input_target and kmer_length:
@@ -276,29 +438,6 @@ def align(
 				bwa_max_gap_opens,
 				bwa_seed_length,
 			) and not force:
-				if tag:
-					try:
-						updated_yaml, old_tags, new_tags = update_track_tags(
-							ref_species=Path(input_target).stem,
-							query_species=query_track_id,
-							kmer_length=kmer_length,
-							offset_step=offset_step,
-							tags=tag,
-							db_root=db_root,
-							bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-							bwa_max_gap_opens=bwa_max_gap_opens,
-							bwa_seed_length=bwa_seed_length,
-						)
-						old_tags_str = ", ".join(old_tags) if old_tags else "-"
-						new_tags_str = ", ".join(new_tags) if new_tags else "-"
-						log(f"Track already exists. Tags updated in: {updated_yaml}", "S")
-						log(f"Previous tags: {old_tags_str}", "I")
-						log(f"New tags: {new_tags_str}", "I")
-					except FileNotFoundError as e:
-						log(str(e), "E")
-						raise typer.Exit(code=1)
-					continue
-
 				log(
 					f"Track '{track_name}' already exists for reference '{Path(input_target).stem}', skipping track creation.",
 					"W",
@@ -333,7 +472,7 @@ def align(
 		log(f"Alignment completed in {elapsed:.2f}s", "S")
 		raise typer.Exit(code=0)
 
-	log(f"align requires BAM generation arguments (-i, -r, -k)", "E")
+	log(f"align requires a FASTA to split and align on a reference and the associated parameters (-i, -r, -k)", "E")
 	raise typer.Exit(code=1)
 
 @app.command(help="Filter an input BAM using selected cross-mappability tracks and stringency.")
@@ -412,107 +551,12 @@ def filter(
 	kmer_length: Optional[int] = typer.Option(None, "-k", help="K-mer length to filter on. Must match track generation parameter."),
 	offset_step: Optional[int] = typer.Option(None, "-w", "--offset-step", "--sliding-window", help="Offset/sliding window to filter on. Smaller, more sensitive."),
 ):
-	print_starter_message()
-
 	start_time = time.perf_counter()
-
-	if ref is None:
-		log("Reference (-r) must be specified.", "E")
-		raise typer.Exit(code=1)
-
-	if ref not in get_refs(db_root):
-		log(f"Reference '{ref}' not found in database '{db_root}'.", "E")
-		raise typer.Exit(code=1)
-	
-	log(f"Input alignment file to filter: {input_bam}", "I")
-	log(f"Target reference used: {ref}", "I")
-	log(f"Associated BWA parameters: -n {bwa_missing_prob_err_rate}, -o {bwa_max_gap_opens}, -l {bwa_seed_length}", "I")
-	log(f"Requested track generation parameters: -k {kmer_length}, -w {offset_step}", "I")
-	log(f"Requested stringency threshold: {cross_stringency}", "I")
-	log(f"Mask source mode: {'all k-mers (hard filtering)' if considere_all else 'unique k-mers (default filtering)'}", "I")
-	log(f"Mask cache mode: {'disabled (--no-cache)' if no_cache else 'enabled (default)'}", "I")
-	if count_only:
-		log("Report mode: count-only (no filtered/excluded BAM generation).", "I")
-
-	if exclude_tags and exclude_tracks:
-		log("Cannot use both --exclude-tags and --exclude-tracks at the same time for filtering. Please choose one.", "E")
-		raise typer.Exit(code=1)
-
-	if count_only and export_bam:
-		log("--count-only cannot be combined with --export-bam. Disable one of them.", "E")
-		raise typer.Exit(code=1)
-
-	if exclude_tracks or exclude_tags:
-		missing_params: List[str] = []
-		if kmer_length is None:
-			missing_params.append("-k")
-		if offset_step is None:
-			missing_params.append("-w")
-		if bwa_missing_prob_err_rate is None:
-			missing_params.append("-bn")
-		if bwa_max_gap_opens is None:
-			missing_params.append("-bo")
-		if bwa_seed_length is None:
-			missing_params.append("-bl")
-
-		if missing_params:
-			log(
-				"For filter safety, all requested track generation parameters are mandatory. "
-				f"Missing: {', '.join(missing_params)}",
-				"E",
-			)
-			raise typer.Exit(code=1)
-
-	if exclude_tracks:
-		requested_tracks = from_charlist_to_list(exclude_tracks)
-		available_tracks = get_tracks(
-			ref_species=ref,
-			kmer_length=kmer_length,
-			offset_step=offset_step,
-			db_root=db_root,
-			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-			bwa_max_gap_opens=bwa_max_gap_opens,
-			bwa_seed_length=bwa_seed_length,
-		)
-		valid_tracks = resolve_requested_track_names(
-			requested_tracks=requested_tracks,
-			available_tracks=available_tracks,
-			ref=ref,
-			context="filtering",
-		)
-
-		if not valid_tracks:
-			log("No valid tracks remain after validation. Filtering cannot proceed.", "E")
-			raise typer.Exit(code=1)
-
-	if exclude_tags:
-		requested_tags = from_charlist_to_list(exclude_tags)
-
-		valid_tracks = from_tags_get_tracks(
-			ref_species=ref,
-			tags=requested_tags,
-			kmer_length=kmer_length,
-			offset_step=offset_step,
-			db_root=db_root,
-			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-			bwa_max_gap_opens=bwa_max_gap_opens,
-			bwa_seed_length=bwa_seed_length,
-		)
-
-		if not valid_tracks:
-			log("No valid tracks were found from provided tags and parameters. Filtering cannot proceed.", "E")
-			raise typer.Exit(code=1)
-
-		log(f"Specified tags: {', '.join(requested_tags)}", "I")
-	
-	if exclude_tags is None and exclude_tracks is None:
-		log("Please provide either --exclude-tags or --exclude-tracks.", "E")
-		raise typer.Exit(code=1)
-
-	excluded_tracks = "\n\t- ".join(valid_tracks)
-	log(f"Following tracks will be used in filtering:\n\t- {excluded_tracks}", "I")
+	print_version_message()
+	valid_tracks = _request_tracks_from_args(ref, input_bam, db_root, exclude_tags, exclude_tracks, bwa_missing_prob_err_rate, 
+					bwa_max_gap_opens, bwa_seed_length, kmer_length, offset_step,
+					considere_all, no_cache, cross_stringency)
 	print("-" * 80)
-	
 	log(f"Starting filtration...", "I")
 
 	if not input_bam:
@@ -538,7 +582,6 @@ def filter(
 			output_excluded_bam=output_excluded_bam,
 			output_report_tsv=output_report_tsv,
 			export_bam=export_bam,
-			count_only=count_only,
 		)
 	except FileNotFoundError as e:
 		log(str(e), "E")
@@ -556,24 +599,15 @@ def filter(
 	elapsed = time.perf_counter() - start_time
 	print("-" * 80)
 	
-	if count_only:
-		log(
-			f"Count-only report completed in {elapsed:.2f}s:\n\
-	 		Total BAM records processed: {filter_result['n_total_records']}\n\
-	 		Mapped records reported: {filter_result['n_total']}",
-			"S",
-		)
-		log(f"Read overlap-count report saved at {filter_result['report_tsv']}", "S")
-	else:
-		log(f"Filtration completed in {elapsed:.2f}s:\n\
-	 		Total reads before filtration: {filter_result['n_total']}\n\
-	 		Total reads after filtration: {filter_result['n_filtered']}\n\
-			Total reads excluded: {filter_result['n_excluded']}", "S",)
+	log(f"Filtration completed in {elapsed:.2f}s:\n\
+		Total reads before filtration: {filter_result['n_total']}\n\
+		Total reads after filtration: {filter_result['n_filtered']}\n\
+		Total reads excluded: {filter_result['n_excluded']}", "S",)
 
-		log(f"Read exclusion report saved at {filter_result['report_tsv']}", "S")
-		if filter_result["filtered_bam"] is not None and filter_result["excluded_bam"] is not None:
-			log(f"Filtered BAM (kept reads): {filter_result['filtered_bam']}", "S")
-			log(f"Excluded BAM (masked reads): {filter_result['excluded_bam']}", "S")
+	log(f"Read exclusion report saved at {filter_result['report_tsv']}", "S")
+	if filter_result["filtered_bam"] is not None and filter_result["excluded_bam"] is not None:
+		log(f"Filtered BAM (kept reads): {filter_result['filtered_bam']}", "S")
+		log(f"Excluded BAM (masked reads): {filter_result['excluded_bam']}", "S")
 
 	log("Thank you for using WizardEye!", "S")
 
@@ -627,90 +661,16 @@ def export(
 		help="Number of threads for parallel overlap extraction from BigWig tracks.",
 	),
 ):
-	print_starter_message()
-	"""Export a merged BED mask using the same track-selection logic as `filter`."""
-	if not valid_database(db_root):
-		log(f"To initialize the database, run 'database --init {db_root}'", "E")
-		raise typer.Exit(code=1)
-
-	if ref not in get_refs(db_root):
-		log(f"Reference '{ref}' not found in database '{db_root}'.", "E")
-		raise typer.Exit(code=1)
-
-	if exclude_tags and exclude_tracks:
-		log("Cannot use both --exclude-tags and --exclude-tracks at the same time for export. Please choose one.", "E")
-		raise typer.Exit(code=1)
-
-	if exclude_tags is None and exclude_tracks is None:
-		log("Please provide either --exclude-tags or --exclude-tracks.", "E")
-		raise typer.Exit(code=1)
-
-	missing_params: List[str] = []
-	if kmer_length is None:
-		missing_params.append("-k")
-	if offset_step is None:
-		missing_params.append("-w")
-	if bwa_missing_prob_err_rate is None:
-		missing_params.append("-bn")
-	if bwa_max_gap_opens is None:
-		missing_params.append("-bo")
-	if bwa_seed_length is None:
-		missing_params.append("-bl")
-
-	if missing_params:
-		log(
-			"For export safety, all requested track generation parameters are mandatory. "
-			f"Missing: {', '.join(missing_params)}",
-			"E",
-		)
-		raise typer.Exit(code=1)
-
-	if exclude_tracks:
-		requested_tracks = from_charlist_to_list(exclude_tracks)
-		available_tracks = get_tracks(
-			ref_species=ref,
-			kmer_length=kmer_length,
-			offset_step=offset_step,
-			db_root=db_root,
-			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-			bwa_max_gap_opens=bwa_max_gap_opens,
-			bwa_seed_length=bwa_seed_length,
-		)
-		valid_tracks = resolve_requested_track_names(
-			requested_tracks=requested_tracks,
-			available_tracks=available_tracks,
-			ref=ref,
-			context="export",
-		)
-
-		if not valid_tracks:
-			log("No valid tracks remain after validation. Export cannot proceed.", "E")
-			raise typer.Exit(code=1)
-
-	if exclude_tags:
-		requested_tags = from_charlist_to_list(exclude_tags)
-		valid_tracks = from_tags_get_tracks(
-			ref_species=ref,
-			tags=requested_tags,
-			kmer_length=kmer_length,
-			offset_step=offset_step,
-			db_root=db_root,
-			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-			bwa_max_gap_opens=bwa_max_gap_opens,
-			bwa_seed_length=bwa_seed_length,
-		)
-
-		if not valid_tracks:
-			log("No valid tracks were found from provided tags and parameters. Export cannot proceed.", "E")
-			raise typer.Exit(code=1)
-
-		log(f"Specified tags: {', '.join(requested_tags)}", "I")
-
-	log(f"Following tracks will be exported: {', '.join(valid_tracks)}", "I")
-	log(f"Mask source mode: {'all k-mers (hard filtering)' if considere_all else 'unique k-mers (default filtering)'}", "I")
 	
+	"""Export a merged BED mask using the same track-selection logic as `filter`."""
+	print_version_message()
+	
+	valid_tracks = _request_tracks_from_args(ref, None, db_root, exclude_tags, exclude_tracks, bwa_missing_prob_err_rate, 
+					bwa_max_gap_opens, bwa_seed_length, kmer_length, offset_step,
+					considere_all, None, cross_stringency)
+					
 	try:
-		merged_bed = generate_mask(
+		merged_bed = generate_global_mask(
 			ref_species=ref,
 			inputs=valid_tracks,
 			kmer_length=kmer_length,
@@ -798,7 +758,7 @@ def import_tracks(
 	),
 	force: bool = typer.Option(False, help="Overwrite imported track files/metadata if the track already exists."),
 ):
-	print_starter_message()
+	print_version_message()
 	"""Import a track manually by providing BigWig files and generation parameters."""
 	if not valid_database(db_root):
 		log(f"To initialize the database, run 'database --init {db_root}'", "E")
@@ -842,7 +802,119 @@ def import_tracks(
 	log(f"map_uniq BigWig stored at: {result['map_uniq_bw']}", "S")
 	raise typer.Exit(code=0)
 
+@app.command(help="Count for each read the number of overlapping k-mers fron required tracks.")
+def count(
+
+	# Alignment parameters used to construct the BAM file
+	input_bam = typer.Option(None, "-i", "--input", help="Path to the BAM file to filter."),
+	ref: Optional[str] = typer.Option(None, "-r", help="Reference used for alignment."),
+
+	count_mode: Optional[str] = typer.Option("mean", "-m", "--mode", help="Count mode (mean, std, max, min, cov or sum)"),
+
+	bwa_missing_prob_err_rate: Optional[float] = typer.Option(None, "-bn", help="BWA aln -n used for alignment."),
+	bwa_max_gap_opens: Optional[int] = typer.Option(None, "-bo", help="BWA aln -o used for alignment."),
+	bwa_seed_length: Optional[int] = typer.Option(None, "-bl", help="BWA aln -l used for alignment."),
+	
+	# Track generation parameters
+	db_root: str = typer.Option(..., "-d", "--db-root", help="Path to the database root directory."),
+	kmer_length: Optional[int] = typer.Option(None, "-k", help="K-mer length to filter on. Must match track generation parameter."),
+	offset_step: Optional[int] = typer.Option(None, "-w", "--offset-step", "--sliding-window", help="Offset/sliding window to filter on. Smaller, more sensitive."),
+
+	# Filtration parameters
+	exclude_tags: Optional[List[str]] = typer.Option(
+		None,
+		"--exclude-tags",
+		help="Tag(s) to filter out. Comma-separated (e.g. tag1,tag2).",
+	),
+	exclude_tracks: Optional[List[str]] = typer.Option(
+		None,
+		"--exclude-tracks",
+		help="Track identifier(s) to filter out. Comma-separated (e.g. genius_species1, genius_species2).",
+	),
+	
+	considere_all: bool = typer.Option(
+		False,
+		"--considere_all",
+		"--considere-all",
+		help="Use map_all.bw instead of map_uniq.bw to build the exclusion mask.",
+	),
+	no_cache: bool = typer.Option(
+		False,
+		"--no-cache",
+		help="Disable mask caching: recompute track masks and avoid writing cache files.",
+	),
+
+	output_report_tsv: Optional[str] = typer.Option(
+		None,
+		"--report-output",
+		help="Output TSV report with columns: read_id, excluded, overlapped, tags.",
+	),
+	n_threads: int = typer.Option(
+		1,
+		"-j",
+		help="Number of threads for parallel overlap extraction from BigWig tracks.",
+	)
+	):
+	
+	start_time = time.perf_counter()
+
+	if count_mode not in ["mean", "std", "max", "min", "cov", "sum"]:
+		log(f"Invalid count mode {count_mode}. Available: mean, std, max, min, cov or sum.")
+		raise typer.Exit(1)
+
+	print_version_message()
+	valid_tracks = _request_tracks_from_args(ref, input_bam, db_root, exclude_tags, exclude_tracks, bwa_missing_prob_err_rate, 
+					bwa_max_gap_opens, bwa_seed_length, kmer_length, offset_step,
+					considere_all, no_cache, None)
+	
+	print("-" * 80)
+	log(f"Starting computing k-mers {count_mode} per read...", "I")
+
+	try:
+		count_result = count_k_mers_on_bam(
+			input_bam=input_bam,
+			ref=ref,
+			db_root=db_root,
+			exclude_tracks=valid_tracks,
+			kmer_length=kmer_length,
+			offset_step=offset_step,
+			count_mode=count_mode,
+			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
+			bwa_max_gap_opens=bwa_max_gap_opens,
+			bwa_seed_length=bwa_seed_length,
+			consider_all=considere_all,
+			n_threads=n_threads,
+			output_report_tsv=output_report_tsv,
+		)
+
+	except FileNotFoundError as e:
+		log(str(e), "E")
+		raise typer.Exit(code=1)
+	except ValueError as e:
+		log(str(e), "E")
+		raise typer.Exit(code=1)
+	except RuntimeError as e:
+		log(str(e), "E")
+		raise typer.Exit(code=2)
+	except subprocess.CalledProcessError as e:
+		log(f"Subprocess failed: {e}", "E")
+		raise typer.Exit(code=2)
+
+	elapsed = time.perf_counter() - start_time
+	print("-" * 80)
+	
+	log(
+		f"Count and stats computation completed in {elapsed:.2f}s:\n\
+		BAM records processed: {count_result['n_processed']}/{count_result['n_total_records']}\n",
+		"S"
+	)
+	log(f"Count report saved at {count_result['report_tsv']}", "S")
+	log("Thank you for using WizardEye!", "S")
+
+	raise typer.Exit(code=0)
+
 # -- Entry point --
 
 if __name__ == "__main__":
 	app()
+

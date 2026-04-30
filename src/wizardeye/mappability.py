@@ -1,44 +1,61 @@
 # -*- coding: utf-8 -*-
 
+"""Mappability track generation and export utilities for WizardEye.
+
+This Python module provides functions to create mappability tracks from input FASTA files
+by splitting a query sequence into k-mers and aligning them to a reference genome using BWA, 
+and exporting the results as BigWig files in order to fill the database. 
+
+This module is the direct Python implementation of the original generate_cross_mappability_filter_bwa.sh script, 
+with added features and optimizations.
+
+It includes utilities for handling temporary files, validating inputs, and saving track metadata.
+
+	See Also:
+		The original script: https://github.com/TheLokj/generate_cross_mappability_filter/blob/master/BWA/generate_cross_mappability_filter_bwa.sh
+"""
+
 import subprocess
 import shutil
 import yaml
-import tempfile
 import os
 import getpass
 
 from pathlib import Path
 from datetime import datetime
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .version import PACKAGE_VERSION
-from .utils import log
-from .utils import file_md5
 from .utils import (
-	count_covered_bases_from_bedgraph,
+	log,
+	run,
+	file_md5,
 	from_charlist_to_list,
-	write_bedgraph,
 	convert_bedgraph_to_bigwig,
 	write_seq_sizes_from_bam,
-	get_mapping_intervals,
-	get_unique_mapping_intervals,
+	iterate_mapping_intervals,
+	iterate_unique_mapping_intervals,
+	Intervals,
+	Interval,
 )
-
-try:
-	import pysam
-except ImportError:
-	pysam = None
 
 # -- WizardEye mappability utilities --
 
-def export_mapping_bigwig_files(bam_file: Path, out_dir: Path, kmer_length: int) -> Tuple[Path, Path, Dict[str, int]]:
-	"""Export BigWig tracks and return paths with covered-bases metrics for both masks."""
-	if pysam is None:
-		raise RuntimeError(
-			"pysam is required to export BigWig files. Install it with: pip install pysam"
-		)
+def from_alignment_to_bigWig(bam_file: Path, out_dir: Path, kmer_length: int) -> Tuple[Path, Path, Dict[str, int]]:
+	"""Convert alignment results to BigWig tracks.
+	
+	Args:
+		bam_file(Path): Path to the BAM file containing all mapped k-mers.
+		out_dir(Path): Directory where the output BigWig files and intermediate files will be saved.
+		kmer_length(int): Length of the k-mers used for mapping, needed for coverage calculations.
+
+	Returns:
+		Tuple[Path, Path, Dict[str, int] :
+			- Path: Path to the BigWig file for all mappings (map_all).
+			- Path: Path to the BigWig file for uniquely mapping k-mers (map_uniq).
+			- Dict[str, int]: dictionary with covered base counts for both masks, e.g. {"map_all": 123456, "map_uniq": 78910}.
+	"""
 
 	cov_map_bg = out_dir / "map_all.bg"
 	cov_uniq_bg = out_dir / "map_uniq.bg"
@@ -46,11 +63,19 @@ def export_mapping_bigwig_files(bam_file: Path, out_dir: Path, kmer_length: int)
 	cov_uniq_bw = out_dir / "map_uniq.bw"
 	seq_sizes = out_dir / "chrom.sizes"
 
-	write_bedgraph(get_mapping_intervals(bam_file, kmer_length), cov_map_bg)
-	write_bedgraph(get_unique_mapping_intervals(bam_file, kmer_length), cov_uniq_bg)
+	intervals_all = Intervals()
+	for chrom, start, end in iterate_mapping_intervals(bam_file, kmer_length):
+		intervals_all.append(Interval(chrom, start, end))
+	intervals_all.write_to_bedgraph(cov_map_bg)
+
+	intervals_uniq = Intervals()
+	for chrom, start, end in iterate_unique_mapping_intervals(bam_file, kmer_length):
+		intervals_uniq.append(Interval(chrom, start, end))
+	intervals_uniq.write_to_bedgraph(cov_uniq_bg)
+
 	covered_bp = {
-		"map_all": count_covered_bases_from_bedgraph(cov_map_bg),
-		"map_uniq": count_covered_bases_from_bedgraph(cov_uniq_bg),
+		"map_all": intervals_all.count_covered_bases(),
+		"map_uniq": intervals_uniq.count_covered_bases(),
 	}
 	write_seq_sizes_from_bam(bam_file, seq_sizes)
 
@@ -63,22 +88,32 @@ def export_mapping_bigwig_files(bam_file: Path, out_dir: Path, kmer_length: int)
 
 	return cov_map_bw, cov_uniq_bw, covered_bp
 
-# -- WizardEye mappability pipeline blocks --
+# --- WizardEye mappability pipeline blocks ---
 
-def align_chunk_to_bam(
-	chunk_fasta: Path,
-	input_target: Path,
+def align_with_bwa_aln(
+	input_fasta: Path,
+	reference: Path,
 	bwa_missing_prob_err_rate: float,
 	bwa_max_gap_opens: int,
 	bwa_seed_length: int,
 ) -> Path:
-	"""Align one chunk FASTA and return the produced BAM path."""
-	sai_file = chunk_fasta.with_suffix(".sai")
-	bam_file = chunk_fasta.with_suffix(".bam")
+	"""Align a FASTA file using bwa aln and return the path to the resulting BAM file containing mapped reads.
+	
+	Args:
+		input_fasta(Path): Path to the input FASTA file containing k-mers to align.
+		reference(Path): Path to the reference genome FASTA file that has been indexed with BWA.
+		bwa_missing_prob_err_rate(float): The -n parameter for bwa aln, controlling the maximum edit distance.
+		bwa_max_gap_opens(int): The -o parameter for bwa aln, controlling the maximum number of gap opens.
+		bwa_seed_length(int): The -l parameter for bwa aln, controlling the seed length.
+		
+	Returns:
+		Path: the BAM file containing the mapped reads for the input chunk.
+	"""
+	sai_file = input_fasta.with_suffix(".sai")
+	bam_file = input_fasta.with_suffix(".bam")
 
 	with sai_file.open("w", encoding="utf-8") as sai_out:
-		log(f"bwa aln -t 1 -n {bwa_missing_prob_err_rate} -o {bwa_max_gap_opens} -l {bwa_seed_length} {input_target} {chunk_fasta}", "C")
-		subprocess.run(
+		run(
 			[
 				"bwa",
 				"aln",
@@ -90,30 +125,29 @@ def align_chunk_to_bam(
 				str(bwa_max_gap_opens),
 				"-l",
 				str(bwa_seed_length),
-				str(input_target),
-				str(chunk_fasta),
+				str(reference),
+				str(input_fasta),
 			],
 			check=True,
 			stdout=sai_out,
 		)
 
 	with bam_file.open("wb") as bam_out:
-		log(f"bwa samse -n 1000000 {input_target} {sai_file} {chunk_fasta}", "C")
+		log(f"bwa samse -n 1000000 {reference} {sai_file} {input_fasta}", "C")
 		bwa_samse = subprocess.Popen(
 			[
 				"bwa",
 				"samse",
 				"-n",
 				"1000000",
-				str(input_target),
+				str(reference),
 				str(sai_file),
-				str(chunk_fasta),
+				str(input_fasta),
 			],
 			stdout=subprocess.PIPE,
 		)
 		try:
-			log(f"samtools view -b -F 4 -", "C")
-			subprocess.run(
+			run(
 				["samtools", "view", "-b", "-F", "4", "-"],
 				check=True,
 				stdin=bwa_samse.stdout,
@@ -127,7 +161,7 @@ def align_chunk_to_bam(
 		if return_code != 0:
 			raise subprocess.CalledProcessError(return_code, bwa_samse.args)
 
-	for tmp_file in (sai_file, chunk_fasta):
+	for tmp_file in (sai_file, input_fasta):
 		if tmp_file.exists():
 			tmp_file.unlink()
 
@@ -135,7 +169,7 @@ def align_chunk_to_bam(
 
 def create_mappability_track(
 	input_fasta,
-	input_target,
+	reference,
 	track_id,
 	kmer_length,
 	offset_step,
@@ -148,6 +182,25 @@ def create_mappability_track(
 	tags: Optional[List[str]] = None,
 	manual_track_id=None,
 ):
+	"""Pipeline to create a mappability track from an input FASTA file by aligning k-mers to a reference genome and exporting BigWig files.
+	
+	Args:
+		input_fasta: Path to the input FASTA file containing sequences to analyze.
+		reference: Path to the reference genome FASTA file that has been indexed with BWA.
+		track_id: Optional string to use as the track ID in metadata and naming. If not provided, it will be derived from the input FASTA name.
+		kmer_length: Length of the k-mers to generate from the input FASTA for alignment.
+		offset_step: Step size for the sliding window when generating k-mers. Default is 1 for fully overlapping k-mers.
+		chunk_size: Number of k-mers to include in each chunk for parallel alignment. Must be a positive integer.
+		n_threads: Number of threads to use for parallel alignment.
+		bwa_missing_prob_err_rate: The -n parameter for bwa aln, controlling the maximum edit distance.
+		bwa_max_gap_opens: The -o parameter for bwa aln, controlling the maximum number of gap opens.
+		bwa_seed_length: The -l parameter for bwa aln, controlling the seed length.
+		db_root: Root directory for the database where target-specific directories and track outputs will be saved. Default is "database".
+		tags: Optional list of tags to associate with the track in metadata.
+		manual_track_id: Optional string to use as the track ID in metadata and naming, overriding automatic derivation.
+	Returns:
+		Path to the directory where the generated track and its metadata are saved.
+	"""
 
 	# Validate inputs and prepare paths
 	input_fasta = Path(input_fasta)
@@ -218,8 +271,7 @@ def create_mappability_track(
 	bwt_file = input_target.with_suffix(input_target.suffix + ".bwt")
 	if not bwt_file.exists():
 		log(f"BWA index not found for {input_target}, running bwa index...", "I")
-		log(f"bwa index {input_target}", "C")
-		subprocess.run(["bwa", "index", str(input_target)], check=True)
+		run(["bwa", "index", str(input_target)], check=True)
 	else:
 		log(f"BWA index found for {input_target}, skipping index.", "I")
 
@@ -234,8 +286,7 @@ def create_mappability_track(
 		"-o", str(raw_kmer_fasta)
 	]
 	log(f"Splitting {input_fasta} into {kmer_length}-mers with a sliding window of {offset_step}...", "I")
-	log(f"seqkit sliding -W {kmer_length} -s {offset_step} {input_fasta} -o {raw_kmer_fasta}", "C")
-	subprocess.run(seqkit_cmd, check=True)
+	run(seqkit_cmd, check=True)
 
 	rmdup_cmd = [
 		"seqkit",
@@ -245,9 +296,8 @@ def create_mappability_track(
 		"-o",
 		str(kmer_fasta),
 	]
-	log("Deduplicating k-mers with seqkit rmdup -s (default behavior)...", "I")
-	log(f"seqkit rmdup -s {raw_kmer_fasta} -o {kmer_fasta}", "C")
-	subprocess.run(rmdup_cmd, check=True)
+	log("Deduplicating k-mers with seqkit rmdup -s...", "I")
+	run(rmdup_cmd, check=True)
 
 	log(f"Splitting k-mer FASTA into chunks of {chunk_size} sequences for parallel alignment...", "I")
 	chunk_dir = tmp_dir / f"{input_name}_chunks"
@@ -263,8 +313,7 @@ def create_mappability_track(
 		".fasta",
 		str(kmer_fasta),
 	]
-	log(f"seqkit split2 -s {chunk_size} -O {chunk_dir} --extension .fasta {kmer_fasta}", "C")
-	subprocess.run(chunk_cmd, check=True)
+	run(chunk_cmd, check=True)
 
 	for tmp_fasta in (raw_kmer_fasta, kmer_fasta):
 		if tmp_fasta.exists():
@@ -282,7 +331,7 @@ def create_mappability_track(
 	with ThreadPoolExecutor(max_workers=workers) as executor:
 		futures = [
 			executor.submit(
-				align_chunk_to_bam,
+				align_with_bwa_aln,
 				chunk_fasta,
 				input_target,
 				bwa_missing_prob_err_rate,
@@ -304,8 +353,7 @@ def create_mappability_track(
 		stdout=subprocess.PIPE,
 	)
 	try:
-		log(f"samtools sort -@ {workers} -o {bam_file} -", "C")
-		subprocess.run(
+		run(
 			["samtools", "sort", "-@", str(workers), "-o", str(bam_file), "-"],
 			check=True,
 			stdin=samtools_cat.stdout,
@@ -324,7 +372,7 @@ def create_mappability_track(
 
 	# Export only final BigWig depth tracks.
 	log("Exporting mappability BigWig tracks from temporary BAM...", "I")
-	cov_map_bw, cov_uniq_bw, covered_bp = export_mapping_bigwig_files(
+	cov_map_bw, cov_uniq_bw, covered_bp = from_alignment_to_bigWig(
 		bam_file=bam_file,
 		out_dir=out_dir,
 		kmer_length=kmer_length,
@@ -380,5 +428,3 @@ def create_mappability_track(
 
 	log(f"Track saved in: {out_dir}", "S")
 	return out_dir
-
-

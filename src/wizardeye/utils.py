@@ -1,11 +1,18 @@
 # -*- coding: utf-8 -*-
 
+"""Utility functions for WizardEye
+
+This modules contains various utility functions for WizardEye, including subprocess execution with logging, 
+file hashing, sequence size handling, BAM metadata parsing, and BED file merging.
+"""
+
 import subprocess
 import tempfile
 import pysam
 import hashlib
 import shutil
 import shlex
+import sys
 
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 from collections import defaultdict
@@ -13,31 +20,95 @@ from pathlib import Path
 
 from .version import PACKAGE_VERSION
 
-# -- Standard utilities --
+# --- WizardEye development utilities ---
 
 def log(message: str, type: str, colorful=True):
-	"""Log a message with a specific type and optional color formatting."""
-	if colorful:
-		if type == "I":
-			print(f"\033[1;36m[INFO]\033[0m {message}")
-		elif type == "S":
-			print(f"\033[1;32m[SUCCESS]\033[0m {message}")
-		elif type == "W":
-			print(f"\033[1;33m[WARN]\033[0m {message}")
-		elif type == "E":
-			print(f"\033[1;31m[ERROR]\033[0m {message}")
-		elif type == "FE":
-			print(f"\033[1;31m[ERROR]\033[0m {message}")
-			raise RuntimeError(message)
-		elif type == "SC":
-			print(f"\033[1;90m[CMD]\033[0m {message}")
-		elif type == "C":
-			print(f"\033[0;90m[CMD] {message}\033[0m")
+	"""Log a message with a type prefix and optional color coding.
+
+	Type can be one of: I (info), S (success), W (warning), E (error), C (subprocess command), SC (subprocess command output).
+	
+	Args:
+		message (str): The message to log.
+		type (str): The type of message, determining prefix and color.
+		colorful (bool): Whether to use ANSI color codes in the output.
+	"""
+	colorful = (sys.stdout.isatty() and sys.stderr.isatty())
+	clear_clr = "\033[0m"
+
+	if type == "I":
+		i_clr = "\033[1;36m"
+		print(f"{i_clr}[INFO]{clear_clr} {message}" if colorful else f"[INFO] {message}")
+	elif type == "S":
+		s_clr = "\033[1;32m"
+		print(f"{s_clr}[SUCCESS]{clear_clr} {message}" if colorful else f"[SUCCESS] {message}")
+	elif type == "W":
+		w_clr = "\033[1;33m"
+		print(f"{w_clr}[WARN]{clear_clr} {message}" if colorful else f"[WARN] {message}")
+	elif type == "E":
+		e_clr = "\033[1;31m"
+		print(f"{e_clr}[ERROR]{clear_clr} {message}" if colorful else f"[ERROR] {message}")
+	elif type == "C":
+		c_clr = "\033[0;90m"
+		print(f"{c_clr}[CMD] {message} {clear_clr}" if colorful else f"[CMD] {message}")
+	elif type == "SC":
+		sc_clr = "\033[1;90m"
+		print(f"{sc_clr}[SUB-CMD] {message} {clear_clr}" if colorful else f"[SUB-CMD] {message}")
 	else:
 		print(f"[{type}] {message}")
 
+def run(command: List[str], log_output: bool = False, **kwargs) -> subprocess.CompletedProcess:
+	"""Execute a command with subprocess.run and log its output.
+
+	Args:
+		command (List[str]): Command and arguments.
+		log_output (bool): Capture and relay stdout/stderr with log() when possible.
+		**kwargs: Forwarded as-is to subprocess.run (e.g. check=True, text=True).
+
+	Returns:
+		subprocess.CompletedProcess: The subprocess.run return value.
+	"""
+	def _log_stream(content: Optional[object], prefix: str) -> None:
+		if content is None:
+			return
+		text = str(content).rstrip()
+		if not text:
+			return
+		for line in text.splitlines():
+			log(f"[{prefix}] {line}", "SC")
+
+	log(" ".join(shlex.quote(str(arg)) for arg in command), "C")
+	run_kwargs = dict(kwargs)
+
+	if log_output:
+		# If caller did not specify stream behavior, capture outputs so they can be logged.
+		if not run_kwargs.get("capture_output") and "stdout" not in run_kwargs and "stderr" not in run_kwargs:
+			run_kwargs["capture_output"] = True
+		# Prefer text output in logs unless caller already requested bytes behavior.
+		if "text" not in run_kwargs and "encoding" not in run_kwargs:
+			run_kwargs["text"] = True
+
+	try:
+		result = subprocess.run(command, **run_kwargs)
+	except subprocess.CalledProcessError as exc:
+		if log_output:
+			_log_stream(exc.stdout, "stdout")
+			_log_stream(exc.stderr, "stderr")
+		raise
+
+	if log_output:
+		_log_stream(result.stdout, "stdout")
+		_log_stream(result.stderr, "stderr")
+
+	return result
+
+# --- File, data and string utilities ---
+
 def file_md5(file_path: Path, chunk_size: int = 1024 * 1024) -> str:
-	"""Return MD5 checksum of a file, reading it in chunks."""
+	"""Return MD5 checksum of a file, reading it in chunks.
+	
+	Args:
+		file_path (Path): The path to the file to hash.
+		chunk_size (int): The size of chunks to read at a time (default: 1MB)."""
 	hasher = hashlib.md5()
 	with Path(file_path).open("rb") as handle:
 		while True:
@@ -48,7 +119,15 @@ def file_md5(file_path: Path, chunk_size: int = 1024 * 1024) -> str:
 	return hasher.hexdigest()
 
 def from_charlist_to_list(values: Optional[List[str]], lowercase: bool = False) -> List[str]:
-	"""Split comma-separated values, trim spaces, drop empties, and deduplicate preserving order."""
+	"""Split comma-separated values, trim spaces, drop empties, and deduplicate preserving order.
+	
+	Args:
+		values (Optional[List[str]]): A list of strings, each potentially containing comma-separated values.
+		lowercase (bool): Whether to convert values to lowercase (default: False).
+		
+	Returns:
+		List[str]: A list of unique, cleaned values.
+	"""
 	if not values:
 		return []
 
@@ -65,8 +144,15 @@ def from_charlist_to_list(values: Optional[List[str]], lowercase: bool = False) 
 			seen.add(clean)
 	return normalized
 
-def query_name_from_param(param_content: Dict) -> str:
-    """Extract query/input name from param.yaml, with a safe fallback."""
+def get_name_from_param(param_content: Dict) -> str:
+    """Extract a name from parameter content, preferring 'input' then 'track_id'.
+		
+	Args:
+		param_content (Dict): The parameter content dictionary.
+
+	Returns:
+		str: The extracted name.
+	"""
     input_value = param_content.get("input")
     if input_value:
         return Path(str(input_value)).stem
@@ -75,25 +161,81 @@ def query_name_from_param(param_content: Dict) -> str:
     if track_id_value:
         return str(track_id_value)
 
-def print_starter_message():
-	git_hash = get_git_commit_hash()
-	if git_hash:
-		print(f"{'-'*30} WizardEye v{PACKAGE_VERSION} \033[0;90m(#{git_hash[0:7]})\033[0m {'-'*30}")
-	else:
-		print(f"{'-'*30} WizardEye v{PACKAGE_VERSION} {'-'*30}\n")
+# --- Sequence utilities ---
 
-def get_git_commit_hash() -> Optional[str]:
-	"""Return the current Git commit hash if available, else None."""
-	try:
-		hash_bytes = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
-		return hash_bytes.decode("utf-8").strip()
-	except (subprocess.CalledProcessError, FileNotFoundError):
-		return None
+def get_seq_sizes(seq_sizes_path: Path) -> Dict[str, int]:
+    """Get sequence sizes from a chrom.sizes-style file (chrom\\tlength).
+	
+	Args:
+		seq_sizes_path (Path): The path to the sequence sizes file.
+		
+	Returns:
+		Dict[str, int]: A dictionary mapping sequence names to their lengths.
+	"""
+    sizes: Dict[str, int] = {}
+    with seq_sizes_path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                raise ValueError(f"Invalid sizes line in {seq_sizes_path}: {line}")
+            sizes[parts[0]] = int(parts[1])
 
-# -- SAM/BAM utilities --
+    if not sizes:
+        raise ValueError(f"Reference sizes is empty: {seq_sizes_path}")
+
+    return sizes
+
+def write_seq_sizes_from_fasta(reference_fasta: Path, output_sizes: Path) -> Path:
+	"""Write a chrom.sizes-style file (chrom\\tlength) from FASTA using samtools faidx.
+	
+	Args:
+		reference_fasta (Path): The path to the reference FASTA file.
+		output_sizes (Path): The path to write the chrom.sizes file to.
+		
+	Returns:
+		Path: The path to the generated chrom.sizes file.
+
+	Raises:
+		RuntimeError: If samtools is not found in PATH or if faidx does not produce the expected index file.
+		ValueError: If the FASTA index file contains invalid lines.
+	"""
+	if shutil.which("samtools") is None:
+		raise RuntimeError("samtools not found in PATH, cannot generate reference chrom sizes")
+
+	output_sizes.parent.mkdir(parents=True, exist_ok=True)
+	fai_path = Path(f"{reference_fasta}.fai")
+
+	run(["samtools", "faidx", str(reference_fasta)], check=True)
+
+	if not fai_path.exists():
+		raise RuntimeError(f"samtools faidx did not produce index: {fai_path}")
+
+	with fai_path.open("r", encoding="utf-8") as fai, output_sizes.open("w", encoding="utf-8") as out:
+		for raw_line in fai:
+			line = raw_line.strip()
+			if not line:
+				continue
+			parts = line.split("\t")
+			if len(parts) < 2:
+				raise ValueError(f"Invalid FASTA index line in {fai_path}: {line}")
+			out.write(f"{parts[0]}\t{parts[1]}\n")
+	
+	return output_sizes
+
+# --- SAM/BAM utilities ---
 
 def parse_xa_tag(xa_value: str) -> List[Tuple[str, int, str]]:
-	"""Parse XA:Z entries into (chrom, pos, cigar) tuples."""
+	"""Parse XA:Z entries into (chrom, pos, cigar) tuples.
+	
+	Args:
+		xa_value (str): The raw string from the XA tag, e.g. "chr1,1000,100M;chr2,2000,150M"
+	
+	Returns:
+		List[Tuple[str, int, str]]: A list of (chrom, pos, cigar) tuples.
+	"""
 	hits: List[Tuple[str, int, str]] = []
 	if not xa_value:
 		return hits
@@ -114,14 +256,25 @@ def parse_xa_tag(xa_value: str) -> List[Tuple[str, int, str]]:
 
 	return hits
 
-def read_bam_metadata(bam_path: Path) -> Dict[str, object]:
-	"""Read BAM header metadata: @SQ lengths and latest bwa aln command/options."""
+def parse_bam_metadata(bam_path: Path) -> Dict[str, object]:
+	"""Read BAM header metadata: @SQ lengths and latest bwa aln command/options.
+	
+	Args:
+		bam_path (Path): The path to the BAM file to parse.
+		
+	Returns:
+		Dict[str, object]: A dictionary containing:
+			- "sq_lengths": Dict[str, int] mapping sequence names to lengths from @SQ.
+			- "bwa_aln_cmd": Optional[str] of the latest bwa aln command found in @PG CL.
+			- "bwa_aln_options": Dict[str, Optional[str]] of extracted bwa aln options (-n, -o, -l) from the command.
+	"""
 	log(f"samtools view -H {bam_path}", "C")
 	header = subprocess.check_output(["samtools", "view", "-H", str(bam_path)], text=True)
 
 	lengths: Dict[str, int] = {}
 	bwa_aln_cmds: List[str] = []
 
+	# Get sequence names and lengths
 	for raw_line in header.splitlines():
 		if raw_line.startswith("@SQ"):
 			fields = raw_line.split("\t")
@@ -156,8 +309,6 @@ def read_bam_metadata(bam_path: Path) -> Dict[str, object]:
 		if len(tokens) < 2:
 			continue
 
-		# Accept wrapped commands, e.g. "bam2bam ... /path/to/bwa aln ..."
-		# by searching for a "bwa" token followed by the "aln" subcommand.
 		has_bwa_aln = False
 		for idx in range(len(tokens) - 1):
 			exec_name = Path(tokens[idx]).name
@@ -173,6 +324,7 @@ def read_bam_metadata(bam_path: Path) -> Dict[str, object]:
 	if not lengths:
 		raise ValueError(f"No @SQ entries found in BAM header: {bam_path}")
 
+	# Get the latest bwa aln command and parse options of interest
 	bwa_aln_cmd = bwa_aln_cmds[-1] if bwa_aln_cmds else None
 	bwa_aln_options: Dict[str, Optional[str]] = {"-n": None, "-o": None, "-l": None}
 
@@ -207,24 +359,6 @@ def read_bam_metadata(bam_path: Path) -> Dict[str, object]:
 		"bwa_aln_options": bwa_aln_options,
 	}
 
-def read_seq_sizes(seq_sizes_path: Path) -> Dict[str, int]:
-    """Read sizes file and return {seq: length}."""
-    sizes: Dict[str, int] = {}
-    with seq_sizes_path.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("\t")
-            if len(parts) < 2:
-                raise ValueError(f"Invalid sizes line in {seq_sizes_path}: {line}")
-            sizes[parts[0]] = int(parts[1])
-
-    if not sizes:
-        raise ValueError(f"Reference sizes is empty: {seq_sizes_path}")
-
-    return sizes
-
 def reference_len_from_cigar(cigar: Optional[str], default_k: int) -> int:
 	"""Return reference-consuming length from a CIGAR string."""
 	if not cigar:
@@ -245,8 +379,16 @@ def reference_len_from_cigar(cigar: Optional[str], default_k: int) -> int:
 
 	return ref_len if ref_len > 0 else default_k
 
-def get_mapping_intervals(bam_file: Path, kmer_length: int) -> Iterable[Tuple[str, int, int]]:
-	"""Yield intervals for primary alignments and all XA-reported alternative hits."""
+def iterate_mapping_intervals(bam_file: Path, kmer_length: int) -> Iterable[Tuple[str, int, int]]:
+	"""Iterate mapping intervals from BAM, including primary and XA alternative mappings.
+	
+	Args:
+		bam_file (Path): The path to the BAM file to parse.
+		kmer_length (int): The k-mer length to use as a default interval length when reference length cannot be determined from the read or CIGAR.
+	
+	Yields:
+		Tuple[str, int, int]: (chrom, start, end) tuples representing mapping intervals, including primary and XA alternatives.
+	"""
 	with pysam.AlignmentFile(str(bam_file), "rb") as bam:
 		for read in bam.fetch(until_eof=True):
 			if read.is_unmapped or read.reference_start < 0:
@@ -263,8 +405,16 @@ def get_mapping_intervals(bam_file: Path, kmer_length: int) -> Iterable[Tuple[st
 					alt_start = pos_1based - 1
 					yield (chrom, alt_start, alt_start + ref_len)
 
-def get_unique_mapping_intervals(bam_file: Path, kmer_length: int) -> Iterable[Tuple[str, int, int]]:
-	"""Yield intervals for mapped reads with MAPQ > 0 and no XA alternatives."""
+def iterate_unique_mapping_intervals(bam_file: Path, kmer_length: int) -> Iterable[Tuple[str, int, int]]:
+	"""Iterate intervals for mapped reads with MAPQ > 0 and no XA alternatives.
+	
+	Args:
+		bam_file (Path): The path to the BAM file to parse.
+		kmer_length (int): The k-mer length to use as a default interval length when reference length cannot be determined from the read or CIGAR.
+	
+	Yields:
+		Tuple[str, int, int]: (chrom, start, end) tuples representing unique mapping intervals.
+	"""
 	with pysam.AlignmentFile(str(bam_file), "rb") as bam:
 		for read in bam.fetch(until_eof=True):
 			if read.is_unmapped or read.reference_start < 0 or read.mapping_quality <= 0:
@@ -276,14 +426,26 @@ def get_unique_mapping_intervals(bam_file: Path, kmer_length: int) -> Iterable[T
 			start = read.reference_start
 			yield (read.reference_name, start, start + ref_len)
 
-def validate_initial_bam_reference_compatibility(
+def validate_bam_compatibility(
 	bam_path: Path,
 	reference_seq_sizes_path: Path,
 	bwa_missing_prob_err_rate: Optional[float] = None,
 	bwa_max_gap_opens: Optional[int] = None,
 	bwa_seed_length: Optional[int] = None,
 ) -> None:
-	"""Fail fast by checking BAM @SQ SN/LN and warn on BWA header params mismatch."""
+	"""Validate that BAM header @SQ SN/LN entries are compatible with reference sequence sizes, and optionally check for consistency with requested BWA aln parameters.
+	
+	Args:
+		bam_path (Path): The path to the BAM file to validate.
+		reference_seq_sizes_path (Path): The path to the reference sequence sizes file.
+		bwa_missing_prob_err_rate (Optional[float]): The expected error rate used during BWA alignment.
+		bwa_max_gap_opens (Optional[int]): The expected maximum gap opens used during BWA alignment.
+		bwa_seed_length (Optional[int]): The expected seed length used during BWA alignment.
+
+	Raises:
+		FileNotFoundError: If the reference sequence sizes file does not exist.
+		ValueError: If there are incompatibilities between BAM header and reference sequence sizes."
+	"""
 	if not reference_seq_sizes_path.exists() or not reference_seq_sizes_path.is_file():
 		raise FileNotFoundError(
 			"Reference sequence sizes not found for compatibility check: "
@@ -291,18 +453,17 @@ def validate_initial_bam_reference_compatibility(
 		)
 	
 	log("Validating BAM header metadata against reference and BWA parameters...", "I")
-	bam_metadata = read_bam_metadata(bam_path)
+	bam_metadata = parse_bam_metadata(bam_path)
 	bam_sizes = bam_metadata["sq_lengths"]
 	bwa_cmd = bam_metadata["bwa_aln_cmd"]
 	observed = bam_metadata["bwa_aln_options"]
 
-	# Non-blocking guardrail: if expected BWA aln params are provided, compare them
-	# with the command recorded in BAM @PG CL and emit warnings on mismatch.
 	expected_bwa: Dict[str, Optional[object]] = {
 		"-n": bwa_missing_prob_err_rate,
 		"-o": bwa_max_gap_opens,
 		"-l": bwa_seed_length,
 	}
+	
 	if any(value is not None for value in expected_bwa.values()):
 		if not bwa_cmd:
 			log(
@@ -340,7 +501,7 @@ def validate_initial_bam_reference_compatibility(
 					"W",
 				)
 
-	ref_sizes = read_seq_sizes(reference_seq_sizes_path)
+	ref_sizes = get_seq_sizes(reference_seq_sizes_path)
 
 	missing_in_ref = sorted([contig for contig in bam_sizes if contig not in ref_sizes])
 	length_mismatches = sorted(
@@ -374,8 +535,19 @@ def validate_initial_bam_reference_compatibility(
 		"Please ensure the reference FASTA and BAM files are compatible and if so, edit the BAM file to match the reference sequences names and lengths."
 	)
 
-def write_seq_sizes_from_bam(bam_file: Path, out_path: Path) -> None:
-	"""Write sequences sizes file required by bedGraphToBigWig."""
+def write_seq_sizes_from_bam(bam_file: Path, out_path: Path) -> Path:
+	"""Write sequences sizes file required by bedGraphToBigWig.
+	
+	Args:
+		bam_file (Path): The path to the BAM file to read sequence names and lengths from.
+		out_path (Path): The path to write the chrom.sizes file to.
+		
+	Returns:
+		Path: The path to the written chrom.sizes file.
+	
+	Raises:
+		RuntimeError: If pysam is not installed, which is required to read BAM files.
+	"""
 	if pysam is None:
 		raise RuntimeError(
 			"pysam is required to export BigWig files. Install it with: pip install pysam"
@@ -384,44 +556,21 @@ def write_seq_sizes_from_bam(bam_file: Path, out_path: Path) -> None:
 	with pysam.AlignmentFile(str(bam_file), "rb") as bam, out_path.open("w", encoding="utf-8") as handle:
 		for chrom, length in sorted(zip(bam.references, bam.lengths), key=lambda x: x[0]):
 			handle.write(f"{chrom}\t{length}\n")
+	
+	return out_path
 
-# -- BED, bedGraph & bigWig utilities --
-
-def append_merged_interval(
-    merged: List[Tuple[str, int, int]],
-    chrom: str,
-    start: int,
-    end: int,
-) -> None:
-    """Append interval and merge with previous one when overlapping/adjacent."""
-    if end <= start:
-        return
-
-    if not merged:
-        merged.append((chrom, start, end))
-        return
-
-    last_chrom, last_start, last_end = merged[-1]
-    if last_chrom == chrom and start <= last_end:
-        merged[-1] = (last_chrom, last_start, max(last_end, end))
-        return
-
-    merged.append((chrom, start, end))
-
-def read_bed_intervals(bed_path: Path) -> List[Tuple[str, int, int]]:
-    intervals: List[Tuple[str, int, int]] = []
-    with bed_path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            parts = line.strip().split("\t")
-            if len(parts) < 3:
-                continue
-            start = int(parts[1])
-            end = int(parts[2])
-            if end > start:
-                intervals.append((parts[0], start, end))
-    return intervals
+# --- BED and genomic interval utilities ---
 
 def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path:
+    """Merge multiple BED files with track names into a single BED file with merged intervals and comma-separated track annotations.
+    
+    Args:
+    	bed_files (List[Tuple[str, Path]]): A list of tuples containing track names and BED file paths.
+    	output_bed (Path): The path to the output merged BED file.
+    
+    Returns:
+    	Path: The path to the merged BED file.
+    """
     output_bed.parent.mkdir(parents=True, exist_ok=True)
     if not bed_files:
         output_bed.write_text("", encoding="utf-8")
@@ -435,8 +584,24 @@ def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path
         try:
             with tmp_tagged_path.open("w", encoding="utf-8") as tagged_out:
                 for track_name, bed_path in bed_files:
-                    with bed_path.open("r", encoding="utf-8") as handle:
-                        for line in handle:
+                    # Merger intra-track uniquement
+                    with bed_path.open("r", encoding="utf-8") as bed_in:
+                        p_sort = subprocess.Popen(
+                            ["sort", "-k1,1", "-k2,2n"],
+                            stdin=bed_in,
+                            stdout=subprocess.PIPE,
+                            text=True,
+                        )
+                        p_merge = subprocess.Popen(
+                            [bedtools, "merge", "-i", "stdin"],
+                            stdin=p_sort.stdout,
+                            stdout=subprocess.PIPE,
+                            text=True,
+                        )
+                        if p_sort.stdout is not None:
+                            p_sort.stdout.close()
+
+                        for line in p_merge.stdout:
                             parts = line.strip().split("\t")
                             if len(parts) < 3:
                                 continue
@@ -444,154 +609,339 @@ def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path
                             end = int(parts[2])
                             if end <= start:
                                 continue
-                            tagged_out.write(f"{parts[0]}\t{start}\t{end}\t{track_name.split('_k')[0]}\n")
+                            tagged_out.write(
+                                f"{parts[0]}\t{start}\t{end}\t{track_name.split('_k')[0]}\n"
+                            )
+
+                        p_merge.stdout.close()
+                        rc_merge = p_merge.wait()
+                        rc_sort = p_sort.wait()
+                        if rc_sort != 0:
+                            raise subprocess.CalledProcessError(rc_sort, ["sort"])
+                        if rc_merge != 0:
+                            raise subprocess.CalledProcessError(rc_merge, [bedtools, "merge"])
 
             with tmp_tagged_path.open("r", encoding="utf-8") as tagged_in:
                 log(f"sort -k1,1 -k2,2n {tmp_tagged_path}", "C")
-                p_sort = subprocess.Popen(
+                p_sort_final = subprocess.Popen(
                     ["sort", "-k1,1", "-k2,2n"],
                     stdin=tagged_in,
-                    stdout=subprocess.PIPE,
+                    stdout=output_bed.open("w", encoding="utf-8"),
                     text=True,
                 )
-                with output_bed.open("w", encoding="utf-8") as out:
-                    log(f"{bedtools} merge -i stdin -c 4 -o distinct", "C")
-                    p_merge = subprocess.Popen(
-                        [bedtools, "merge", "-i", "stdin", "-c", "4", "-o", "distinct"],
-                        stdin=p_sort.stdout,
-                        stdout=out,
-                        text=True,
-                    )
+                rc_sort_final = p_sort_final.wait()
+                if rc_sort_final != 0:
+                    raise subprocess.CalledProcessError(rc_sort_final, ["sort"])
 
-                    if p_sort.stdout is not None:
-                        p_sort.stdout.close()
-
-                    rc_merge = p_merge.wait()
-                    rc_sort = p_sort.wait()
-                    if rc_sort != 0:
-                        raise subprocess.CalledProcessError(rc_sort, ["sort", "-k1,1", "-k2,2n"])
-                    if rc_merge != 0:
-                        raise subprocess.CalledProcessError(
-                            rc_merge,
-                            [bedtools, "merge", "-i", "stdin", "-c", "4", "-o", "distinct"],
-                        )
             return output_bed
+
         finally:
             if tmp_tagged_path.exists():
                 tmp_tagged_path.unlink()
 
-    all_intervals: List[Tuple[str, int, int, Set[str]]] = []
+    all_intervals: List[Tuple[str, int, int, str]] = []
     for track_name, bed in bed_files:
-        for chrom, start, end in read_bed_intervals(bed):
-            all_intervals.append((chrom, start, end, {track_name}))
+        iv = Intervals()
+        iv.read_from_bed(bed)
+        track_intervals = sorted(
+            [(interval.chrom, interval.start, interval.end) for interval in iv],
+            key=lambda x: (x[0], x[1])
+        )
+        merged: List[Tuple[str, int, int]] = []
+        for chrom, start, end in track_intervals:
+            if not merged:
+                merged.append((chrom, start, end))
+                continue
+            last_chrom, last_start, last_end = merged[-1]
+            if last_chrom == chrom and start <= last_end:
+                merged[-1] = (last_chrom, last_start, max(last_end, end))
+            else:
+                merged.append((chrom, start, end))
+
+        for chrom, start, end in merged:
+            all_intervals.append((chrom, start, end, track_name.split('_k')[0]))
 
     all_intervals.sort(key=lambda x: (x[0], x[1], x[2]))
-    merged_all: List[Tuple[str, int, int, Set[str]]] = []
-    for chrom, start, end, tracks in all_intervals:
-        if not merged_all:
-            merged_all.append((chrom, start, end, set(tracks)))
-            continue
-
-        last_chrom, last_start, last_end, last_tracks = merged_all[-1]
-        if last_chrom == chrom and start <= last_end:
-            merged_all[-1] = (last_chrom, last_start, max(last_end, end), last_tracks | tracks)
-        else:
-            merged_all.append((chrom, start, end, set(tracks)))
 
     with output_bed.open("w", encoding="utf-8") as out:
-        for chrom, start, end, tracks in merged_all:
-            joined_tracks = ",".join(sorted(tracks))
-            out.write(f"{chrom}\t{start}\t{end}\t{joined_tracks}\n")
+        for chrom, start, end, track_name in all_intervals:
+            out.write(f"{chrom}\t{start}\t{end}\t{track_name}\n")
+
     return output_bed
 
-def count_covered_bases_from_bedgraph(bedgraph_path: Path) -> int:
-	"""Return the number of covered base pairs from a bedGraph file (depth > 0)."""
-	total_bp = 0
-	with bedgraph_path.open("r", encoding="utf-8") as handle:
-		for line in handle:
-			parts = line.strip().split("\t")
-			if len(parts) < 4:
-				continue
-			try:
-				start = int(parts[1])
-				end = int(parts[2])
-				depth = float(parts[3])
-			except ValueError:
-				continue
-			if end > start and depth > 0:
-				total_bp += end - start
-	return total_bp
-
-def write_bed(intervals: List[Tuple[str, int, int]], out_path: Path) -> Path:
-    """Write BED intervals to out_path."""
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as handle:
-        for chrom, start, end in intervals:
-            handle.write(f"{chrom}\t{start}\t{end}\n")
-    return out_path
-
-def write_bedgraph(intervals: Iterable[Tuple[str, int, int]], out_path: Path) -> None:
-	"""Write depth bedGraph (chrom, start, end, depth) from intervals."""
-	events_by_chrom: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
-
-	for chrom, start, end in intervals:
-		if end <= start:
-			continue
-		events_by_chrom[chrom][start] += 1
-		events_by_chrom[chrom][end] -= 1
-
-	with out_path.open("w", encoding="utf-8") as handle:
-		for chrom in sorted(events_by_chrom):
-			events = events_by_chrom[chrom]
-			positions = sorted(events)
-			depth = 0
-			for idx, pos in enumerate(positions):
-				depth += events[pos]
-				if idx + 1 >= len(positions):
-					continue
-				next_pos = positions[idx + 1]
-				if depth > 0 and next_pos > pos:
-					handle.write(f"{chrom}\t{pos}\t{next_pos}\t{depth}\n")
-
-def convert_bedgraph_to_bigwig(bedgraph_path: Path, seq_sizes_path: Path, bigwig_path: Path) -> None:
-	"""Convert a bedGraph file to BigWig using bedGraphToBigWig."""
+def convert_bedgraph_to_bigwig(bedgraph_path: Path, seq_sizes_path: Path, bigwig_path: Path) -> Path:
+	"""Convert a bedGraph file to BigWig using bedGraphToBigWig.
+	
+	Args:
+		bedgraph_path (Path): The path to the input bedGraph file.
+		seq_sizes_path (Path): The path to the chrom.sizes file with sequence lengths.
+		bigwig_path (Path): The path to write the output BigWig file.
+		
+	Returns:
+		Path: The path to the generated BigWig file."""
 	if shutil.which("bedGraphToBigWig") is None:
 		raise RuntimeError("bedGraphToBigWig not found in PATH, cannot produce .bw outputs")
 
-	log(f"bedGraphToBigWig {bedgraph_path} {seq_sizes_path} {bigwig_path}", "C")
-	subprocess.run(
-		[
-			"bedGraphToBigWig",
-			str(bedgraph_path),
-			str(seq_sizes_path),
-			str(bigwig_path),
-		],
-		check=True,
-	)
+	run(["bedGraphToBigWig", str(bedgraph_path), str(seq_sizes_path), str(bigwig_path)], check=True)
 
-# -- FASTA utilities --
+	return bigwig_path
 
-def write_seq_sizes_from_fasta(reference_fasta: Path, output_sizes: Path) -> None:
-	"""Write a chrom.sizes-style file (chrom\tlength) from FASTA using samtools faidx."""
-	if shutil.which("samtools") is None:
-		raise RuntimeError("samtools not found in PATH, cannot generate reference chrom sizes")
+def convert_bigwig_to_bedGraph(bigwig_path: Path, bedgraph_path: Path) -> Path:
+	"""Convert a BigWig file to BedGraph using bigWigToBedGraph.
+	
+	Args:
+		bigwig_path (Path): The path to the input BigWig file.
+		bedgraph_path (Path): The path to write the output BedGraph file.
+		
+	Returns:
+		Path: The path to the generated BigWig file."""
+	if shutil.which("bigWigToBedGraph") is None:
+		raise RuntimeError("bigWigToBedGraph not found in PATH, cannot produce .bg outputs")
 
-	output_sizes.parent.mkdir(parents=True, exist_ok=True)
-	fai_path = Path(f"{reference_fasta}.fai")
+	run(["bigWigToBedGraph", str(bigwig_path), str(bedgraph_path)], check=True)
 
-	log(f"samtools faidx {reference_fasta}", "C")
-	subprocess.run(["samtools", "faidx", str(reference_fasta)], check=True)
+	return bedgraph_path
 
-	if not fai_path.exists():
-		raise RuntimeError(f"samtools faidx did not produce index: {fai_path}")
-
-	with fai_path.open("r", encoding="utf-8") as fai, output_sizes.open("w", encoding="utf-8") as out:
-		for raw_line in fai:
-			line = raw_line.strip()
-			if not line:
-				continue
-			parts = line.split("\t")
-			if len(parts) < 2:
-				raise ValueError(f"Invalid FASTA index line in {fai_path}: {line}")
-			out.write(f"{parts[0]}\t{parts[1]}\n")
+# BED interval classes for non-bedtools merging and manipulation
+class Interval:
+	"""Represents a genomic interval with chromosome, start, end, and optional depth.
+	
+	Attributes:
+		chrom (str): Chromosome name.
+		start (int): 0-based start position (inclusive).
+		end (int): 0-based end position (exclusive).
+		depth (Optional[float]): Optional depth or annotation value.
+	"""
+	
+	def __init__(self, chrom: str, start: int, end: int, depth: Optional[float] = None):
+		"""Initialize an Interval.
+		
+		Args:
+			chrom (str): Chromosome name.
+			start (int): 0-based start position (inclusive).
+			end (int): 0-based end position (exclusive).
+			depth (Optional[float]): Optional depth value, defaults to None.
 			
+		Raises:
+			ValueError: If end <= start.
+		"""
+		if end <= start:
+			raise ValueError(f"Invalid interval: end ({end}) must be > start ({start})")
+		self.chrom = chrom
+		self.start = start
+		self.end = end
+		self.depth = depth
+	
+	@property
+	def length(self) -> int:
+		"""Return the length of this interval."""
+		return self.end - self.start
+	
+	def overlaps(self, other: "Interval") -> bool:
+		"""Check if this interval overlaps with another."""
+		return self.chrom == other.chrom and self.start < other.end and other.start < self.end
+	
+	def adjacent_to(self, other: "Interval") -> bool:
+		"""Check if this interval is adjacent to another (same chrom, touching positions)."""
+		return self.chrom == other.chrom and (self.end == other.start or other.end == self.start)
+	
+	def can_merge_with(self, other: "Interval") -> bool:
+		"""Check if this interval can be merged with another (overlapping or adjacent)."""
+		return self.chrom == other.chrom and self.start <= other.end
+	
+	def merge(self, other: "Interval") -> "Interval":
+		"""Merge this interval with another, returning a new merged interval.
+		
+		Args:
+			other (Interval): The interval to merge with.
+			
+		Returns:
+			Interval: A new interval spanning both intervals. Depth is lost in merge.
+			
+		Raises:
+			ValueError: If intervals cannot be merged (different chromosomes or non-overlapping).
+		"""
+		if not self.can_merge_with(other):
+			raise ValueError(f"Cannot merge intervals on different chromosomes or with gap")
+		return Interval(self.chrom, min(self.start, other.start), max(self.end, other.end))
+	
+	def contains(self, pos: int) -> bool:
+		"""Check if this interval contains a position."""
+		return self.start <= pos < self.end
+	
+	def __repr__(self) -> str:
+		depth_str = f", depth={self.depth}" if self.depth is not None else ""
+		return f"Interval({self.chrom}:{self.start}-{self.end}{depth_str})"
+	
+	def __eq__(self, other: object) -> bool:
+		if not isinstance(other, Interval):
+			return NotImplemented
+		return (self.chrom == other.chrom and self.start == other.start and 
+		        self.end == other.end and self.depth == other.depth)
+	
+	def __lt__(self, other: "Interval") -> bool:
+		"""Sort by chromosome, then start, then end."""
+		if self.chrom != other.chrom:
+			return self.chrom < other.chrom
+		if self.start != other.start:
+			return self.start < other.start
+		return self.end < other.end
+
+class Intervals:
+	"""Container for managing a collection of genomic intervals with operations like merge, read, write.
+	
+	Attributes:
+		intervals (List[Interval]): The list of intervals, kept sorted.
+	"""
+	
+	def __init__(self, intervals: Optional[List[Interval]] = None):
+		"""Initialize an Intervals container.
+		
+		Args:
+			intervals (Optional[List[Interval]]): Optional list of intervals to initialize with.
+		"""
+		self.intervals = sorted(intervals) if intervals else []
+	
+	def append(self, interval: Interval) -> None:
+		"""Append an interval, merging with existing intervals if they overlap or are adjacent.
+		
+		Args:
+			interval (Interval): The interval to append.
+		"""
+		if not self.intervals:
+			self.intervals.append(interval)
+			return
+		
+		last = self.intervals[-1]
+		if last.can_merge_with(interval):
+			self.intervals[-1] = last.merge(interval)
+		else:
+			self.intervals.append(interval)
+	
+	def read_from_bed(self, bed_path: Path) -> None:
+		"""Read intervals from a BED file (chrom, start, end columns).
+		
+		Args:
+			bed_path (Path): Path to the BED file to read.
+		"""
+		with bed_path.open("r", encoding="utf-8") as handle:
+			for line in handle:
+				parts = line.strip().split("\t")
+				if len(parts) < 3:
+					continue
+				try:
+					start = int(parts[1])
+					end = int(parts[2])
+					if end > start:
+						self.append(Interval(parts[0], start, end))
+				except (ValueError, IndexError):
+					continue
+	
+	def read_from_bedgraph(self, bedgraph_path: Path) -> None:
+		"""Read intervals with depth from a bedGraph file (chrom, start, end, depth columns).
+		
+		Args:
+			bedgraph_path (Path): Path to the bedGraph file to read.
+		"""
+		with bedgraph_path.open("r", encoding="utf-8") as handle:
+			for line in handle:
+				parts = line.strip().split("\t")
+				if len(parts) < 4:
+					continue
+				try:
+					start = int(parts[1])
+					end = int(parts[2])
+					depth = float(parts[3])
+					if end > start:
+						self.intervals.append(Interval(parts[0], start, end, depth))
+				except (ValueError, IndexError):
+					continue
+		self.intervals.sort()
+	
+	def write_to_bed(self, out_path: Path) -> Path:
+		"""Write intervals to a BED file (chrom, start, end format).
+		
+		Args:
+			out_path (Path): Path to write the BED file.
+			
+		Returns:
+			Path: The output file path.
+		"""
+		out_path.parent.mkdir(parents=True, exist_ok=True)
+		with out_path.open("w", encoding="utf-8") as handle:
+			for interval in self.intervals:
+				handle.write(f"{interval.chrom}\t{interval.start}\t{interval.end}\n")
+		return out_path
+	
+	def write_to_bedgraph(self, out_path: Path) -> Path:
+		"""Write intervals with depth to a bedGraph file.
+		
+		Args:
+			out_path (Path): Path to write the bedGraph file.
+			
+		Returns:
+			Path: The output file path.
+		"""
+		out_path.parent.mkdir(parents=True, exist_ok=True)
+		events_by_chrom: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
+		
+		for interval in self.intervals:
+			events_by_chrom[interval.chrom][interval.start] += 1
+			events_by_chrom[interval.chrom][interval.end] -= 1
+		
+		with out_path.open("w", encoding="utf-8") as handle:
+			for chrom in sorted(events_by_chrom):
+				events = events_by_chrom[chrom]
+				positions = sorted(events)
+				depth = 0
+				for idx, pos in enumerate(positions):
+					depth += events[pos]
+					if idx + 1 >= len(positions):
+						continue
+					next_pos = positions[idx + 1]
+					if depth > 0 and next_pos > pos:
+						handle.write(f"{chrom}\t{pos}\t{next_pos}\t{depth}\n")
+		
+		return out_path
+	
+	def count_covered_bases(self, min_depth: float = 0.0) -> int:
+		"""Count the number of covered base pairs.
+		
+		Args:
+			min_depth (float): Minimum depth to count (default 0.0 for any interval).
+			
+		Returns:
+			int: Total number of bases with depth > min_depth.
+		"""
+		total_bp = 0
+		for interval in self.intervals:
+			if interval.depth is None or interval.depth > min_depth:
+				total_bp += interval.length
+		return total_bp
+	
+	def merge_all(self) -> None:
+		"""Merge all overlapping or adjacent intervals in place."""
+		if len(self.intervals) <= 1:
+			return
+		
+		self.intervals.sort()
+		merged = [self.intervals[0]]
+		
+		for interval in self.intervals[1:]:
+			if merged[-1].can_merge_with(interval):
+				merged[-1] = merged[-1].merge(interval)
+			else:
+				merged.append(interval)
+		
+		self.intervals = merged
+	
+	def __len__(self) -> int:
+		"""Return the number of intervals."""
+		return len(self.intervals)
+	
+	def __iter__(self):
+		"""Iterate over intervals."""
+		return iter(self.intervals)
+	
+	def __repr__(self) -> str:
+		return f"Intervals({len(self.intervals)} intervals)"

@@ -1,5 +1,9 @@
 # WizardEye
 
+[![Version](https://img.shields.io/badge/version-0.0.5b0-orange.svg)](https://github.com/predomics/gpredomics/releases)
+![Python](https://img.shields.io/badge/beta-red.svg)
+![Python](https://img.shields.io/badge/Python-green.svg)
+
 WizardEye is a Python tool that filters aligned reads according to the risk of ambiguous alignment sources on a reference genome. To do this, WizardEye first identifies all positions in your reference genome that can be targeted by reads from known ambiguous sources using your alignment parameters. For example, it can be used to filter out reads in your alignment that map to regions conserved between your reference genome and several potentially contaminating organisms.
 
 <img src="wizardeye.png" alt="WizardEye" width="700" />
@@ -21,6 +25,7 @@ This tool is directly adapted from the script [generate_cross_mappability_filter
 	- [Create the database](#create-the-database)
 	- [Create a new track](#create-a-new-track)
 	- [Filter a BAM file](#filter-a-bam-file)
+	- [Count and compute statistics](#filter-a-bam-file)
 	- [Export a mask](#export-a-mask)
 	- [Import an existing track manually](#import-an-existing-track-manually)
 - [Go beyond WizardEye limits](#go-beyond-wizardeye-limits)
@@ -70,6 +75,7 @@ Required:
 - `typer` (CLI)
 - `PyYAML` (database and track metadata YAML files)
 - `pysam` (BAM parsing and interval extraction)
+- `pyBigWig` (BigWig parsing and overlapping k-mer computation)
 
 ## Usage
 
@@ -221,18 +227,31 @@ With `--export-bam`, WizardEye produces two more files:
 - a BAM `excluded` with the reads excluded by the filtration,
 - a BAM `filtered` with the reads kept by the filtration,
 
-With `--count-only`, WizardEye writes a per-alignment count matrix report (TSV) and does not generate filtered/excluded BAM files. In this mode, WizardEye reads only one BigWig source per selected track:
+### Count and compute statistics
 
-- `map_uniq.bw` by default,
-- `map_all.bw` when `--considere-all` is enabled.
+If you prefer to use your own-made filter, you can export a per-read report which summarizes the number of k-mers which can overlap the reference per read-interval using the `count` command. 
 
-Example:
+This command take the same parameters as `filter`, plus a parameter `--mode` to specify the type of statistical summary you want betweemn `sum`, `max`, `min`, `cov`, `mean` and `std`. Statistics are computed on interval. For example, if `max` is specified, for each track, the maximum number of overlapping k-mers from this track on a position in the read associated interval is reported. 
 
 ```
-wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos \
-	-k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database \
-	--count-only --report-output alignment.wizardeye.counts.tsv
+wizardeye count -i alignment.bam -r hg19 --exclude-tags Cave -k 35 -s 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -m max
 ```
+
+In this example, track whose are not reported using `filter`+`-s=0.01` should have a `0` in their column, as it means that the maximum number of overlapping k-mers in the interval is 0. 
+
+#### Output
+
+WizardEye produces a tabulation-separated report containing, for each read, the requested : 
+
+
+| read_id                                  | max_sus_scrofa | max_bos_taurus_max | max_ovis_aries |
+|------------------------------------------|----------|------------|------|
+| read_1								   | 0 | 4524 | 0 |
+| read_2								   | 422 | 0 | 0 |
+| read_3								   | 151 | 1254 | 1515 |
+| read_4								   | 0 | 0 | 0 |
+| read_5								   | 0 | 0 | 311 |
+| read_6								   | 122 | 0 | 111 |
 
 ### Export a mask
 
@@ -259,8 +278,6 @@ This command creates the target/track directory, copies the two BigWig files as 
 
 # Go beyond WizardEye limits
 
-*[Not implemented yet]*
+It is recommanded to complete your filtration using an evolutionnary-aware method such as Kraken2. This combination is useful to remove both reads that belong to completely different organisms and reads that can be ambiguous between closely related organisms.
 
-Note that you can specify a Kraken output using `-kro /path/to/input` and `-krl level_of_filtering` in order to complete your filtering using the Kraken evolution-related method. This combination is useful to remove both reads that belong to completely different organisms and reads that can be ambiguous between closely related organisms.
-
-*Last update of this documentation: beta-0.0.3.*
+*Last update of this documentation: beta-0.0.5.*

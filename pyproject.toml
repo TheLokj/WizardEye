@@ -12,6 +12,7 @@ dependencies = [
   "typer>=0.9",
   "PyYAML>=6.0",
   "pysam>=0.22",
+  "pyBigWig>=0.3.25"
 ]
 
 [project.scripts]

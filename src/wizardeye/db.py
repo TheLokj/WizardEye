@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 
-import sys
-import argparse
+"""Database management for WizardEye tracks.
+
+This module provides functions to initialize and validate the database structure, manage track metadata, 
+and import externally generated tracks. It defines the Track class to represent tracks with their
+parameters and metadata, and includes utilities to query available tracks and display the catalogue of tracks
+for each reference species.
+"""
+
 import shutil
 import yaml
 
@@ -11,14 +17,23 @@ from datetime import datetime
 from importlib import metadata
 from typing import Dict, List, Optional, Tuple, Union
 
-from .utils import log, query_name_from_param
+from .utils import log, get_name_from_param
 from .utils import file_md5
 from .utils import from_charlist_to_list
 from .version import PACKAGE_VERSION
 
 # -- Database management functions --
 def init_db(base_dir: Union[str, Path] = ".") -> Path:
-	"""Create /database and its info.yaml file."""
+	"""Create /database and its info.yaml file.
+	
+	If the database already exists, it will not be modified and the existing info.yaml path will be returned.
+	
+	Args:
+		base_dir: Base directory where the /database folder will be created. Defaults to current directory.
+		
+	Returns:
+		Path to the info.yaml file in the initialized database.
+	"""
 	root = Path(base_dir)
 	db_dir = root / "database"
 	db_dir.mkdir(parents=True, exist_ok=True)
@@ -70,7 +85,14 @@ def valid_database(db_root: Union[str, Path]) -> bool:
 	return True
 
 def clean_db(db_root: Path) -> int:
-	"""Delete all BED files inside one WizardEye database root."""
+	"""Delete all BED files inside one WizardEye database root."
+	
+	Args:
+		db_root(Path): Path to the database root.
+
+	Returns: 
+		int: Number of bed files deleted.
+	"""
 	bed_files = sorted(path for path in Path(db_root).rglob("*.bed") if path.is_file())
 
 	if not bed_files:
@@ -93,6 +115,7 @@ def clean_db(db_root: Path) -> int:
 	return deleted
 
 # -- Track classes and functions --
+
 @dataclass(frozen=True)
 class TrackParameters:
 	"""Alignment and generation parameters that define one track version."""
@@ -156,7 +179,7 @@ class Track:
 
 	@property
 	def query_name(self) -> str:
-		query_name = query_name_from_param(self.info)
+		query_name = get_name_from_param(self.info)
 		return str(query_name)
 
 	def exists(self) -> bool:
@@ -625,7 +648,7 @@ def print_available_species(ref_species: str, db_root: Union[str, Path]) -> Path
 				with param_yaml.open("r", encoding="utf-8") as handle:
 					content = yaml.safe_load(handle) or {}
 				if isinstance(content, dict):
-					query_name = query_name_from_param(content)
+					query_name = get_name_from_param(content)
 					if query_name:
 						logical_track_name = str(query_name)
 
