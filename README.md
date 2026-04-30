@@ -25,7 +25,7 @@ This tool is directly adapted from the script [generate_cross_mappability_filter
 	- [Create the database](#create-the-database)
 	- [Create a new track](#create-a-new-track)
 	- [Filter a BAM file](#filter-a-bam-file)
-	- [Count and compute statistics](#filter-a-bam-file)
+	- [Count and compute statistics](#count-and-compute-statistics)
 	- [Export a mask](#export-a-mask)
 	- [Import an existing track manually](#import-an-existing-track-manually)
 - [Go beyond WizardEye limits](#go-beyond-wizardeye-limits)
