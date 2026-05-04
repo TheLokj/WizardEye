@@ -63,26 +63,47 @@ def from_alignment_to_bigWig(bam_file: Path, out_dir: Path, kmer_length: int) ->
 	cov_uniq_bw = out_dir / "map_uniq.bw"
 	seq_sizes = out_dir / "chrom.sizes"
 
-	intervals_all = Intervals()
-	for chrom, start, end in iterate_mapping_intervals(bam_file, kmer_length):
-		intervals_all.append(Interval(chrom, start, end))
-	intervals_all.write_to_bedgraph(cov_map_bg)
+	# Write raw intervals to temporary BED files
+	n_map_bed = out_dir / "n_map.bed"
+	n_uniq_bed = out_dir / "n_uniq.bed"
 
-	intervals_uniq = Intervals()
-	for chrom, start, end in iterate_unique_mapping_intervals(bam_file, kmer_length):
-		intervals_uniq.append(Interval(chrom, start, end))
-	intervals_uniq.write_to_bedgraph(cov_uniq_bg)
+	with n_map_bed.open("w", encoding="utf-8") as f:
+		for chrom, start, end in iterate_mapping_intervals(bam_file, kmer_length):
+			f.write(f"{chrom}\t{start}\t{end}\n")
+
+	with n_uniq_bed.open("w", encoding="utf-8") as f:
+		for chrom, start, end in iterate_unique_mapping_intervals(bam_file, kmer_length):
+			f.write(f"{chrom}\t{start}\t{end}\n")
+
+	# Use bedtools genomecov to compute coverage
+	write_seq_sizes_from_bam(bam_file, seq_sizes)
+
+	run(["bedtools", "genomecov", "-i", str(n_map_bed), "-g", str(seq_sizes), "-bga"],
+		stdout=open(cov_map_bg, "w"), check=True)
+	run(["bedtools", "genomecov", "-i", str(n_uniq_bed), "-g", str(seq_sizes), "-bga"],
+		stdout=open(cov_uniq_bg, "w"), check=True)
+
+	# Count covered bases from bedGraph files
+	def count_bp_from_bedgraph(bg_path: Path) -> int:
+		total = 0
+		with bg_path.open("r", encoding="utf-8") as f:
+			for line in f:
+				parts = line.strip().split("\t")
+				if len(parts) >= 4:
+					start, end = int(parts[1]), int(parts[2])
+					total += (end - start)
+		return total
 
 	covered_bp = {
-		"map_all": intervals_all.count_covered_bases(),
-		"map_uniq": intervals_uniq.count_covered_bases(),
+		"map_all": count_bp_from_bedgraph(cov_map_bg),
+		"map_uniq": count_bp_from_bedgraph(cov_uniq_bg),
 	}
-	write_seq_sizes_from_bam(bam_file, seq_sizes)
 
 	convert_bedgraph_to_bigwig(cov_map_bg, seq_sizes, cov_map_bw)
 	convert_bedgraph_to_bigwig(cov_uniq_bg, seq_sizes, cov_uniq_bw)
 
-	for tmp_file in (cov_map_bg, cov_uniq_bg, seq_sizes):
+	# Clean up temporary files
+	for tmp_file in (n_map_bed, n_uniq_bed, cov_map_bg, cov_uniq_bg, seq_sizes):
 		if tmp_file.exists():
 			tmp_file.unlink()
 
@@ -169,7 +190,7 @@ def align_with_bwa_aln(
 
 def create_mappability_track(
 	input_fasta,
-	reference,
+	input_target,
 	track_id,
 	kmer_length,
 	offset_step,

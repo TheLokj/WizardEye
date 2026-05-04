@@ -4,12 +4,13 @@
 ![Python](https://img.shields.io/badge/beta-red.svg)
 ![Python](https://img.shields.io/badge/Python-green.svg)
 
-WizardEye is a Python tool that filters aligned reads according to the risk of ambiguous alignment sources on a reference genome. To do this, WizardEye first identifies all positions in your reference genome that can be targeted by reads from known ambiguous sources using your alignment parameters. For example, it can be used to filter out reads in your alignment that map to regions conserved between your reference genome and several potentially contaminating organisms.
+WizardEye is a Python tool that filters aligned reads according to the risk of ambiguous alignment sources on a reference genome. 
 
 <img src="wizardeye.png" alt="WizardEye" width="700" />
 
 **WizardEye is currently in beta and under active development. Future updates will bring new features, improve stability, and ensure robustness through comprehensive unit testing.**
 
+To do this, WizardEye first identifies all positions in your reference genome that can be targeted by reads from known ambiguous sources using your alignment parameters. For example, it can be used to filter out reads in your alignment that map to regions conserved between your reference genome and several potentially contaminating organisms.
 
 The tool is designed both to create a database containing several reference genomes and their associated risky sources, and to filter BAM files according to that stored information. By directly using `bwa`, WizardEye can empirically identify risky reads based on your frequently used alignment parameters.
 
@@ -234,7 +235,7 @@ If you prefer to use your own-made filter, you can export a per-read report whic
 This command take the same parameters as `filter`, plus a parameter `--mode` to specify the type of statistical summary you want betweemn `sum`, `max`, `min`, `cov`, `mean` and `std`. Statistics are computed on interval. For example, if `max` is specified, for each track, the maximum number of overlapping k-mers from this track on a position in the read associated interval is reported. 
 
 ```
-wizardeye count -i alignment.bam -r hg19 --exclude-tags Cave -k 35 -s 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -m max
+wizardeye count -i alignment.bam -r hg19 --exclude-tags Farm -k 35 -s 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -m max
 ```
 
 In this example, track whose are not reported using `filter`+`-s=0.01` should have a `0` in their column, as it means that the maximum number of overlapping k-mers in the interval is 0. 
