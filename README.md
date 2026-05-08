@@ -1,6 +1,6 @@
 # WizardEye
 
-[![Version](https://img.shields.io/badge/version-0.0.5b0-orange.svg)](https://github.com/predomics/gpredomics/releases)
+[![Version](https://img.shields.io/badge/version-0.0.7b0-orange.svg)](https://github.com/predomics/gpredomics/releases)
 ![Python](https://img.shields.io/badge/beta-red.svg)
 ![Python](https://img.shields.io/badge/Python-green.svg)
 
@@ -152,7 +152,7 @@ Note also that, to prevent misuse, it is not possible to add a new track to the 
 Once you have a representative database, you can use it to filter out reads from your alignment. To do that, you can enter:
 
 ```
-wizardeye filter -i alignment.bam -r hg19 --exclude-tags Cave -k 35 -s 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database
+wizardeye filter -i alignment.bam -r hg19 --exclude-tags Cave -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database
 ```
 
 This will filter out all reads that can be ambiguously aligned to your target if they come from a source with a tag listed in `--exclude-tags`. 
@@ -177,12 +177,12 @@ Note that, by default, the tool excludes a read if at least **one base** of the 
 
 To handle the trade-off between sensitivity and specificity, you can specify a stringency value during filtering. This criterion is defined as described below.
 
-For a position $P$ in the target, there are exactly `-k`/`-s` different possible k-mers that overlap that position perfectly. After mapping, among the `n` k-mers overlapping the position (maximum `-k`/`-s` if no mismatches are allowed, otherwise more), `u` is computed as the number of these k-mers that are unique in the target. The position is then highlighted as ambiguous if `u`/(`-k`/`-s`) >= `-rc`, i.e., if the proportion of unique k-mers overlapping the position compared with the total number of possible k-mers overlapping the position is higher than the stringency.
+For a position $P$ in the target, there are exactly `-k`/`-w` different possible k-mers that overlap that position perfectly. After mapping, among the `n` k-mers overlapping the position (maximum `-k`/`-w` if no mismatches are allowed, otherwise more), `u` is computed as the number of these k-mers that are unique in the target. The position is then highlighted as ambiguous if `u`/(`-k`/`-w`) >= `-rc`, i.e., if the proportion of unique k-mers overlapping the position compared with the total number of possible k-mers overlapping the position is higher than the stringency.
 
 For example, in a situation with one mismatch allowed, with `-k=40` and `-rc=0.25`, if a position is overlapped by 10 exact k-mers and 10 k-mers with one mismatch, the position is retained only if 10 of these k-mers are unique, regardless of exactness. In a similar case with `-rc=0.50`, the region is highlighted only if all 20 k-mers map uniquely there.
 
 ```
-wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -s 0.25 -d /path/to/database
+wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -r 0.25 -d /path/to/database
 ```
 
 Note that the ratio is not weighted by depth. In another case with a repetitive region, where a position is overlapped by 3000 k-mers, the ratio is still the same: if 40 of these are unique, the position is highlighted.
@@ -235,10 +235,10 @@ If you prefer to use your own-made filter, you can export a per-read report whic
 This command take the same parameters as `filter`, plus a parameter `--mode` to specify the type of statistical summary you want betweemn `sum`, `max`, `min`, `cov`, `mean` and `std`. Statistics are computed on interval. For example, if `max` is specified, for each track, the maximum number of overlapping k-mers from this track on a position in the read associated interval is reported. 
 
 ```
-wizardeye count -i alignment.bam -r hg19 --exclude-tags Farm -k 35 -s 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -m max
+wizardeye count -i alignment.bam -r hg19 --exclude-tags Farm -k 35 -r 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -m max
 ```
 
-In this example, track whose are not reported using `filter`+`-s=0.01` should have a `0` in their column, as it means that the maximum number of overlapping k-mers in the interval is 0. 
+In this example, track whose are not reported using `filter`+`-r=0.01` should have a `0` in their column, as it means that the maximum number of overlapping k-mers in the interval is 0. 
 
 #### Output
 
@@ -259,7 +259,7 @@ WizardEye produces a tabulation-separated report containing, for each read, the 
 If you plan to use the same configuration often to filter your reads, it is highly recommended to export a mask in order to avoid recomputing it continuously:
 
 ```
-wizardeye export -r hg19 --exclude-tags Cave -k 35 -s 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -o mask.bed
+wizardeye export -r hg19 --exclude-tags Cave -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -o mask.bed
 ```
 
 ### Import an existing track manually
@@ -281,4 +281,4 @@ This command creates the target/track directory, copies the two BigWig files as 
 
 It is recommanded to complete your filtration using an evolutionnary-aware method such as Kraken2. This combination is useful to remove both reads that belong to completely different organisms and reads that can be ambiguous between closely related organisms.
 
-*Last update of this documentation: beta-0.0.5.*
+*Last update of this documentation: beta-0.0.7.*

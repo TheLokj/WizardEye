@@ -641,6 +641,213 @@ def filter_bam_from_reads_id(
 	n_filtered_records = n_total_records - n_excluded_records
 	return n_total_records, n_filtered_records, n_excluded_records
 
+# -- Alternative filtration using pyBigWig --
+
+def filter_bam_alternative(
+	input_bam: str,
+	ref: str,
+	db_root: str,
+	exclude_tracks: List[str],
+	kmer_length: int,
+	offset_step: int,
+	bwa_missing_prob_err_rate: Optional[float] = None,
+	bwa_max_gap_opens: Optional[int] = None,
+	bwa_seed_length: Optional[int] = None,
+	stringency: float = 0.99,
+	consider_all: bool = False,
+	output_report_tsv: Optional[str] = None,
+	export_bam: bool = False,
+	output_filtered_bam: Optional[str] = None,
+	output_excluded_bam: Optional[str] = None,
+	no_cache: bool = False,
+	n_threads: int = 1,
+) -> Dict[str, object]:
+	"""Alternative BAM filtering function using pyBigWig directly instead of bedtools mask intersection.
+	
+	Inspired by _generate_count_only_report, this function filters reads by checking if the sum of
+	k-mers overlapping each read position exceeds the stringency threshold for any track.
+
+	Args:
+		input_bam (str): Path to the input BAM file to filter.
+		ref (str): Name of the reference species.
+		exclude_tracks (List[str]): List of input track names to consider. 
+		kmer_length (int): Length of the k-mers used during track generations.
+		offset_step (int): Step size for the offset used during track generations.
+		stringency (float): Cross-stringency threshold, must be between 0.0 and 1.0.
+		consider_all (bool): If True, all k-mers are considered. If False (default), only uniquely aligned k-mers are considered.
+		bwa_missing_prob_err_rate (Optional[float]): BWA missing probability error rate used during track generations.
+		bwa_max_gap_opens (Optional[int]): Maximum number of gap opens allowed in BWA alignment used during track generations.
+		bwa_seed_length (Optional[int]): Seed length for BWA alignment used during track generations.
+		output_report_tsv (Optional[str]): Path to the output TSV report file.
+		export_bam (bool): If True, splits the input BAM into filtered and excluded BAM files.
+		output_filtered_bam (Optional[str]): Path to the output BAM file containing filtered reads if export_bam is True.
+		output_excluded_bam (Optional[str]): Path to the output BAM file containing excluded reads if export_bam is True.
+		db_root (str): Root directory of the database.
+		no_cache (bool): If True, do not use and generate cached tracks.
+
+	Returns:
+		Dict[str, object]: Dictionary containing mask path (None for this alternative), filtered/excluded BAM paths, report path, and counts.
+	"""
+	if pysam is None:
+		raise RuntimeError("pysam is required for report generation and BAM filtering")
+
+	# Parameters validation
+	input_bam_path = Path(input_bam)
+	if not input_bam_path.exists() or not input_bam_path.is_file():
+		raise FileNotFoundError(f"Input BAM not found: {input_bam_path}")
+
+	if kmer_length < 1:
+		raise ValueError("kmer_length must be a positive integer")
+	if offset_step < 1:
+		raise ValueError("offset_step must be a positive integer")
+	if not (0.0 <= stringency <= 1.0):
+		raise ValueError("stringency must be between 0.0 and 1.0")
+
+	normalized_tracks = from_charlist_to_list(exclude_tracks)
+	if not normalized_tracks:
+		raise ValueError("exclude_tracks cannot be empty")
+
+	# Fail fast on initial-file incompatibility before any processing.
+	ref_dir = Path(db_root) / ref
+	reference_seq_sizes = ref_dir / f"{ref}.sizes"
+	validate_bam_compatibility(
+		input_bam_path,
+		reference_seq_sizes,
+		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
+		bwa_max_gap_opens=bwa_max_gap_opens,
+		bwa_seed_length=bwa_seed_length,
+	)
+
+	sorted_tracks = sorted(set(normalized_tracks))
+
+	tracks_for_params = get_tracks(
+		ref_species=ref,
+		kmer_length=kmer_length,
+		offset_step=offset_step,
+		db_root=db_root,
+		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
+		bwa_max_gap_opens=bwa_max_gap_opens,
+		bwa_seed_length=bwa_seed_length,
+	)
+	normalized_requested_tracks = set(sorted_tracks)
+	track_to_tags: Dict[str, Set[str]] = {}
+	for track in tracks_for_params:
+		if track.track_name not in normalized_requested_tracks:
+			continue
+		tags = set(from_charlist_to_list(track.info.get("tags", []), lowercase=True))
+		for key in {track.track_name, track.identity.query_species, track.query_name, track.track_name.split("_")[0]}:
+			track_to_tags.setdefault(key, set()).update(tags)
+
+	report_tsv = Path(output_report_tsv) if output_report_tsv else _default_output_table(input_bam_path)
+	report_tsv.parent.mkdir(parents=True, exist_ok=True)
+
+	selected_tracks = [
+		track
+		for track in tracks_for_params
+		if track.track_name in normalized_requested_tracks
+	]
+	if not selected_tracks:
+		raise ValueError("No selected tracks available for filtering")
+
+	# Calculate threshold once
+	threshold = stringency * (kmer_length / offset_step)
+
+	# Open all BigWig files
+	opened_bws = []
+	for track in selected_tracks:
+		bw_path = track.map_all_bw if consider_all else track.map_uniq_bw
+		if not bw_path.exists():
+			raise FileNotFoundError(f"Missing BigWig: {bw_path}")
+		opened_bws.append(pyBigWig.open(str(bw_path)))
+
+	try:
+		read_tracks: Dict[str, Set[str]] = {}
+		read_tags: Dict[str, Set[str]] = {}
+		excluded_read_ids: Set[str] = set()
+		n_total_records = 0
+		n_mapped_records = 0
+
+		log("Identifying overlapping reads...", "I")
+
+		with pysam.AlignmentFile(str(input_bam_path), "rb") as bam:
+			for read in bam.fetch(until_eof=True):
+				n_total_records += 1
+				read_id = read.query_name or ""
+				
+				if not read_id or read.is_unmapped or read.reference_name is None:
+					read_tracks[read_id] = set()
+					read_tags[read_id] = set()
+					continue
+
+				n_mapped_records += 1
+				chrom = read.reference_name
+				start = read.reference_start
+				end = read.reference_end
+
+				if start is None or end is None or end <= start:
+					read_tracks[read_id] = set()
+					read_tags[read_id] = set()
+					continue
+
+				read_tracks[read_id] = set()
+				read_tags[read_id] = set()
+
+				# Check each track for overlap exceeding threshold (per bp, using max)
+				for idx, bw in enumerate(opened_bws):
+					track = selected_tracks[idx]
+					stat_res = bw.stats(chrom, start, end, type="max", exact=True)
+					
+					# stat_res is (value,) tuple, we want the max value per bp in the region
+					kmer_max = stat_res[0] if stat_res and stat_res[0] is not None else 0.0
+					
+					if kmer_max >= threshold:
+						excluded_read_ids.add(read_id)
+						track_name = track.identity.query_species
+						read_tracks[read_id].add(track_name)
+						read_tags[read_id].update(track_to_tags.get(track_name, set()))
+
+		report_path = write_filtration_report(
+			output_report_tsv=report_tsv,
+			read_tracks=read_tracks,
+			read_tags=read_tags,
+		)
+		n_filtered = max(0, n_mapped_records - len(excluded_read_ids))
+
+		filtered_bam: Optional[Path] = None
+		excluded_bam: Optional[Path] = None
+
+		if export_bam:
+			filtered_bam = Path(output_filtered_bam) if output_filtered_bam else _default_output_bam(input_bam_path, "filtered")
+			excluded_bam = Path(output_excluded_bam) if output_excluded_bam else _default_output_bam(input_bam_path, "excluded")
+			log("Filtering BAM from excluded read IDs...", "I")
+			filter_bam_from_reads_id(
+				input_bam=input_bam_path,
+				excluded_read_ids=excluded_read_ids,
+				output_filtered_bam=filtered_bam,
+				output_excluded_bam=excluded_bam,
+			)
+
+			for bam_path in (filtered_bam, excluded_bam):
+				try:
+					pysam.index(str(bam_path))
+				except Exception:
+					log(f"Could not index BAM (possibly unsorted): {bam_path}", "W")
+
+		return {
+			"mask": None,
+			"filtered_bam": filtered_bam,
+			"excluded_bam": excluded_bam,
+			"report_tsv": report_path,
+			"n_total": n_mapped_records,
+			"n_filtered": n_filtered,
+			"n_excluded": len(excluded_read_ids),
+			"n_total_records": n_total_records,
+		}
+	
+	finally:
+		for bw in opened_bws:
+			bw.close()
+
 # --- Count-report related function ---
 
 def count_k_mers_on_bam(

@@ -25,7 +25,7 @@ from .db import (
 	get_tracks,
 	resolve_requested_track_names
 )
-from .filter import generate_global_mask, filter_bam, count_k_mers_on_bam
+from .filter import generate_global_mask, filter_bam, count_k_mers_on_bam, filter_bam_alternative
 from .utils import from_charlist_to_list, log
 from .version import DISPLAY_VERSION, PACKAGE_VERSION, print_version_message
 
@@ -132,10 +132,6 @@ def _request_tracks_from_args(ref: str, input_bam: str, db_root: str,
 
 	if ref not in get_refs(db_root):
 		log(f"Reference '{ref}' not found in database '{db_root}'.", "E")
-		raise typer.Exit(code=1)
-	
-	if not input_bam:
-		log("Input BAM (-i/--input) must be specified.", "E")
 		raise typer.Exit(code=1)
 
 	if exclude_tags and exclude_tracks:
@@ -397,6 +393,11 @@ def align(
 
 	# Other parameters
 	db_root: str = typer.Option(..., "-d", "--db-root", help="Path to the database root directory."),
+	tmp_dir: Optional[str] = typer.Option(
+		None,
+		"--tmp-dir",
+		help="Custom temporary directory path. If provided, overrides the default TMPDIR=/tmp location for wizardeye temporary files.",
+	),
 	force: bool = typer.Option(None, help="Force track creation even if it already exists."),
 ):
 	print_version_message()
@@ -460,6 +461,7 @@ def align(
 					bwa_seed_length=bwa_seed_length,
 					db_root=db_root,
 					tags=tag,
+					tmp_dir_custom=tmp_dir,
 				)
 			except subprocess.CalledProcessError as e:
 				log(f"Subprocess failed: {e}", "E")
@@ -499,7 +501,7 @@ def filter(
 	),
 	cross_stringency: float = typer.Option(
 		0.99,
-		"-s",
+		"-p",
 		"--stringency",
 		"-rc",
 		"--cross-stringency",
@@ -553,6 +555,11 @@ def filter(
 ):
 	start_time = time.perf_counter()
 	print_version_message()
+
+	if not input_bam:
+		log("Input BAM (-i/--input) must be specified.", "E")
+		raise typer.Exit(code=1)
+
 	valid_tracks = _request_tracks_from_args(ref, input_bam, db_root, exclude_tags, exclude_tracks, bwa_missing_prob_err_rate, 
 					bwa_max_gap_opens, bwa_seed_length, kmer_length, offset_step,
 					considere_all, no_cache, cross_stringency)
@@ -564,7 +571,7 @@ def filter(
 		raise typer.Exit(code=1)
 
 	try:
-		filter_result = filter_bam(
+		filter_result = filter_bam_alternative(
 			input_bam=input_bam,
 			ref=ref,
 			db_root=db_root,
@@ -636,7 +643,7 @@ def export(
 	bwa_seed_length: Optional[int] = typer.Option(None, "-bl", help="BWA aln -l used for selected tracks."),
 	cross_stringency: float = typer.Option(
 		0.99,
-		"-s",
+		"-p",
 		"--stringency",
 		"-rc",
 		"--cross-stringency",
@@ -857,6 +864,10 @@ def count(
 	):
 	
 	start_time = time.perf_counter()
+
+	if not input_bam:
+		log("Input BAM (-i/--input) must be specified.", "E")
+		raise typer.Exit(code=1)
 
 	if count_mode not in ["mean", "std", "max", "min", "cov", "sum"]:
 		log(f"Invalid count mode {count_mode}. Available: mean, std, max, min, cov or sum.")
