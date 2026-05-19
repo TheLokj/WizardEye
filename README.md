@@ -1,8 +1,9 @@
 # WizardEye
 
-[![Version](https://img.shields.io/badge/version-0.0.7b0-orange.svg)](https://github.com/predomics/gpredomics/releases)
-![Python](https://img.shields.io/badge/beta-red.svg)
 ![Python](https://img.shields.io/badge/Python-green.svg)
+![Beta](https://img.shields.io/badge/beta-red.svg)
+[![Version](https://img.shields.io/badge/version-0.0.8b0-orange.svg)](https://github.com/TheLokj/WizardEye/releases)
+[![Python CI](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml/badge.svg)](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml)
 
 WizardEye is a Python tool that filters aligned reads according to the risk of ambiguous alignment sources on a reference genome. 
 
@@ -281,4 +282,4 @@ This command creates the target/track directory, copies the two BigWig files as 
 
 It is recommanded to complete your filtration using an evolutionnary-aware method such as Kraken2. This combination is useful to remove both reads that belong to completely different organisms and reads that can be ambiguous between closely related organisms.
 
-*Last update of this documentation: beta-0.0.7.*
+*Last update of this documentation: beta-0.0.8.*

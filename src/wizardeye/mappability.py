@@ -34,6 +34,7 @@ from .utils import (
 	from_charlist_to_list,
 	convert_bedgraph_to_bigwig,
 	write_seq_sizes_from_bam,
+	write_seq_sizes_from_fasta,
 	iterate_mapping_intervals,
 	iterate_unique_mapping_intervals,
 	Intervals,
@@ -42,13 +43,15 @@ from .utils import (
 
 # -- WizardEye mappability utilities --
 
-def from_alignment_to_bigWig(bam_file: Path, out_dir: Path, kmer_length: int) -> Tuple[Path, Path, Dict[str, int]]:
+def from_alignment_to_bigWig(bam_file: Path, out_dir: Path, kmer_length: int, n_threads: int = 1, tmp_dir: Optional[Path] = None) -> Tuple[Path, Path, Dict[str, int]]:
 	"""Convert alignment results to BigWig tracks.
 	
 	Args:
 		bam_file(Path): Path to the BAM file containing all mapped k-mers.
 		out_dir(Path): Directory where the output BigWig files and intermediate files will be saved.
 		kmer_length(int): Length of the k-mers used for mapping, needed for coverage calculations.
+		n_threads(int): Number of threads to use for parallel operations. Default is 1.
+		tmp_dir(Optional[Path]): Temporary directory for sort operations. Defaults to out_dir.
 
 	Returns:
 		Tuple[Path, Path, Dict[str, int] :
@@ -56,6 +59,8 @@ def from_alignment_to_bigWig(bam_file: Path, out_dir: Path, kmer_length: int) ->
 			- Path: Path to the BigWig file for uniquely mapping k-mers (map_uniq).
 			- Dict[str, int]: dictionary with covered base counts for both masks, e.g. {"map_all": 123456, "map_uniq": 78910}.
 	"""
+	if tmp_dir is None:
+		tmp_dir = out_dir
 
 	cov_map_bg = out_dir / "map_all.bg"
 	cov_uniq_bg = out_dir / "map_uniq.bg"
@@ -75,13 +80,47 @@ def from_alignment_to_bigWig(bam_file: Path, out_dir: Path, kmer_length: int) ->
 		for chrom, start, end in iterate_unique_mapping_intervals(bam_file, kmer_length):
 			f.write(f"{chrom}\t{start}\t{end}\n")
 
+	# Sort BED files by chrom then position (required by bedtools genomecov)
+	log("Sorting BED files by chromosome and position...", "I")
+	for bed_file in (n_map_bed, n_uniq_bed):
+		tmp_sorted = bed_file.with_suffix(".sorted")
+		run(["sort", "-k1,1", "-k2,2n", "--parallel=" + str(n_threads), "-T", str(tmp_dir), str(bed_file), "-o", str(tmp_sorted)], check=True, env={**os.environ, "LC_ALL": "C"})
+		tmp_sorted.replace(bed_file)
+
 	# Use bedtools genomecov to compute coverage
 	write_seq_sizes_from_bam(bam_file, seq_sizes)
 
-	run(["bedtools", "genomecov", "-i", str(n_map_bed), "-g", str(seq_sizes), "-bga"],
-		stdout=open(cov_map_bg, "w"), check=True)
-	run(["bedtools", "genomecov", "-i", str(n_uniq_bed), "-g", str(seq_sizes), "-bga"],
-		stdout=open(cov_uniq_bg, "w"), check=True)
+	with open(cov_map_bg, "w") as f_map:
+		genomecov_map = subprocess.Popen(
+			["bedtools", "genomecov", "-i", str(n_map_bed), "-g", str(seq_sizes), "-bga"],
+			stdout=subprocess.PIPE,
+		)
+		sort_map = subprocess.Popen(
+			["sort", "-k1,1", "-k2,2n", "--parallel=" + str(n_threads), "-T", str(tmp_dir)],
+			stdin=genomecov_map.stdout,
+			stdout=f_map,
+			env={**os.environ, "LC_ALL": "C"},
+		)
+		genomecov_map.stdout.close()
+		return_code = sort_map.wait()
+		if return_code != 0:
+			raise subprocess.CalledProcessError(return_code, sort_map.args)
+
+	with open(cov_uniq_bg, "w") as f_uniq:
+		genomecov_uniq = subprocess.Popen(
+			["bedtools", "genomecov", "-i", str(n_uniq_bed), "-g", str(seq_sizes), "-bga"],
+			stdout=subprocess.PIPE,
+		)
+		sort_uniq = subprocess.Popen(
+			["sort", "-k1,1", "-k2,2n", "--parallel=" + str(n_threads), "-T", str(tmp_dir)],
+			stdin=genomecov_uniq.stdout,
+			stdout=f_uniq,
+			env={**os.environ, "LC_ALL": "C"},
+		)
+		genomecov_uniq.stdout.close()
+		return_code = sort_uniq.wait()
+		if return_code != 0:
+			raise subprocess.CalledProcessError(return_code, sort_uniq.args)
 
 	# Count covered bases from bedGraph files
 	def count_bp_from_bedgraph(bg_path: Path) -> int:
@@ -282,7 +321,7 @@ def create_mappability_track(
 	target_seq_sizes = target_dir / f"{target_name}.sizes"
 	if not target_seq_sizes.exists():
 		log(f"Generating sequence sizes file for reference '{target_name}'...", "I")
-		write_seq_sizes_from_bam(input_target, target_seq_sizes)
+		write_seq_sizes_from_fasta(input_target, target_seq_sizes)
 
 	# Create temporary directory in cluster TMPDIR or /tmp, or use custom directory if provided
 	if tmp_dir_custom:
@@ -404,6 +443,8 @@ def create_mappability_track(
 			bam_file=bam_file,
 			out_dir=out_dir,
 			kmer_length=kmer_length,
+			n_threads=n_threads,
+			tmp_dir=tmp_dir,
 		)
 
 		# Save parameters

@@ -16,6 +16,9 @@ dependencies = [
   "numpy"
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
 [project.scripts]
 wizardeye = "wizardeye.cli:app"
 
