@@ -26,7 +26,8 @@ jobs:
             bedtools \
             seqkit \
             parallel \
-            ucsc-tools
+            ucsc-bedgraphtobigwig \ 
+            ucsc-bigwigtobedgraph
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
