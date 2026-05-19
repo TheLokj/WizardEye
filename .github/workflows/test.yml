@@ -18,28 +18,30 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install system dependencies
-        - name: Install system dependencies
         run: |
-          echo "deb http://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/ ./" | sudo tee /etc/apt/sources.list.d/ucsc.list
-          wget -qO- http://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/ucsc_public.key | sudo apt-key add -
           sudo apt-get update
           sudo apt-get install -y \
             bwa \
             samtools \
             bedtools \
             seqkit \
-            parallel \
-            ucsc-bedgraphtobigwig \
-            ucsc-bigwigtobedgraph
+            parallel
+          
+          wget -q http://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/bedGraphToBigWig -O ucsc-bedgraphtobigwig
+          wget -q http://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/bigWigToBedGraph -O ucsc-bigwigtobedgraph
+          
+          chmod +x ucsc-bedgraphtobigwig ucsc-bigwigtobedgraph
+          sudo mv ucsc-bedgraphtobigwig ucsc-bigwigtobedgraph /usr/local/bin/
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: 'pip' 
 
       - name: Install package and dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -e ".[test]"
 
       - name: Run integration tests
