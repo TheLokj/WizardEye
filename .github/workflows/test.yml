@@ -27,11 +27,11 @@ jobs:
             seqkit \
             parallel
           
-          wget -q http://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/bedGraphToBigWig -O ucsc-bedgraphtobigwig
-          wget -q http://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/bigWigToBedGraph -O ucsc-bigwigtobedgraph
+          wget -q http://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/bedGraphToBigWig
+          wget -q http://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/bigWigToBedGraph
           
-          chmod +x ucsc-bedgraphtobigwig ucsc-bigwigtobedgraph
-          sudo mv ucsc-bedgraphtobigwig ucsc-bigwigtobedgraph /usr/local/bin/
+          chmod +x bedGraphToBigWig bigWigToBedGraph
+          sudo mv bedGraphToBigWig bigWigToBedGraph /usr/local/bin/
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
