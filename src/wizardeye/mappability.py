@@ -343,49 +343,32 @@ def create_mappability_track(
 		else:
 			log(f"BWA index found for {input_target}, skipping index.", "I")
 
-		# Generate k-mers, deduplicate identical sequences by default, then split to chunks.
-		raw_kmer_fasta = tmp_dir / f"{input_name}_kseq.raw.fasta"
-		kmer_fasta = tmp_dir / f"{input_name}_kseq.dedup.fasta"
-		seqkit_cmd = [
-			"seqkit", "sliding",
-			"-W", str(kmer_length),
-			"-s", str(offset_step),
-			str(input_fasta),
-			"-o", str(raw_kmer_fasta)
-		]
-		log(f"Splitting {input_fasta} into {kmer_length}-mers with a sliding window of {offset_step}...", "I")
-		run(seqkit_cmd, check=True)
-
-		rmdup_cmd = [
-			"seqkit",
-			"rmdup",
-			"-s",
-			str(raw_kmer_fasta),
-			"-o",
-			str(kmer_fasta),
-		]
-		log("Deduplicating k-mers with seqkit rmdup -s...", "I")
-		run(rmdup_cmd, check=True)
-
-		log(f"Splitting k-mer FASTA into chunks of {chunk_size} sequences for parallel alignment...", "I")
+		log(f"Splitting {input_fasta} into {kmer_length}-mers, deduplicating, and chunking with seqkit pipeline...", "I")
 		chunk_dir = tmp_dir / f"{input_name}_chunks"
 		chunk_dir.mkdir(parents=True, exist_ok=True)
-		chunk_cmd = [
-			"seqkit",
-			"split2",
-			"-s",
-			str(chunk_size),
-			"-O",
-			str(chunk_dir),
-			"--extension",
-			".fasta",
-			str(kmer_fasta),
-		]
-		run(chunk_cmd, check=True)
 
-		for tmp_fasta in (raw_kmer_fasta, kmer_fasta):
-			if tmp_fasta.exists():
-				tmp_fasta.unlink()
+		p1 = subprocess.Popen(
+			["seqkit", "sliding", "-W", str(kmer_length), "-s", str(offset_step), str(input_fasta)],
+			stdout=subprocess.PIPE,
+			stderr=subprocess.PIPE,
+		)
+		p2 = subprocess.Popen(
+			["seqkit", "rmdup", "-s"],
+			stdin=p1.stdout,
+			stdout=subprocess.PIPE,
+			stderr=subprocess.PIPE,
+		)
+		p3 = subprocess.Popen(
+			["seqkit", "split2", "-s", str(chunk_size), "-O", str(chunk_dir), "--extension", ".fasta", "-"],
+			stdin=p2.stdout,
+			stderr=subprocess.PIPE,
+		)
+		p1.stdout.close()
+		p2.stdout.close()
+
+		for p in (p1, p2, p3):
+			if p.wait() != 0:
+				raise subprocess.CalledProcessError(p.returncode, p.args)
 
 		chunk_fastas = sorted(chunk_dir.rglob("*.fasta"))
 		if not chunk_fastas:
