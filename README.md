@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python-green.svg)
 ![Beta](https://img.shields.io/badge/beta-red.svg)
-[![Version](https://img.shields.io/badge/version-0.0.8b0-orange.svg)](https://github.com/TheLokj/WizardEye/releases)
+[![Version](https://img.shields.io/badge/version-0.0.9b0-orange.svg)](https://github.com/TheLokj/WizardEye/releases)
 [![Python CI](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml/badge.svg)](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml)
 ![GitHub bugs](https://img.shields.io/github/issues/TheLokj/WizardEye/bug)
 
