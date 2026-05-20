@@ -402,7 +402,7 @@ def iterate_mapping_intervals(bam_file: Path, kmer_length: int) -> Iterable[Tupl
 				xa_value = read.get_tag("XA")
 				for chrom, pos_1based, cigar in parse_xa_tag(xa_value):
 					ref_len = reference_len_from_cigar(cigar, kmer_length)
-					alt_start = pos_1based - 1
+					alt_start = abs(pos_1based) - 1
 					yield (chrom, alt_start, alt_start + ref_len)
 
 def iterate_unique_mapping_intervals(bam_file: Path, kmer_length: int) -> Iterable[Tuple[str, int, int]]:

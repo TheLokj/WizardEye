@@ -9,8 +9,8 @@ import subprocess
 import sys
 from typing import Optional
 
-DISPLAY_VERSION = "beta-0.0.8"
-PACKAGE_VERSION = "0.0.8b0"
+DISPLAY_VERSION = "beta-0.0.9"
+PACKAGE_VERSION = "0.0.9b0"
 
 def _get_git_commit_hash() -> Optional[str]:
 	"""Get the current Git commit hash if available.

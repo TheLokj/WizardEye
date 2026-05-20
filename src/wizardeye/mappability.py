@@ -179,6 +179,7 @@ def align_with_bwa_aln(
 				"aln",
 				"-t",
 				"1",
+				"-N",
 				"-n",
 				str(bwa_missing_prob_err_rate),
 				"-o",
