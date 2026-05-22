@@ -30,7 +30,10 @@ from .db import (
 )
 
 app = typer.Typer(
-    help="A Python tool to create, manage, and filter by cross-mappability tracks."
+    help="WizardEye: A Python tool to create, manage, and filter by cross-mappability tracks.",
+    no_args_is_help=True,
+    add_completion=False,
+    suggest_commands=False,
 )
 
 # -- Helper functions --
