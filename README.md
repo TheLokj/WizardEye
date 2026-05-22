@@ -1,8 +1,9 @@
 # WizardEye
 
-![Python](https://img.shields.io/badge/Python-green.svg)
+![Python](https://img.shields.io/badge/Python->=3.8-green.svg)
 ![Beta](https://img.shields.io/badge/beta-red.svg)
 [![Version](https://img.shields.io/badge/version-0.1.2-yellow.svg)](https://github.com/TheLokj/WizardEye/releases)
+[![Install WizardEye using bioconda](https://img.shields.io/badge/Install%20WizardEye%20using-bioconda-brightblue.svg?style=flat)](http://bioconda.github.io/recipes/wizardeye/README.html)
 [![Python CI](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml/badge.svg)](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml)
 ![GitHub bugs](https://img.shields.io/github/issues/TheLokj/WizardEye/bug)
 

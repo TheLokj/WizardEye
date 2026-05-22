@@ -635,9 +635,6 @@ def filter(
         "-bN",
         help="BWA aln -N used for alignment (compute every alternative mapping).",
     ),
-    bwa_threads: Optional[int] = typer.Option(
-        1, "-bj", "--bwa-threads", help="BWA aln -t used for alignment."
-    ),
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
     ),
@@ -712,7 +709,7 @@ def filter(
         max_gap_opens=bwa_max_gap_opens,
         seed_length=bwa_seed_length,
         all_aln=bwa_all_aln,
-        threads=bwa_threads,
+        threads=None,
     )
     valid_tracks = _request_tracks_from_args(
         ref,
@@ -828,12 +825,6 @@ def export(
         "-bN",
         help="BWA aln -N used to generate selected tracks (compute every alternative mapping).",
     ),
-    bwa_threads: Optional[int] = typer.Option(
-        None,
-        "-bj",
-        "--bwa-threads",
-        help="BWA aln -t used to generate selected tracks.",
-    ),
     cross_stringency: float = typer.Option(
         0.99,
         "-p",
@@ -871,7 +862,7 @@ def export(
         max_gap_opens=bwa_max_gap_opens,
         seed_length=bwa_seed_length,
         all_aln=bwa_all_aln,
-        threads=bwa_threads,
+        threads=None,
     )
 
     valid_tracks = _request_tracks_from_args(
@@ -1078,9 +1069,6 @@ def count(
         "-bN",
         help="BWA aln -N used for alignment (compute every alternative mapping).",
     ),
-    bwa_threads: Optional[int] = typer.Option(
-        None, "-bj", "--bwa-threads", help="BWA aln -t used for alignment."
-    ),
     # Track generation parameters
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
@@ -1150,7 +1138,7 @@ def count(
         max_gap_opens=bwa_max_gap_opens,
         seed_length=bwa_seed_length,
         all_aln=bwa_all_aln,
-        threads=bwa_threads,
+        threads=None,
     )
 
     valid_tracks = _request_tracks_from_args(
