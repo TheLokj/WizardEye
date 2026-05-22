@@ -128,7 +128,7 @@ def _request_tracks_from_args(
     exclude_tracks: str,
     kmer_length: int,
     offset_step: int,
-    considere_all: bool,
+    only_unique: bool,
     no_cache: bool,
     cross_stringency: float,
     bwa_params: Optional[BWAParameters] = None,
@@ -173,7 +173,6 @@ def _request_tracks_from_args(
     # Log requested parameters
     colorful = sys.stdout.isatty() and sys.stderr.isatty()
     default = "\033[0;90m(default)\033[0m" if colorful else "(default)"
-    hard = "\033[0;33m(hard)\033[0m" if colorful else "(hard)"
 
     log(f"Reference used: {ref}", "I")
     log(f"Input alignment file to process: {input_bam}", "I")
@@ -187,7 +186,7 @@ def _request_tracks_from_args(
         "I",
     )
     log(
-        f"Mask source mode: {f'all k-mers {hard}' if considere_all else f'uniquely aligned k-mers {default}'}",
+        f"Mask source mode: {'uniquely aligned k-mers' if only_unique else f'all k-mers {default}'}",
         "I",
     )
     log(
@@ -253,7 +252,10 @@ def common_options(
     return
 
 
-@app.command(help="Initialize, validate, or inspect tracks in a WizardEye database.")
+@app.command(
+    help="Initialize, validate, or inspect tracks in a WizardEye database.",
+    no_args_is_help=True,
+)
 def database(
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
@@ -434,7 +436,8 @@ def database(
 # Main alignment command with all parameters for track generation
 # Same behavior that generate_cross_mappability_filter_bwa.sh
 @app.command(
-    help="Generate cross-mappability tracks from input FASTA files using specific bwa aln parameters."
+    help="Generate cross-mappability tracks from input FASTA files using specific bwa aln parameters.",
+    no_args_is_help=True,
 )
 def align(
     # Input parameters
@@ -609,7 +612,8 @@ def align(
 
 
 @app.command(
-    help="Filter an input BAM using selected cross-mappability tracks and stringency."
+    help="Filter an input BAM using selected cross-mappability tracks and stringency.",
+    no_args_is_help=True,
 )
 def filter(
     # Alignment parameters used to construct the BAM file
@@ -656,16 +660,11 @@ def filter(
         "--cross-stringency",
         help="Stringency threshold in [0.0, 1.0].",
     ),
-    considere_all: bool = typer.Option(
+    only_unique: bool = typer.Option(
         False,
-        "--considere_all",
-        "--considere-all",
-        help="Use map_all.bw instead of map_uniq.bw to build the exclusion mask.",
-    ),
-    no_cache: bool = typer.Option(
-        False,
-        "--no-cache",
-        help="Disable mask caching: recompute track masks and avoid writing cache files.",
+        "--only-unique",
+        "--only_unique",
+        help="Consider only unique k-mers (no XA tag & MAPQ>0) area.",
     ),
     output_filtered_bam: Optional[str] = typer.Option(
         None,
@@ -683,20 +682,10 @@ def filter(
         "--report-output",
         help="Output TSV report with columns: read_id, excluded, overlapped, tags.",
     ),
-    count_only: bool = typer.Option(
-        False,
-        "--count-only",
-        help="Generate only a per-read/per-track overlap-count report from one track source (map_uniq.bw by default, map_all.bw with --considere-all).",
-    ),
     export_bam: bool = typer.Option(
         False,
         "--export-bam",
         help="Write filtered/excluded BAM outputs. By default, only the TSV report is generated.",
-    ),
-    n_threads: int = typer.Option(
-        1,
-        "-j",
-        help="Number of threads for parallel overlap extraction from BigWig tracks.",
     ),
     kmer_length: Optional[int] = typer.Option(
         None,
@@ -708,7 +697,7 @@ def filter(
         "-w",
         "--offset-step",
         "--sliding-window",
-        help="Offset/sliding window to filter on. Smaller, more sensitive.",
+        help="Offset/sliding window to filter on. Must match track generation parameter.",
     ),
 ):
     start_time = time.perf_counter()
@@ -733,8 +722,8 @@ def filter(
         exclude_tracks,
         kmer_length,
         offset_step,
-        considere_all,
-        no_cache,
+        only_unique,
+        None,
         cross_stringency,
         bwa_params,
     )
@@ -755,7 +744,7 @@ def filter(
             offset_step=offset_step,
             bwa_params=bwa_params,
             stringency=cross_stringency,
-            consider_all=considere_all,
+            consider_all=not (only_unique),
             output_filtered_bam=output_filtered_bam,
             output_excluded_bam=output_excluded_bam,
             output_report_tsv=output_report_tsv,
@@ -799,7 +788,8 @@ def filter(
 
 
 @app.command(
-    help="Export a merged BED mask using the same track-selection logic as filter."
+    help="Export a merged BED mask using the same track-selection logic as filter.",
+    no_args_is_help=True,
 )
 def export(
     ref: str = typer.Option(..., "-r", "--ref", help="Reference species name."),
@@ -825,21 +815,24 @@ def export(
         help="Offset/sliding window to target.",
     ),
     bwa_missing_prob_err_rate: Optional[float] = typer.Option(
-        None, "-bn", help="BWA aln -n used for selected tracks."
+        None, "-bn", help="BWA aln -n used to generate selected tracks."
     ),
     bwa_max_gap_opens: Optional[int] = typer.Option(
-        None, "-bo", help="BWA aln -o used for selected tracks."
+        None, "-bo", help="BWA aln -o used to generate selected tracks."
     ),
     bwa_seed_length: Optional[int] = typer.Option(
-        None, "-bl", help="BWA aln -l used for selected tracks."
+        None, "-bl", help="BWA aln -l used to generate selected tracks."
     ),
     bwa_all_aln: Optional[bool] = typer.Option(
         None,
         "-bN",
-        help="BWA aln -N used for selected tracks (compute every alternative mapping).",
+        help="BWA aln -N used to generate selected tracks (compute every alternative mapping).",
     ),
     bwa_threads: Optional[int] = typer.Option(
-        None, "-bj", "--bwa-threads", help="BWA aln -t used for selected tracks."
+        None,
+        "-bj",
+        "--bwa-threads",
+        help="BWA aln -t used to generate selected tracks.",
     ),
     cross_stringency: float = typer.Option(
         0.99,
@@ -849,11 +842,11 @@ def export(
         "--cross-stringency",
         help="Stringency threshold in [0.0, 1.0].",
     ),
-    considere_all: bool = typer.Option(
+    only_unique: bool = typer.Option(
         False,
-        "--considere_all",
-        "--considere-all",
-        help="Use map_all.bw instead of map_uniq.bw to build the exported mask.",
+        "--only-unique",
+        "--only_unique",
+        help="Consider only unique k-mers (no XA tag & MAPQ>0) area.",
     ),
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
@@ -889,7 +882,7 @@ def export(
         exclude_tracks,
         kmer_length,
         offset_step,
-        considere_all,
+        only_unique,
         None,
         cross_stringency,
         bwa_params,
@@ -902,7 +895,7 @@ def export(
             kmer_length=kmer_length,
             offset_step=offset_step,
             cross_stringency=cross_stringency,
-            consider_all=considere_all,
+            consider_all=not (only_unique),
             n_threads=n_threads,
             db_root=db_root,
             output_file=output_bed,
@@ -924,6 +917,7 @@ def export(
 @app.command(
     "import",
     help="Import a track manually by providing BigWig files and generation parameters.",
+    no_args_is_help=True,
 )
 def import_tracks(
     ref: str = typer.Option(
@@ -1058,7 +1052,8 @@ def import_tracks(
 
 
 @app.command(
-    help="Count for each read the number of overlapping k-mers fron required tracks."
+    help="Count for each read the number of overlapping k-mers fron required tracks.",
+    no_args_is_help=True,
 )
 def count(
     # Alignment parameters used to construct the BAM file
@@ -1100,7 +1095,7 @@ def count(
         "-w",
         "--offset-step",
         "--sliding-window",
-        help="Offset/sliding window to filter on. Smaller, more sensitive.",
+        help="Offset/sliding window to filter on. Must match track generation parameter.",
     ),
     # Filtration parameters
     exclude_tags: Optional[List[str]] = typer.Option(
@@ -1113,11 +1108,11 @@ def count(
         "--exclude-tracks",
         help="Track identifier(s) to filter out. Comma-separated (e.g. genius_species1, genius_species2).",
     ),
-    considere_all: bool = typer.Option(
+    only_unique: bool = typer.Option(
         False,
         "--only-unique",
         "--only_unique",
-        help="Use map_all.bw instead of map_uniq.bw to build the exclusion mask.",
+        help="Consider only unique k-mers (no XA tag & MAPQ>0) area.",
     ),
     no_cache: bool = typer.Option(
         False,
@@ -1166,7 +1161,7 @@ def count(
         exclude_tracks,
         kmer_length,
         offset_step,
-        considere_all,
+        only_unique,
         no_cache,
         None,
         bwa_params,
@@ -1185,7 +1180,7 @@ def count(
             offset_step=offset_step,
             count_mode=count_mode,
             bwa_params=bwa_params,
-            consider_all=considere_all,
+            consider_all=not (only_unique),
             n_threads=n_threads,
             output_report_tsv=output_report_tsv,
         )
