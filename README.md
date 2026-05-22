@@ -221,22 +221,22 @@ wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus
 
 #### Output
 
-WizardEye produces a tabulation-separated report containing, for each read, the decision and the overlapping tracks and tags, such as follows: 
+WizardEye produces a tabulation-separated report containing, for each read, the decision and the overlapping tracks, such as follows: 
 
 
-| read_id                                  | excluded | overlapped | tags |
-|------------------------------------------|----------|------------|------|
-| read_1								   | true  	  | sus_scrofa,bos_taurus | Suina,Ruminantia |
-| read_2								   | false    |            |      |
-| read_3								   | true     | felis_catus | Feliformia     |
-| read_4								   | true     | bos_taurus | Ruminantia     |
-| read_5								   | true    | bos_taurus,ovis_aries           | Ruminantia     |
-| read_6								   | false    |          |      |
+| read_id                                  | filtered_out | associated_tracks |
+|------------------------------------------|----------|------------|
+| read_1								   | true  	  | sus_scrofa,bos_taurus |
+| read_2								   | false    |            |
+| read_3								   | true     | felis_catus |
+| read_4								   | true     | bos_taurus |
+| read_5								   | true    | bos_taurus,ovis_aries           |
+| read_6								   | false    |          |
 
 With `--export-bam`, WizardEye produces two more files:
 
 - a BAM `excluded` with the reads excluded by the filtration,
-- a BAM `filtered` with the reads kept by the filtration,
+- a BAM `filtered` with the reads kept by the filtration.
 
 ### Count and compute statistics
 

@@ -510,9 +510,7 @@ def filter_bam(
                         read_tags[read_id].update(track_to_tags.get(track_name, set()))
 
         report_path = write_filtration_report(
-            output_report_tsv=report_tsv,
-            read_tracks=read_tracks,
-            read_tags=read_tags,
+            output_report_tsv=report_tsv, read_tracks=read_tracks
         )
         n_filtered = max(0, n_mapped_records - len(excluded_read_ids))
 
@@ -818,9 +816,7 @@ def _default_output_count_table(input_bam: Path) -> Path:
 
 
 def write_filtration_report(
-    output_report_tsv: Path,
-    read_tracks: Dict[str, Set[str]],
-    read_tags: Dict[str, Set[str]],
+    output_report_tsv: Path, read_tracks: Dict[str, Set[str]]
 ) -> Path:
     """Write one line per read_id with exclusion flag, overlapping tracks and tags.
 
@@ -833,12 +829,10 @@ def write_filtration_report(
             Path: The path to the generated report."""
     output_report_tsv.parent.mkdir(parents=True, exist_ok=True)
     with output_report_tsv.open("w", encoding="utf-8") as handle:
-        handle.write("read_id\texcluded\toverlapped\ttags\n")
+        handle.write("read_id\tfiltered_out\tassociated_tracks\n")
         for read_id, track_set in read_tracks.items():
             tracks = sorted(track_set)
-            tags = sorted(read_tags.get(read_id, set()))
             excluded = "true" if tracks else "false"
             overlapped = ",".join(tracks)
-            joined_tags = ",".join(tags)
-            handle.write(f"{read_id}\t{excluded}\t{overlapped}\t{joined_tags}\n")
+            handle.write(f"{read_id}\t{excluded}\t{overlapped}\n")
     return output_report_tsv
