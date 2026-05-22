@@ -23,12 +23,12 @@ from typing import Dict, List, Optional, Set, Tuple
 from .db import get_tracks, Track
 import pysam
 from .utils import (
-	run,
 	log,
 	from_charlist_to_list,
 	validate_bam_compatibility,
 	merge_bed_files,
-	convert_bigwig_to_bedGraph
+	convert_bigwig_to_bedGraph,
+	BWAParameters
 )
 
 # -- Mask creation related functions --
@@ -99,9 +99,7 @@ def generate_global_mask(
 	cross_stringency: float,
 	consider_all: bool = False,
 	output_file: Optional[str] = None,
-	bwa_missing_prob_err_rate: Optional[float] = None,
-	bwa_max_gap_opens: Optional[int] = None,
-	bwa_seed_length: Optional[int] = None,
+	bwa_params: Optional[BWAParameters] = None,
 	db_root: str = "database",
 	no_cache: bool = False,
 	n_threads: int = 1,
@@ -121,12 +119,7 @@ def generate_global_mask(
 		cross_stringency (float): Cross-stringency threshold, must be between 0.0 and 1.0.
 		consider_all (bool): If True, all k-mers are considered in the cross-stringency
             calculation. If False (default), only uniquely aligned k-mers are considered.
-		bwa_missing_prob_err_rate (Optional[float]): BWA missing probability error rate
-			used during track generations.
-		bwa_max_gap_opens (Optional[int]): Maximum number of gap opens allowed in BWA alignment 
-			used during track generations.
-		bwa_seed_length (Optional[int]): Seed length for BWA alignment 
-			used during track generations.
+		bwa (Optional[BWAParameters]): BWA alignment parameters for track selection.
 		db_root (str): Root directory of the database.
 		no_cache (bool): If True, do not use and generate cached tracks.
 		n_threads (int): Number of threads to use for parallel processing.
@@ -155,9 +148,7 @@ def generate_global_mask(
 		kmer_length=kmer_length,
 		offset_step=offset_step,
 		db_root=db_root,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 
 	if not tracks:
@@ -337,9 +328,7 @@ def filter_bam(
 	exclude_tracks: List[Track],
 	kmer_length: int,
 	offset_step: int,
-	bwa_missing_prob_err_rate: Optional[float] = None,
-	bwa_max_gap_opens: Optional[int] = None,
-	bwa_seed_length: Optional[int] = None,
+	bwa_params: Optional[BWAParameters] = None,
 	stringency: float = 0.99,
 	consider_all: bool = False,
 	output_report_tsv: Optional[str] = None,
@@ -357,15 +346,10 @@ def filter_bam(
 		exclude_tracks (List[str]): List of input track names to consider. 
 		kmer_length (int): Length of the k-mers used during track generations.
 		offset_step (int): Step size for the offset used during track generations.
-		cross_stringency (float): Cross-stringency threshold, must be between 0.0 and 1.0.
+		bwa (Optional[BWAParameters]): BWA alignment parameters for track selection.
+		stringency (float): Cross-stringency threshold, must be between 0.0 and 1.0.
 		consider_all (bool): If True, all k-mers are considered in the cross-stringency
             calculation. If False (default), only uniquely aligned k-mers are considered.
-		bwa_missing_prob_err_rate (Optional[float]): BWA missing probability error rate
-			used during track generations.
-		bwa_max_gap_opens (Optional[int]): Maximum number of gap opens allowed in BWA alignment 
-			used during track generations.
-		bwa_seed_length (Optional[int]): Seed length for BWA alignment 
-			used during track generations.
 		output_report_tsv (Optional[str]): Path to the output TSV report file.
 		export_bam: If True, splits the input BAM into filtered and excluded BAM files.
 		output_filtered_bam (Optional[str]): Path to the output BAM file containing filtered reads if export_bam is True.
@@ -399,9 +383,7 @@ def filter_bam(
 	validate_bam_compatibility(
 		input_bam_path,
 		reference_seq_sizes,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 
 	sorted_tracks = sorted(set(normalized_tracks))
@@ -411,9 +393,7 @@ def filter_bam(
 		kmer_length=kmer_length,
 		offset_step=offset_step,
 		db_root=db_root,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 	normalized_requested_tracks = set(sorted_tracks)
 	track_to_tags: Dict[str, Set[str]] = {}
@@ -437,9 +417,7 @@ def filter_bam(
 		n_threads=n_threads,
 		db_root=db_root,
 		output_file=None,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 		no_cache=no_cache,
 	)
 
@@ -615,7 +593,7 @@ def filter_bam_from_reads_id(
 	Returns:
 		Tuple[int, int, int]: Number of total records, number of filtered records and number of excluded records."""
 
-	log(f"Splitting BAM into excluded/filtered files based on filtration...", "I")
+	log("Splitting BAM into excluded/filtered files based on filtration...", "I")
 
 	if pysam is None:
 		raise RuntimeError("pysam is required to filter BAM from read IDs")
@@ -650,9 +628,7 @@ def filter_bam_alternative(
 	exclude_tracks: List[str],
 	kmer_length: int,
 	offset_step: int,
-	bwa_missing_prob_err_rate: Optional[float] = None,
-	bwa_max_gap_opens: Optional[int] = None,
-	bwa_seed_length: Optional[int] = None,
+	bwa_params: Optional[BWAParameters] = None,
 	stringency: float = 0.99,
 	consider_all: bool = False,
 	output_report_tsv: Optional[str] = None,
@@ -673,11 +649,9 @@ def filter_bam_alternative(
 		exclude_tracks (List[str]): List of input track names to consider. 
 		kmer_length (int): Length of the k-mers used during track generations.
 		offset_step (int): Step size for the offset used during track generations.
+		bwa (Optional[BWAParameters]): BWA alignment parameters for track selection.
 		stringency (float): Cross-stringency threshold, must be between 0.0 and 1.0.
 		consider_all (bool): If True, all k-mers are considered. If False (default), only uniquely aligned k-mers are considered.
-		bwa_missing_prob_err_rate (Optional[float]): BWA missing probability error rate used during track generations.
-		bwa_max_gap_opens (Optional[int]): Maximum number of gap opens allowed in BWA alignment used during track generations.
-		bwa_seed_length (Optional[int]): Seed length for BWA alignment used during track generations.
 		output_report_tsv (Optional[str]): Path to the output TSV report file.
 		export_bam (bool): If True, splits the input BAM into filtered and excluded BAM files.
 		output_filtered_bam (Optional[str]): Path to the output BAM file containing filtered reads if export_bam is True.
@@ -713,9 +687,7 @@ def filter_bam_alternative(
 	validate_bam_compatibility(
 		input_bam_path,
 		reference_seq_sizes,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 
 	sorted_tracks = sorted(set(normalized_tracks))
@@ -725,9 +697,7 @@ def filter_bam_alternative(
 		kmer_length=kmer_length,
 		offset_step=offset_step,
 		db_root=db_root,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 	normalized_requested_tracks = set(sorted_tracks)
 	track_to_tags: Dict[str, Set[str]] = {}
@@ -854,13 +824,11 @@ def count_k_mers_on_bam(
 	input_bam: str,
 	ref: str,
 	db_root: str,
-	exclude_tracks: List[Track],
+	exclude_tracks: List[str],
 	kmer_length: int,
 	offset_step: int,
 	count_mode: str,
-	bwa_missing_prob_err_rate: Optional[float] = None,
-	bwa_max_gap_opens: Optional[int] = None,
-	bwa_seed_length: Optional[int] = None,
+	bwa_params: Optional[BWAParameters] = None,
 	consider_all: bool = False,
 	output_report_tsv: Optional[str] = None,
 	n_threads: int = 1,
@@ -874,18 +842,10 @@ def count_k_mers_on_bam(
 		kmer_length (int): Length of the k-mers used during track generations.
 		offset_step (int): Step size for the offset used during track generations.
 		count_mode (str): Type of statistic to compute with count among mean, std, max, min, cov or sum.
+		bwa (Optional[BWAParameters]): BWA alignment parameters for track selection.
 		consider_all (bool): If True, all k-mers are considered in the cross-stringency
             calculation. If False (default), only uniquely aligned k-mers are considered.
-		bwa_missing_prob_err_rate (Optional[float]): BWA missing probability error rate
-			used during track generations.
-		bwa_max_gap_opens (Optional[int]): Maximum number of gap opens allowed in BWA alignment 
-			used during track generations.
-		bwa_seed_length (Optional[int]): Seed length for BWA alignment 
-			used during track generations.
 		output_report_tsv (Optional[str]): Path to the output TSV report file.
-		export_bam: If True, splits the input BAM into filtered and excluded BAM files.
-		output_filtered_bam (Optional[str]): Path to the output BAM file containing filtered reads if export_bam is True.
-		output_excluded_bam (Optional[str]): Path to the output BAM file containing excluded reads if export_bam is True.
 		db_root (str): Root directory of the database.
 		no_cache (bool): If True, do not use and generate cached tracks.
 		n_threads (int): Number of threads to use for parallel processing.
@@ -913,9 +873,7 @@ def count_k_mers_on_bam(
 	validate_bam_compatibility(
 		input_bam_path,
 		reference_seq_sizes,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 
 	sorted_tracks = sorted(set(normalized_tracks))
@@ -925,9 +883,7 @@ def count_k_mers_on_bam(
 		kmer_length=kmer_length,
 		offset_step=offset_step,
 		db_root=db_root,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 	normalized_requested_tracks = set(sorted_tracks)
 	track_to_tags: Dict[str, Set[str]] = {}

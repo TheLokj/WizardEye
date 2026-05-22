@@ -224,9 +224,9 @@ for other_path in "$input_fasta_directory"/*.{fa,fasta}; do
 
         # Use GNU parallel to run BWA alignments in parallel, then convert to BAM and merge into a single BAM file for counting.
         find "$tmp_local/" -name "*.fasta" | parallel -j "$n_threads" \
-            "bwa aln -t 1 -N -n $bwa_missing_prob_err_rate -o $bwa_max_gap_opens \
+            "bwa aln -t 1 -R 10000000 -n $bwa_missing_prob_err_rate -o $bwa_max_gap_opens \
                 -l $bwa_seed_length '$input_target' {} > {.}.sai && \
-            bwa samse -n 1000000 '$input_target' {.}.sai {} | \
+            bwa samse -n 10000000 '$input_target' {.}.sai {} | \
             samtools view -b -F 4 - > {.}.bam && \
             rm -f {} {.}.sai"
 

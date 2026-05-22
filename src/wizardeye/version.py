@@ -5,12 +5,13 @@
 DISPLAY_VERSION is human-friendly and can be shown in CLI/help.
 PACKAGE_VERSION is PEP 440 compliant for packaging tools.
 """
+
 import subprocess
 import sys
 from typing import Optional
 
-DISPLAY_VERSION = "beta-0.0.9"
-PACKAGE_VERSION = "0.0.9b0"
+DISPLAY_VERSION = "beta-0.1.0"
+PACKAGE_VERSION = "0.1.0b0"
 
 def _get_git_commit_hash() -> Optional[str]:
 	"""Get the current Git commit hash if available.

@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python-green.svg)
 ![Beta](https://img.shields.io/badge/beta-red.svg)
-[![Version](https://img.shields.io/badge/version-0.0.9b0-orange.svg)](https://github.com/TheLokj/WizardEye/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0b0-orange.svg)](https://github.com/TheLokj/WizardEye/releases)
 [![Python CI](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml/badge.svg)](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml)
 ![GitHub bugs](https://img.shields.io/github/issues/TheLokj/WizardEye/bug)
 
@@ -87,8 +87,10 @@ Required:
 You should initially create a WizardEye database using the following command:
 
 ```
-wizardeye database --init /path/to/database
+wizardeye database --init -d /path/to/database
 ```
+
+This will generate a `/database/` directory compatible with WizardEye. Feel free to move it elsewhere or rename the folder after this initialisation. 
 
 #### About the database
 
@@ -121,7 +123,7 @@ wizardeye database --update-track-tags -d /path/to/database \
 
 ##### Database cache
 
-Note that masks generated during filtration are cached in the database, to make next filtrations quicker. You can avoid that specifying `--no-cache` before filtration> You can delete the cache using the following command:
+Note that masks generated during exportation are cached in the database, to make next exportation quicker. You can avoid that specifying `--no-cache` before exportation. You can delete the cache using the following command:
 
 ```
 wizardeye database --clean -d /path/to/database
@@ -129,7 +131,7 @@ wizardeye database --clean -d /path/to/database
 
 ### Create a new track
 
-You can compute ambiguous regions of `reference.fa` that can be aligned, using specific BWA parameters, by reads from `risky.fa` with:
+You can compute ambiguous regions of `reference.fa` that can be targeted, using specific BWA parameters, by reads from `risky.fa` with:
 
 ```
 wizardeye align -i /path/to/risky.fa -r /path/to/reference.fa -d /path/to/database \ 
@@ -137,17 +139,24 @@ wizardeye align -i /path/to/risky.fa -r /path/to/reference.fa -d /path/to/databa
 					-bn bwa_missing_prob_err_rate -bo bwa_max_gap_opens -bl bwa_seed_length
 ```
 
-You can manually set a track identifier with `--track_ID` (alias `--track-id`) to quickly describe where the sequence comes from. This identifier is appended to the track name based on the FASTA filename stem:
+Note that you can provide tags here to describe `risky.fa`. This can be used to describe the sequence, for example by specifying phylogeny and/or a particular environment: `-t Mammalia,Carnivora,Felis,Cave`. This is useful to filter a `.bam` file directly according to specific tags. You can manually set a track identifier with `--track_ID`, in order to save it in database metadata. Note also that, to prevent misuse, it is not possible to add a new track to the database if the reference alignment file is not exactly the same, including sequence names. This is due to an MD5-based control to avoid silently corrupted analyses.
 
-```
-wizardeye align -i /path/to/risky.fa -r /path/to/reference.fa -k 35 -w 1 --track_ID GCA_4815162342 -bn 0.01 -bo 2 -bl 16500
-```
+As WizardEye uses `seqkit split2` to share the computation of the alignment between threads, several parameters can be used to make the computation quicker:
 
-WizardEye stores the MD5 of the input FASTA (`input_fasta_md5`) in `param.yaml`, in addition to the reference MD5. 
+| Parameters | default |  |
+|------------|---|---------|
+| `--tmp_dir` | `TMPDIR` | Temporary directory used to process chunks and alignments |
+| `--chunk_size` | 2000000 | Number of sequences per chunk |
+| `--jobs` | 1 | Number of threads used to generate chunks and number of parallel bwa instances processing chunks |
+| `--bwa_threads` | 1 | Number of threads allowed per bwa instances |
 
-Note that you can provide tags here to describe `risky.fa`. This can be used to describe the sequence, for example by specifying phylogeny and/or a particular environment: `-t Mammalia,Carnivora,Felis,Cave`. This is useful to filter a `.bam` file directly according to specific tags.
+> [!NOTE]  
+Using default parameters (`-n 0.01 -o 2 -l 16500 -k 35 -w 1`), a cross-mappability track based on hg19 coordinates is generated from a complete mammalian genome in ~48 hours using 128 threads (`--chunk_jobs 128 --bwa_threads 1`). Such computation requires ~200GB of free storage in the temporary directory, due to the huge amount of k-mers before alignment.
 
-Note also that, to prevent misuse, it is not possible to add a new track to the database if the reference alignment file is not exactly the same, including sequence names. This is due to an MD5-based control to avoid silently corrupted analyses.
+> [!WARNING]  
+Due to BWA behaviour, it is important to note that coverage and intervals are not perfectly determinist between systems and alignment chunk sizes. In fact, BWA is selecting randomly the primary alignment among best hits based on a random number generator and delete secondary alignment starting at the exact same position. This can leads to tiny differences of coverage and, in some intervals, to a difference of 1bp at end position. However, tracks generation is consistent and deterministic if WizardEye is run on the same system with the same alignment chunk, despite the number of threads used. See [issue #1](https://github.com/TheLokj/WizardEye/issues/1) for more details. 
+
+If you want an exhaustive cross-mappability track, you can also specify the `-bN` parameter, which will be passed as `-N` in `bwa aln`. This parameter will force BWA to save every alternative alignments, regardless their qualities and mismatches (within the limit of `-bn bwa_missing_prob_err_rate`). This parameter allows your cross-mappability track to be exhaustive in exchange of highter coverage. It can be used for extreme filtration, but it will reduce your ability to keep informative reads.
 
 ### Filter a BAM file
 
@@ -169,9 +178,8 @@ You can also filter out reads based on specific tracks:
 wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -d /path/to/database
 ```
 
+> [!WARNING]  
 If sequence naming differs between BAM and tracks (for example `chr1` vs `1`), filtering stops with an explicit error. Harmonize contig names beforehand.
-
-Note that, by default, the tool excludes a read if at least **one base** of the read overlaps one of the tracks. **[Not implemented yet]**: You will be able to specify `--trim` to be more tolerant and split reads according to the mask, keeping the parts of reads that are not present in tracks.
 
 #### Adjust the filter hardness
 
@@ -189,7 +197,7 @@ wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus
 
 Note that the ratio is not weighted by depth. In another case with a repetitive region, where a position is overlapped by 3000 k-mers, the ratio is still the same: if 40 of these are unique, the position is highlighted.
 
-Unique k-mers are defined as the k-mers without BWA `XA` tag and with `MAPQ>0`. 
+Unique k-mers are defined as k-mers without BWA `XA` tag and with `MAPQ>0`. 
 
 This behavior aims to reproduce the [Heng Li's seqbility](https://github.com/lh3/misc/tree/cc0f36a9a19f35765efb9387389d9f3a6756f08f/seq/seqbility) logic, which is not directly usable in a cross-mappability context. 
 
@@ -258,7 +266,7 @@ WizardEye produces a tabulation-separated report containing, for each read, the 
 
 ### Export a mask
 
-If you plan to use the same configuration often to filter your reads, it is highly recommended to export a mask in order to avoid recomputing it continuously:
+If you plan to use the same configuration often to filter your reads, for example in a pipeline, it is possible to export a mask in order to avoid recomputing it continuously:
 
 ```
 wizardeye export -r hg19 --exclude-tags Cave -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -o mask.bed
@@ -283,4 +291,4 @@ This command creates the target/track directory, copies the two BigWig files as 
 
 It is recommanded to complete your filtration using an evolutionnary-aware method such as Kraken2. This combination is useful to remove both reads that belong to completely different organisms and reads that can be ambiguous between closely related organisms.
 
-*Last update of this documentation: beta-0.0.9.*
+*Last update of this documentation: beta-0.1.0.*

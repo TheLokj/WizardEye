@@ -3,6 +3,7 @@
 """Command line interface for WizardEye.
 """
 
+import os
 import subprocess
 import time
 import typer
@@ -12,6 +13,9 @@ from pathlib import Path
 from typing import List, Optional
 
 from .mappability import create_mappability_track
+from .filter import generate_global_mask, count_k_mers_on_bam, filter_bam_alternative
+from .utils import from_charlist_to_list, log, BWAParameters
+from .version import DISPLAY_VERSION, PACKAGE_VERSION, print_version_message
 from .db import (
 	import_track,
 	init_db,
@@ -23,11 +27,8 @@ from .db import (
 	from_tags_get_tracks,
 	get_refs,
 	get_tracks,
-	resolve_requested_track_names
+	resolve_requested_track_names,
 )
-from .filter import generate_global_mask, filter_bam, count_k_mers_on_bam, filter_bam_alternative
-from .utils import from_charlist_to_list, log
-from .version import DISPLAY_VERSION, PACKAGE_VERSION, print_version_message
 
 app = typer.Typer(help="A Python tool to create, manage, and filter by cross-mappability tracks.")
 
@@ -65,9 +66,7 @@ def _get_valid_tracks_from_exclude_tracks(
 	kmer_length: Optional[int],
 	offset_step: Optional[int],
 	db_root: str,
-	bwa_missing_prob_err_rate: Optional[float],
-	bwa_max_gap_opens: Optional[int],
-	bwa_seed_length: Optional[int],
+	bwa_params: Optional[BWAParameters] = None,
 	context: str = "filtering",
 ) -> List[str]:
 	"""Get valid tracks from exclude_tracks parameter."""
@@ -80,9 +79,7 @@ def _get_valid_tracks_from_exclude_tracks(
 		kmer_length=kmer_length,
 		offset_step=offset_step,
 		db_root=db_root,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 	return resolve_requested_track_names(
 		requested_tracks=requested_tracks,
@@ -97,9 +94,7 @@ def _get_valid_tracks_from_exclude_tags(
 	kmer_length: Optional[int],
 	offset_step: Optional[int],
 	db_root: str,
-	bwa_missing_prob_err_rate: Optional[float],
-	bwa_max_gap_opens: Optional[int],
-	bwa_seed_length: Optional[int],
+	bwa_params: Optional[BWAParameters] = None,
 ) -> List[str]:
 	"""Get valid tracks from exclude_tags parameter."""
 	if exclude_tags is None:
@@ -112,17 +107,22 @@ def _get_valid_tracks_from_exclude_tags(
 		kmer_length=kmer_length,
 		offset_step=offset_step,
 		db_root=db_root,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 
-def _request_tracks_from_args(ref: str, input_bam: str, db_root: str, 
-	exclude_tags: str, exclude_tracks: str,
-	bwa_missing_prob_err_rate: float, bwa_max_gap_opens: int, bwa_seed_length:int ,
-	kmer_length: int, offset_step: int, 
-	considere_all: bool, no_cache: bool, 
-	cross_stringency: float) -> List[str]:
+def _request_tracks_from_args(
+	ref: str,
+	input_bam: str,
+	db_root: str,
+	exclude_tags: str,
+	exclude_tracks: str,
+	kmer_length: int,
+	offset_step: int,
+	considere_all: bool,
+	no_cache: bool,
+	cross_stringency: float,
+	bwa_params: Optional[BWAParameters] = None,
+) -> List[str]:
 	"""Validate CLI arguments and get corresponding tracks from database."""
 
 	# Control input
@@ -148,12 +148,7 @@ def _request_tracks_from_args(ref: str, input_bam: str, db_root: str,
 			missing_params.append("-k")
 		if offset_step is None:
 			missing_params.append("-w")
-		if bwa_missing_prob_err_rate is None:
-			missing_params.append("-bn")
-		if bwa_max_gap_opens is None:
-			missing_params.append("-bo")
-		if bwa_seed_length is None:
-			missing_params.append("-bl")
+
 
 		if missing_params:
 			log(
@@ -170,7 +165,8 @@ def _request_tracks_from_args(ref: str, input_bam: str, db_root: str,
 
 	log(f"Reference used: {ref}", "I")
 	log(f"Input alignment file to process: {input_bam}", "I")
-	log(f"Associated BWA parameters: -n {bwa_missing_prob_err_rate}, -o {bwa_max_gap_opens}, -l {bwa_seed_length}", "I")
+	if bwa_params:
+		log(f"Associated BWA parameters: -n {bwa_params.missing_prob_err_rate}, -o {bwa_params.max_gap_opens}, -l {bwa_params.seed_length}, -t {bwa_params.threads}", "I")
 	log(f"Requested track generation parameters: -k {kmer_length}, -w {offset_step}", "I")
 	log(f"Mask source mode: {f'all k-mers {hard}' if considere_all else f'uniquely aligned k-mers {default}'}", "I")
 	log(f"Mask cache mode: {'disabled (--no-cache)' if no_cache else f'enabled {default}'}", "I")
@@ -184,9 +180,7 @@ def _request_tracks_from_args(ref: str, input_bam: str, db_root: str,
 			kmer_length=kmer_length,
 			offset_step=offset_step,
 			db_root=db_root,
-			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-			bwa_max_gap_opens=bwa_max_gap_opens,
-			bwa_seed_length=bwa_seed_length,
+			bwa_params=bwa_params,
 			context="filtering",
 		)
 
@@ -198,9 +192,7 @@ def _request_tracks_from_args(ref: str, input_bam: str, db_root: str,
 			kmer_length=kmer_length,
 			offset_step=offset_step,
 			db_root=db_root,
-			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-			bwa_max_gap_opens=bwa_max_gap_opens,
-			bwa_seed_length=bwa_seed_length,
+			bwa_params=bwa_params,
 		)
 
 		log(f"Requested tags to filter out: {', '.join(requested_tags)}", "I")
@@ -381,9 +373,11 @@ def align(
 	bwa_missing_prob_err_rate: float = typer.Option(0.01, "-bn", help="BWA aln -n."),
 	bwa_max_gap_opens: int = typer.Option(2, "-bo", help="BWA aln -o."),
 	bwa_seed_length: int = typer.Option(16500, "-bl", help="BWA aln -l."),
+	bwa_all_aln: bool = typer.Option(False, "-bN", help="BWA -N (compute every alternative mapping)."),
+	bwa_threads: int = typer.Option(1, "-bj", "--bwa-threads", help="Number of threads for bwa aln."),
 
 	# Parallelisation parameters
-	n_threads: int = typer.Option(1, "-j", help="Number of threads for parallelisation."),
+	jobs: int = typer.Option(1, "-j", "--jobs", help="Number of threads for chunk parallelisation."),
 	chunk_size: int = typer.Option(
 		2000000,
 		"-cs",
@@ -413,6 +407,21 @@ def align(
 			log("No input FASTA provided after parsing -i values.", "E")
 			raise typer.Exit(code=1)
 
+		# Validate thread configuration
+		try:
+			available_cpus = os.cpu_count() or 1
+			total_threads = bwa_threads * jobs
+			if total_threads > available_cpus:
+				log(
+					f"Error: -bj {bwa_threads} * -j {jobs} = {total_threads} threads "
+					f"exceeds available CPUs ({available_cpus}). "
+					f"Please reduce the number of threads.",
+					"E",
+				)
+				raise typer.Exit(code=1)
+		except Exception as e:
+			log(f"Could not determine CPU count: {e}", "W")
+
 		manual_track_id: Optional[str] = None
 		if track_id is not None:
 			manual_track_id = track_id.strip()
@@ -421,12 +430,21 @@ def align(
 				raise typer.Exit(code=1)
 			manual_track_id = manual_track_id.replace("/", "_").replace("\\", "_").replace(" ", "_")
 
+		bwa_params = BWAParameters(
+					missing_prob_err_rate=bwa_missing_prob_err_rate,
+					max_gap_opens=bwa_max_gap_opens,
+					seed_length=bwa_seed_length,
+					all_aln=bwa_all_aln,
+					threads=bwa_threads,
+		)
+
 		total_inputs = len(input_fastas)
 		for idx, one_input_fasta in enumerate(input_fastas, start=1):
 			base_query_name = Path(one_input_fasta).stem
 			query_track_id = base_query_name if not manual_track_id else f"{base_query_name}__{manual_track_id}"
 
-			track_name = f"{query_track_id}_k{kmer_length}_w{offset_step}_n{float(bwa_missing_prob_err_rate):g}_o{bwa_max_gap_opens}_l{bwa_seed_length}"
+			all_aln_str = "_N" if bwa_all_aln else ""
+			track_name = f"{query_track_id}_k{kmer_length}_w{offset_step}_n{float(bwa_missing_prob_err_rate):g}_o{bwa_max_gap_opens}_l{bwa_seed_length}{all_aln_str}"
 			log(f"[{idx}/{total_inputs}] Processing input FASTA: {one_input_fasta}", "I")
 
 			if check_track_exists(
@@ -435,9 +453,7 @@ def align(
 				kmer_length,
 				offset_step,
 				db_root,
-				bwa_missing_prob_err_rate,
-				bwa_max_gap_opens,
-				bwa_seed_length,
+				bwa_params=bwa_params,
 			) and not force:
 				log(
 					f"Track '{track_name}' already exists for reference '{Path(input_target).stem}', skipping track creation.",
@@ -455,10 +471,8 @@ def align(
 					kmer_length=kmer_length,
 					offset_step=offset_step,
 					chunk_size=chunk_size,
-					n_threads=n_threads,
-					bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-					bwa_max_gap_opens=bwa_max_gap_opens,
-					bwa_seed_length=bwa_seed_length,
+					n_threads=jobs,
+					bwa_params=bwa_params,
 					db_root=db_root,
 					tags=tag,
 					tmp_dir_custom=tmp_dir,
@@ -474,7 +488,7 @@ def align(
 		log(f"Alignment completed in {elapsed:.2f}s", "S")
 		raise typer.Exit(code=0)
 
-	log(f"align requires a FASTA to split and align on a reference and the associated parameters (-i, -r, -k)", "E")
+	log("align requires a FASTA to split and align on a reference and the associated parameters (-i, -r, -k)", "E")
 	raise typer.Exit(code=1)
 
 @app.command(help="Filter an input BAM using selected cross-mappability tracks and stringency.")
@@ -486,6 +500,8 @@ def filter(
 	bwa_missing_prob_err_rate: Optional[float] = typer.Option(None, "-bn", help="BWA aln -n used for alignment."),
 	bwa_max_gap_opens: Optional[int] = typer.Option(None, "-bo", help="BWA aln -o used for alignment."),
 	bwa_seed_length: Optional[int] = typer.Option(None, "-bl", help="BWA aln -l used for alignment."),
+	bwa_all_aln: Optional[bool] = typer.Option(None, "-bN", help="BWA aln -N used for alignment (compute every alternative mapping)."),
+	bwa_threads: Optional[int] = typer.Option(1, "-bj", "--bwa-threads", help="BWA aln -t used for alignment."),
 	db_root: str = typer.Option(..., "-d", "--db-root", help="Path to the database root directory."),
 	
 	# Filtration parameters
@@ -560,15 +576,23 @@ def filter(
 		log("Input BAM (-i/--input) must be specified.", "E")
 		raise typer.Exit(code=1)
 
-	valid_tracks = _request_tracks_from_args(ref, input_bam, db_root, exclude_tags, exclude_tracks, bwa_missing_prob_err_rate, 
-					bwa_max_gap_opens, bwa_seed_length, kmer_length, offset_step,
-					considere_all, no_cache, cross_stringency)
+	bwa_params = BWAParameters(
+					missing_prob_err_rate=bwa_missing_prob_err_rate,
+					max_gap_opens=bwa_max_gap_opens,
+					seed_length=bwa_seed_length,
+					all_aln=bwa_all_aln,
+					threads=bwa_threads,
+	)
+	valid_tracks = _request_tracks_from_args(ref, input_bam, db_root, exclude_tags, exclude_tracks, kmer_length, offset_step,
+					considere_all, no_cache, cross_stringency, bwa_params)
 	print("-" * 80)
-	log(f"Starting filtration...", "I")
+	log("Starting filtration...", "I")
 
 	if not input_bam:
 		log("Input BAM (-i/--input) must be specified.", "E")
 		raise typer.Exit(code=1)
+	
+	
 
 	try:
 		filter_result = filter_bam_alternative(
@@ -578,9 +602,7 @@ def filter(
 			exclude_tracks=valid_tracks,
 			kmer_length=kmer_length,
 			offset_step=offset_step,
-			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-			bwa_max_gap_opens=bwa_max_gap_opens,
-			bwa_seed_length=bwa_seed_length,
+			bwa_params=bwa_params,
 			stringency=cross_stringency,
 			consider_all=considere_all,
 			no_cache=no_cache,
@@ -641,6 +663,8 @@ def export(
 	bwa_missing_prob_err_rate: Optional[float] = typer.Option(None, "-bn", help="BWA aln -n used for selected tracks."),
 	bwa_max_gap_opens: Optional[int] = typer.Option(None, "-bo", help="BWA aln -o used for selected tracks."),
 	bwa_seed_length: Optional[int] = typer.Option(None, "-bl", help="BWA aln -l used for selected tracks."),
+	bwa_all_aln: Optional[bool] = typer.Option(None, "-bN", help="BWA aln -N used for selected tracks (compute every alternative mapping)."),
+	bwa_threads: Optional[int] = typer.Option(None, "-bj", "--bwa-threads", help="BWA aln -t used for selected tracks."),
 	cross_stringency: float = typer.Option(
 		0.99,
 		"-p",
@@ -672,9 +696,16 @@ def export(
 	"""Export a merged BED mask using the same track-selection logic as `filter`."""
 	print_version_message()
 	
-	valid_tracks = _request_tracks_from_args(ref, None, db_root, exclude_tags, exclude_tracks, bwa_missing_prob_err_rate, 
-					bwa_max_gap_opens, bwa_seed_length, kmer_length, offset_step,
-					considere_all, None, cross_stringency)
+	bwa_params = BWAParameters(
+					missing_prob_err_rate=bwa_missing_prob_err_rate,
+					max_gap_opens=bwa_max_gap_opens,
+					seed_length=bwa_seed_length,
+					all_aln=bwa_all_aln,
+					threads=bwa_threads,
+	)
+
+	valid_tracks = _request_tracks_from_args(ref, None, db_root, exclude_tags, exclude_tracks, kmer_length, offset_step,
+					considere_all, None, cross_stringency, bwa_params)
 					
 	try:
 		merged_bed = generate_global_mask(
@@ -687,9 +718,7 @@ def export(
 			n_threads=n_threads,
 			db_root=db_root,
 			output_file=output_bed,
-			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-			bwa_max_gap_opens=bwa_max_gap_opens,
-			bwa_seed_length=bwa_seed_length,
+			bwa_params=bwa_params
 		)
 	except ValueError as e:
 		log(str(e), "E")
@@ -751,6 +780,11 @@ def import_tracks(
 		"-bl",
 		help="BWA aln -l used for generation.",
 	),
+	bwa_all_aln: Optional[bool] = typer.Option(
+		None, 
+		"-bN", 
+		help="BWA aln -N used for alignment (compute every alternative mapping)."
+	),
 	n_threads: int = typer.Option(
 		1,
 		"-j",
@@ -771,6 +805,13 @@ def import_tracks(
 		log(f"To initialize the database, run 'database --init {db_root}'", "E")
 		raise typer.Exit(code=1)
 
+	bwa_params = BWAParameters(
+					missing_prob_err_rate=bwa_missing_prob_err_rate,
+					max_gap_opens=bwa_max_gap_opens,
+					seed_length=bwa_seed_length,
+					all_aln=bwa_all_aln,
+					threads=1,
+	)
 
 	log("Importing track to database...", "I")
 	try:
@@ -787,9 +828,7 @@ def import_tracks(
 			reference_fasta_md5=reference_fasta_md5,
 			tags=tag,
 			mapping_tool=mapping_tool,
-			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-			bwa_max_gap_opens=bwa_max_gap_opens,
-			bwa_seed_length=bwa_seed_length,
+			bwa_params=bwa_params,
 			n_threads=n_threads,
 			force=force,
 		)
@@ -821,6 +860,8 @@ def count(
 	bwa_missing_prob_err_rate: Optional[float] = typer.Option(None, "-bn", help="BWA aln -n used for alignment."),
 	bwa_max_gap_opens: Optional[int] = typer.Option(None, "-bo", help="BWA aln -o used for alignment."),
 	bwa_seed_length: Optional[int] = typer.Option(None, "-bl", help="BWA aln -l used for alignment."),
+	bwa_all_aln: Optional[bool] = typer.Option(None, "-bN", help="BWA aln -N used for alignment (compute every alternative mapping)."),
+	bwa_threads: Optional[int] = typer.Option(None, "-bj", "--bwa-threads", help="BWA aln -t used for alignment."),
 	
 	# Track generation parameters
 	db_root: str = typer.Option(..., "-d", "--db-root", help="Path to the database root directory."),
@@ -841,8 +882,8 @@ def count(
 	
 	considere_all: bool = typer.Option(
 		False,
-		"--considere_all",
-		"--considere-all",
+		"--only-unique",
+		"--only_unique",
 		help="Use map_all.bw instead of map_uniq.bw to build the exclusion mask.",
 	),
 	no_cache: bool = typer.Option(
@@ -874,9 +915,17 @@ def count(
 		raise typer.Exit(1)
 
 	print_version_message()
-	valid_tracks = _request_tracks_from_args(ref, input_bam, db_root, exclude_tags, exclude_tracks, bwa_missing_prob_err_rate, 
-					bwa_max_gap_opens, bwa_seed_length, kmer_length, offset_step,
-					considere_all, no_cache, None)
+	
+	bwa_params = BWAParameters(
+					missing_prob_err_rate=bwa_missing_prob_err_rate,
+					max_gap_opens=bwa_max_gap_opens,
+					seed_length=bwa_seed_length,
+					all_aln=bwa_all_aln,
+					threads=bwa_threads,
+	)
+
+	valid_tracks = _request_tracks_from_args(ref, input_bam, db_root, exclude_tags, exclude_tracks, kmer_length, offset_step,
+					considere_all, no_cache, None, bwa_params)
 	
 	print("-" * 80)
 	log(f"Starting computing k-mers {count_mode} per read...", "I")
@@ -890,9 +939,7 @@ def count(
 			kmer_length=kmer_length,
 			offset_step=offset_step,
 			count_mode=count_mode,
-			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-			bwa_max_gap_opens=bwa_max_gap_opens,
-			bwa_seed_length=bwa_seed_length,
+			bwa_params=bwa_params,
 			consider_all=considere_all,
 			n_threads=n_threads,
 			output_report_tsv=output_report_tsv,

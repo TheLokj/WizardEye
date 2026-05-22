@@ -20,6 +20,7 @@ import shutil
 import yaml
 import os
 import getpass
+import sys
 
 from pathlib import Path
 from datetime import datetime
@@ -37,9 +38,14 @@ from .utils import (
 	write_seq_sizes_from_fasta,
 	iterate_mapping_intervals,
 	iterate_unique_mapping_intervals,
-	Intervals,
-	Interval,
+	BWAParameters
 )
+
+# bwa aln -R & bwa samse -n parameter
+# This control the maximum number of best hits to refers
+# Despite bwa manual, it seems to also alterate bwa results in single end condition
+# This is only useful without -N
+BWA_R_BEST_HITS = 10000000
 
 # -- WizardEye mappability utilities --
 
@@ -153,18 +159,14 @@ def from_alignment_to_bigWig(bam_file: Path, out_dir: Path, kmer_length: int, n_
 def align_with_bwa_aln(
 	input_fasta: Path,
 	reference: Path,
-	bwa_missing_prob_err_rate: float,
-	bwa_max_gap_opens: int,
-	bwa_seed_length: int,
+	bwa_params: BWAParameters = BWAParameters(),
 ) -> Path:
 	"""Align a FASTA file using bwa aln and return the path to the resulting BAM file containing mapped reads.
 	
 	Args:
 		input_fasta(Path): Path to the input FASTA file containing k-mers to align.
 		reference(Path): Path to the reference genome FASTA file that has been indexed with BWA.
-		bwa_missing_prob_err_rate(float): The -n parameter for bwa aln, controlling the maximum edit distance.
-		bwa_max_gap_opens(int): The -o parameter for bwa aln, controlling the maximum number of gap opens.
-		bwa_seed_length(int): The -l parameter for bwa aln, controlling the seed length.
+		bwa(BWAParameters): BWA alignment parameters.
 		
 	Returns:
 		Path: the BAM file containing the mapped reads for the input chunk.
@@ -172,35 +174,41 @@ def align_with_bwa_aln(
 	sai_file = input_fasta.with_suffix(".sai")
 	bam_file = input_fasta.with_suffix(".bam")
 
+	if bwa_params.all_aln:
+		log("bwa will compute every alternative mapping.", "I")
+
+	bwa_cmd = [
+		"bwa",
+		"aln",
+		"-t",
+		str(bwa_params.threads),
+	]
+	if bwa_params.all_aln:
+		bwa_cmd.append("-N")
+	bwa_cmd.extend([
+		"-n",
+		str(bwa_params.missing_prob_err_rate),
+		"-o",
+		str(bwa_params.max_gap_opens),
+		"-l",
+		str(bwa_params.seed_length),
+		"-R",
+		str(BWA_R_BEST_HITS),
+		str(reference),
+		str(input_fasta),
+	])
+
 	with sai_file.open("w", encoding="utf-8") as sai_out:
-		run(
-			[
-				"bwa",
-				"aln",
-				"-t",
-				"1",
-				"-N",
-				"-n",
-				str(bwa_missing_prob_err_rate),
-				"-o",
-				str(bwa_max_gap_opens),
-				"-l",
-				str(bwa_seed_length),
-				str(reference),
-				str(input_fasta),
-			],
-			check=True,
-			stdout=sai_out,
-		)
+		run(bwa_cmd, check=True, stdout=sai_out)
 
 	with bam_file.open("wb") as bam_out:
-		log(f"bwa samse -n 1000000 {reference} {sai_file} {input_fasta}", "C")
+		log(f"bwa samse -n {str(BWA_R_BEST_HITS)} {reference} {sai_file} {input_fasta}", "C")
 		bwa_samse = subprocess.Popen(
 			[
 				"bwa",
 				"samse",
 				"-n",
-				"1000000",
+				str(BWA_R_BEST_HITS),
 				str(reference),
 				str(sai_file),
 				str(input_fasta),
@@ -236,9 +244,7 @@ def create_mappability_track(
 	offset_step,
 	chunk_size,
 	n_threads,
-	bwa_missing_prob_err_rate,
-	bwa_max_gap_opens,
-	bwa_seed_length,
+	bwa_params: BWAParameters = BWAParameters(),
 	db_root="database",
 	tags: Optional[List[str]] = None,
 	manual_track_id=None,
@@ -253,10 +259,8 @@ def create_mappability_track(
 		kmer_length: Length of the k-mers to generate from the input FASTA for alignment.
 		offset_step: Step size for the sliding window when generating k-mers. Default is 1 for fully overlapping k-mers.
 		chunk_size: Number of k-mers to include in each chunk for parallel alignment. Must be a positive integer.
-		n_threads: Number of threads to use for parallel alignment.
-		bwa_missing_prob_err_rate: The -n parameter for bwa aln, controlling the maximum edit distance.
-		bwa_max_gap_opens: The -o parameter for bwa aln, controlling the maximum number of gap opens.
-		bwa_seed_length: The -l parameter for bwa aln, controlling the seed length.
+		n_threads: Number of threads to use for chunk parallel alignment.
+		bwa_params: BWA alignment parameters.
 		db_root: Root directory for the database where target-specific directories and track outputs will be saved. Default is "database".
 		tags: Optional list of tags to associate with the track in metadata.
 		manual_track_id: Optional string to use as the track ID in metadata and naming, overriding automatic derivation.
@@ -278,7 +282,8 @@ def create_mappability_track(
 		raise ValueError("track_id cannot be empty")
 	
 	input_md5 = file_md5(input_fasta)
-	track_name = f"{query_track_id}_k{kmer_length}_w{offset_step}_n{float(bwa_missing_prob_err_rate):g}_o{bwa_max_gap_opens}_l{bwa_seed_length}"
+	all_aln_str = "_N" if bwa_params.all_aln else ""
+	track_name = f"{query_track_id}_k{kmer_length}_w{offset_step}_n{float(bwa_params.missing_prob_err_rate):g}_o{bwa_params.max_gap_opens}_l{bwa_params.seed_length}{all_aln_str}"
 	target_dir = Path(db_root) / target_name
 	target_dir.mkdir(parents=True, exist_ok=True)
 	out_dir = Path(db_root) / target_name / track_name
@@ -347,28 +352,46 @@ def create_mappability_track(
 		chunk_dir = tmp_dir / f"{input_name}_chunks"
 		chunk_dir.mkdir(parents=True, exist_ok=True)
 
-		p1 = subprocess.Popen(
-			["seqkit", "sliding", "-W", str(kmer_length), "-s", str(offset_step), str(input_fasta)],
-			stdout=subprocess.PIPE,
-			stderr=subprocess.PIPE,
-		)
-		p2 = subprocess.Popen(
-			["seqkit", "rmdup", "-s"],
-			stdin=p1.stdout,
-			stdout=subprocess.PIPE,
-			stderr=subprocess.PIPE,
-		)
-		p3 = subprocess.Popen(
-			["seqkit", "split2", "-s", str(chunk_size), "-O", str(chunk_dir), "--extension", ".fasta", "-"],
-			stdin=p2.stdout,
-			stderr=subprocess.PIPE,
-		)
-		p1.stdout.close()
-		p2.stdout.close()
+		p1 = p2 = p3 = None
 
-		for p in (p1, p2, p3):
-			if p.wait() != 0:
-				raise subprocess.CalledProcessError(p.returncode, p.args)
+		try:
+			# 1. Sliding window
+			p1 = subprocess.Popen(
+				["seqkit", "sliding", "-j", str(n_threads), "-W", str(kmer_length), "-s", str(offset_step), str(input_fasta)],
+				stdout=subprocess.PIPE,
+				stderr=sys.stderr  
+			)
+			
+			# 2. Deduplication
+			p2 = subprocess.Popen(
+				["seqkit", "rmdup", "-j", str(n_threads), "-s"],
+				stdin=p1.stdout,
+				stdout=subprocess.PIPE,
+				stderr=sys.stderr
+			)
+			
+			# 3. Splitting
+			p3 = subprocess.Popen(
+				["seqkit", "split2", "-j", str(n_threads), "-s", str(chunk_size), "-O", str(chunk_dir), "--extension", ".fasta", "-"],
+				stdin=p2.stdout,
+				stderr=sys.stderr
+			)
+
+			p1.stdout.close()
+			p2.stdout.close()
+			
+			p1.wait()
+			p2.wait()
+			p3.wait()
+
+			for p in (p1, p2, p3):
+				if p.returncode != 0:
+					raise subprocess.CalledProcessError(p.returncode, p.args)
+
+		finally:
+			for p in (p1, p2, p3):
+				if p is not None and p.poll() is None:
+					p.kill()
 
 		chunk_fastas = sorted(chunk_dir.rglob("*.fasta"))
 		if not chunk_fastas:
@@ -385,9 +408,7 @@ def create_mappability_track(
 					align_with_bwa_aln,
 					chunk_fasta,
 					input_target,
-					bwa_missing_prob_err_rate,
-					bwa_max_gap_opens,
-					bwa_seed_length,
+					bwa_params,
 				)
 				for chunk_fasta in chunk_fastas
 			]
@@ -448,10 +469,14 @@ def create_mappability_track(
 			"chunk_size": chunk_size,
 			"mapping_tool": "bwa aln",
 			"bwa_parameters": {
-				"-n": bwa_missing_prob_err_rate,
-				"-o": bwa_max_gap_opens,
-				"-l": bwa_seed_length,
-				"-t": n_threads,
+				"-n": bwa_params.missing_prob_err_rate,
+				"-o": bwa_params.max_gap_opens,
+				"-l": bwa_params.seed_length,
+				"-N": bwa_params.all_aln,
+				"-t": bwa_params.threads,
+			},
+			"chunk_parameters": {
+				"-j": n_threads,
 			},
 			"covered_bases": {
 				"map_all_bp": covered_bp["map_all"],

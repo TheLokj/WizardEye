@@ -14,11 +14,10 @@ import shutil
 import shlex
 import sys
 
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
-
-from .version import PACKAGE_VERSION
 
 # --- WizardEye development utilities ---
 
@@ -429,23 +428,19 @@ def iterate_unique_mapping_intervals(bam_file: Path, kmer_length: int) -> Iterab
 def validate_bam_compatibility(
 	bam_path: Path,
 	reference_seq_sizes_path: Path,
-	bwa_missing_prob_err_rate: Optional[float] = None,
-	bwa_max_gap_opens: Optional[int] = None,
-	bwa_seed_length: Optional[int] = None,
+	bwa_params: Optional["BWAParameters"] = None,
 ) -> None:
 	"""Validate that BAM header @SQ SN/LN entries are compatible with reference sequence sizes, and optionally check for consistency with requested BWA aln parameters.
 	
 	Args:
 		bam_path (Path): The path to the BAM file to validate.
 		reference_seq_sizes_path (Path): The path to the reference sequence sizes file.
-		bwa_missing_prob_err_rate (Optional[float]): The expected error rate used during BWA alignment.
-		bwa_max_gap_opens (Optional[int]): The expected maximum gap opens used during BWA alignment.
-		bwa_seed_length (Optional[int]): The expected seed length used during BWA alignment.
+		bwa (Optional[BWAParameters]): The expected BWA parameters used during BWA alignment.
 
 	Raises:
 		FileNotFoundError: If the reference sequence sizes file does not exist.
-		ValueError: If there are incompatibilities between BAM header and reference sequence sizes."
-	"""
+		ValueError: If there are incompatibilities between BAM header and reference sequence sizes."""
+
 	if not reference_seq_sizes_path.exists() or not reference_seq_sizes_path.is_file():
 		raise FileNotFoundError(
 			"Reference sequence sizes not found for compatibility check: "
@@ -458,13 +453,13 @@ def validate_bam_compatibility(
 	bwa_cmd = bam_metadata["bwa_aln_cmd"]
 	observed = bam_metadata["bwa_aln_options"]
 
-	expected_bwa: Dict[str, Optional[object]] = {
-		"-n": bwa_missing_prob_err_rate,
-		"-o": bwa_max_gap_opens,
-		"-l": bwa_seed_length,
+	expected_bwa_params: Dict[str, Optional[object]] = {
+		"-n": bwa_params.missing_prob_err_rate if bwa_params else None,
+		"-o": bwa_params.max_gap_opens if bwa_params else None,
+		"-l": bwa_params.seed_length if bwa_params else None,
 	}
 	
-	if any(value is not None for value in expected_bwa.values()):
+	if any(value is not None for value in expected_bwa_params.values()):
 		if not bwa_cmd:
 			log(
 				"No 'bwa aln' command found in BAM header (@PG). Cannot verify requested filtration parameters.",
@@ -472,7 +467,7 @@ def validate_bam_compatibility(
 			)
 		else:
 			mismatches: List[str] = []
-			for opt, expected_value in expected_bwa.items():
+			for opt, expected_value in expected_bwa_params.items():
 				if expected_value is None:
 					continue
 				observed_value = observed[opt]
@@ -762,7 +757,7 @@ class Interval:
 			ValueError: If intervals cannot be merged (different chromosomes or non-overlapping).
 		"""
 		if not self.can_merge_with(other):
-			raise ValueError(f"Cannot merge intervals on different chromosomes or with gap")
+			raise ValueError("Cannot merge intervals on different chromosomes or with gap")
 		return Interval(self.chrom, min(self.start, other.start), max(self.end, other.end))
 	
 	def contains(self, pos: int) -> bool:
@@ -945,3 +940,35 @@ class Intervals:
 	
 	def __repr__(self) -> str:
 		return f"Intervals({len(self.intervals)} intervals)"
+	
+# -- BWA parameters class -- 
+
+@dataclass
+class BWAParameters:
+	"""BWA alignment parameters.
+	
+	Contains all parameters passed to bwa aln command.
+	- missing_prob_err_rate: -n parameter (default: 0.01, None means filter by any value)
+	- max_gap_opens: -o parameter (default: 2, None means filter by any value)
+	- seed_length: -l parameter (default: 16500, None means filter by any value)
+	- all_aln: -N parameter (default: False, None means filter by any value)
+	- threads: -t parameter (default: 1, None means filter by any value)
+	"""
+	missing_prob_err_rate: Optional[float] = None
+	max_gap_opens: Optional[int] = None
+	seed_length: Optional[int] = None
+	all_aln: Optional[bool] = None
+	threads: Optional[int] = None
+
+	def __post_init__(self) -> None:
+		# Apply defaults if None - only for mutable dataclass
+		if self.missing_prob_err_rate is None:
+			self.missing_prob_err_rate = 0.01
+		if self.max_gap_opens is None:
+			self.max_gap_opens = 2
+		if self.seed_length is None:
+			self.seed_length = 16500
+		if self.all_aln is None:
+			self.all_aln = False
+		if self.threads is None:
+			self.threads = 1

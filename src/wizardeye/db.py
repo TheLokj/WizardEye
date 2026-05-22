@@ -17,9 +17,13 @@ from datetime import datetime
 from importlib import metadata
 from typing import Dict, List, Optional, Tuple, Union
 
-from .utils import log, get_name_from_param
-from .utils import file_md5
-from .utils import from_charlist_to_list
+from .utils import (
+    log, 
+    get_name_from_param,
+	from_charlist_to_list,
+	file_md5,
+	BWAParameters
+)
 from .version import PACKAGE_VERSION
 
 # -- Database management functions --
@@ -116,14 +120,13 @@ def clean_db(db_root: Path) -> int:
 
 # -- Track classes and functions --
 
+
 @dataclass(frozen=True)
 class TrackParameters:
 	"""Alignment and generation parameters that define one track version."""
 	kmer_length: int
 	offset_step: int
-	bwa_missing_prob_err_rate: float = 0.01
-	bwa_max_gap_opens: int = 2
-	bwa_seed_length: int = 16500
+	bwa_params: BWAParameters = BWAParameters()
 
 	def __post_init__(self) -> None:
 		if self.kmer_length < 1:
@@ -133,7 +136,7 @@ class TrackParameters:
 
 	@property
 	def n_value(self) -> float:
-		return float(self.bwa_missing_prob_err_rate)
+		return float(self.bwa_params.missing_prob_err_rate)
 
 @dataclass(frozen=True)
 class TrackIdentity:
@@ -144,10 +147,11 @@ class TrackIdentity:
 
 	@property
 	def name(self) -> str:
+		all_aln_str = "_N" if self.parameters.bwa_params.all_aln else ""
 		return (
 			f"{self.query_species}_k{self.parameters.kmer_length}_w{self.parameters.offset_step}"
-			f"_n{self.parameters.n_value:g}_o{self.parameters.bwa_max_gap_opens}"
-			f"_l{self.parameters.bwa_seed_length}"
+			f"_n{self.parameters.n_value:g}_o{self.parameters.bwa_params.max_gap_opens}"
+			f"_l{self.parameters.bwa_params.seed_length}{all_aln_str}"
 		)
 
 @dataclass
@@ -201,17 +205,13 @@ class Track:
 		query_species: str,
 		kmer_length: int,
 		offset_step: int,
-		bwa_missing_prob_err_rate: float = 0.01,
-		bwa_max_gap_opens: int = 2,
-		bwa_seed_length: int = 16500,
+		bwa_params: BWAParameters = BWAParameters(),
 		info: Optional[Dict] = None,
 	) -> "Track":
 		params = TrackParameters(
 			kmer_length=kmer_length,
 			offset_step=offset_step,
-			bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-			bwa_max_gap_opens=bwa_max_gap_opens,
-			bwa_seed_length=bwa_seed_length,
+			bwa_params=bwa_params,
 		)
 		identity = TrackIdentity(ref_species=ref_species, query_species=query_species, parameters=params)
 		return cls(db_root=Path(db_root), identity=identity, info=info or {})
@@ -246,8 +246,10 @@ class Track:
 			bwa_n = float(bwa_params.get("-n", 0.01))
 			bwa_o = int(bwa_params.get("-o", 2))
 			bwa_l = int(bwa_params.get("-l", 16500))
+			bwa_all_aln = bool(bwa_params.get("-N", True))
+			bwa_threads = int(bwa_params.get("-t", 1))
 		except (TypeError, ValueError):
-			bwa_n, bwa_o, bwa_l = 0.01, 2, 16500
+			bwa_n, bwa_o, bwa_l, bwa_all_aln, bwa_threads = 0.01, 2, 16500, True, 1
 
 		query_species = track_dir.name.split("_k", 1)[0]
 		return cls.from_param(
@@ -256,9 +258,13 @@ class Track:
 			query_species=query_species,
 			kmer_length=kmer_size,
 			offset_step=sliding_window,
-			bwa_missing_prob_err_rate=bwa_n,
-			bwa_max_gap_opens=bwa_o,
-			bwa_seed_length=bwa_l,
+			bwa_params=BWAParameters(
+				missing_prob_err_rate=bwa_n,
+				max_gap_opens=bwa_o,
+				seed_length=bwa_l,
+				all_aln=bwa_all_aln,
+				threads=bwa_threads,
+			),
 			info=param_content,
 		)
 
@@ -298,9 +304,7 @@ def check_track_exists(
 	kmer_length: int,
 	offset_step: int,
 	db_root: Union[str, Path],
-	bwa_missing_prob_err_rate: float = 0.01,
-	bwa_max_gap_opens: int = 2,
-	bwa_seed_length: int = 16500,
+	bwa_params: BWAParameters = BWAParameters(),
 ) -> bool:
 	"""Check if a track exists for the given reference/query and k/s parameters."""
 	track = Track.from_param(
@@ -309,9 +313,7 @@ def check_track_exists(
 		query_species=query_species,
 		kmer_length=kmer_length,
 		offset_step=offset_step,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 	return track.exists()
 
@@ -322,9 +324,7 @@ def update_track_tags(
 	offset_step: int,
 	tags: Optional[List[str]],
 	db_root: Union[str, Path],
-	bwa_missing_prob_err_rate: float = 0.01,
-	bwa_max_gap_opens: int = 2,
-	bwa_seed_length: int = 16500,
+	bwa_params: BWAParameters = BWAParameters(),
 ) -> Tuple[Path, List[str], List[str]]:
 	"""Replace all tags in the track param.yaml and return old/new values."""
 	track = Track.from_param(
@@ -333,9 +333,7 @@ def update_track_tags(
 		query_species=query_species,
 		kmer_length=kmer_length,
 		offset_step=offset_step,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 	return track.update_tags(tags)
 
@@ -352,10 +350,7 @@ def import_track(
 	reference_fasta_md5: Optional[str] = None,
 	tags: Optional[List[str]] = None,
 	mapping_tool: str = "bwa aln",
-	bwa_missing_prob_err_rate: float = 0.01,
-	bwa_max_gap_opens: int = 2,
-	bwa_seed_length: int = 16500,
-	n_threads: int = 1,
+	bwa_params: BWAParameters = BWAParameters(),
 	force: bool = False,
 ) -> Dict[str, Path]:
 	"""Import an externally generated track by copying BigWig files and writing param.yaml."""
@@ -374,9 +369,7 @@ def import_track(
 		query_species=query_species,
 		kmer_length=kmer_length,
 		offset_step=offset_step,
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 	track_name = track.track_name
 	target_dir = db_root / ref_species
@@ -432,10 +425,10 @@ def import_track(
 		"sliding_window": offset_step,
 		"mapping_tool": mapping_tool,
 		"bwa_parameters": {
-			"-n": bwa_missing_prob_err_rate,
-			"-o": bwa_max_gap_opens,
-			"-l": bwa_seed_length,
-			"-t": n_threads,
+			"-n": bwa_params.missing_prob_err_rate,
+			"-o": bwa_params.max_gap_opens,
+			"-l": bwa_params.seed_length,
+			"-t": bwa_params.threads,
 		},
 		"imported_track": True,
 		"import_sources": {
@@ -458,9 +451,7 @@ def get_tracks(
 	kmer_length: int,
 	offset_step: int,
 	db_root: str,
-	bwa_missing_prob_err_rate: Optional[float] = None,
-	bwa_max_gap_opens: Optional[int] = None,
-	bwa_seed_length: Optional[int] = None,
+	bwa_params: Optional[BWAParameters] = None,
 ) -> List[Track]:
 	"""Collect tracks for one reference filtered by generation parameters."""
 	ref_dir = Path(db_root) / ref_species
@@ -479,23 +470,17 @@ def get_tracks(
 		if offset_step is not None and track.identity.parameters.offset_step != offset_step:
 			continue
 
-		if (
-			bwa_missing_prob_err_rate is not None
-			and track.identity.parameters.bwa_missing_prob_err_rate != bwa_missing_prob_err_rate
-		):
-			continue
-
-		if (
-			bwa_max_gap_opens is not None
-			and track.identity.parameters.bwa_max_gap_opens != bwa_max_gap_opens
-		):
-			continue
-
-		if (
-			bwa_seed_length is not None
-			and track.identity.parameters.bwa_seed_length != bwa_seed_length
-		):
-			continue
+		if bwa_params is not None:
+			if track.identity.parameters.bwa_params.missing_prob_err_rate != bwa_params.missing_prob_err_rate:
+				continue
+			if track.identity.parameters.bwa_params.max_gap_opens != bwa_params.max_gap_opens:
+				continue
+			if track.identity.parameters.bwa_params.seed_length != bwa_params.seed_length:
+				continue
+			if track.identity.parameters.bwa_params.all_aln != bwa_params.all_aln:
+				continue
+			if track.identity.parameters.bwa_params.threads != bwa_params.threads:
+				continue
 
 		tracks.append(track)
 
@@ -508,9 +493,7 @@ def get_corresponding_tracks(
 	tags: Optional[List[str]],
 	kmer_length: Optional[int],
 	offset_step: Optional[int],
-	bwa_missing_prob_err_rate: Optional[float] = None,
-	bwa_max_gap_opens: Optional[int] = None,
-	bwa_seed_length: Optional[int] = None,
+	bwa_params: Optional[BWAParameters] = None,
 ) -> Optional[List[Track]]:
 	if query_species is None and not tags:
 		log("At least one track name or tag must be provided to find corresponding tracks.", "E")
@@ -521,9 +504,7 @@ def get_corresponding_tracks(
 		kmer_length=kmer_length,
 		offset_step=offset_step,
 		db_root=str(db_root),
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 	
 	if query_species:
@@ -543,9 +524,7 @@ def from_tags_get_tracks(
 	kmer_length: int,
 	offset_step: int,
 	db_root: Union[str, Path],
-	bwa_missing_prob_err_rate: float,
-	bwa_max_gap_opens: int,
-	bwa_seed_length: int,
+	bwa_params: Optional[BWAParameters] = None,
 ) -> List[str]:
 	"""Return track names matching all requested generation parameters and at least one tag."""
 	normalized_tags = set(from_charlist_to_list(tags, lowercase=True))
@@ -554,9 +533,7 @@ def from_tags_get_tracks(
 		kmer_length=kmer_length,
 		offset_step=offset_step,
 		db_root=str(db_root),
-		bwa_missing_prob_err_rate=bwa_missing_prob_err_rate,
-		bwa_max_gap_opens=bwa_max_gap_opens,
-		bwa_seed_length=bwa_seed_length,
+		bwa_params=bwa_params,
 	)
 
 	matching_track_names: List[str] = []
