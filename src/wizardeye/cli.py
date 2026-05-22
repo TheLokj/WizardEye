@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .mappability import create_mappability_track
-from .filter import generate_global_mask, count_k_mers_on_bam, filter_bam_alternative
+from .filter import generate_global_mask, count_k_mers_on_bam, filter_bam
 from .utils import from_charlist_to_list, log, BWAParameters
 from .version import DISPLAY_VERSION, PACKAGE_VERSION, print_version_message
 from .db import (
@@ -743,7 +743,7 @@ def filter(
         raise typer.Exit(code=1)
 
     try:
-        filter_result = filter_bam_alternative(
+        filter_result = filter_bam(
             input_bam=input_bam,
             ref=ref,
             db_root=db_root,
@@ -753,8 +753,6 @@ def filter(
             bwa_params=bwa_params,
             stringency=cross_stringency,
             consider_all=considere_all,
-            no_cache=no_cache,
-            n_threads=n_threads,
             output_filtered_bam=output_filtered_bam,
             output_excluded_bam=output_excluded_bam,
             output_report_tsv=output_report_tsv,

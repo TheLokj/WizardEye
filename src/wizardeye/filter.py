@@ -9,7 +9,6 @@ to generate the final filtration report.
 """
 
 from __future__ import annotations
-from collections import defaultdict
 import hashlib
 import pyBigWig
 import shutil
@@ -351,343 +350,6 @@ def filter_bam(
     input_bam: str,
     ref: str,
     db_root: str,
-    exclude_tracks: List[Track],
-    kmer_length: int,
-    offset_step: int,
-    bwa_params: Optional[BWAParameters] = None,
-    stringency: float = 0.99,
-    consider_all: bool = False,
-    output_report_tsv: Optional[str] = None,
-    export_bam: bool = False,
-    output_filtered_bam: Optional[str] = None,
-    output_excluded_bam: Optional[str] = None,
-    no_cache: bool = False,
-    n_threads: int = 1,
-) -> Dict[str, object]:
-    """Main function to filter a BAM file using several tracks and generate requested outputs.
-
-    Args:
-            input_bam (str): Path to the input BAM file to filter.
-            ref (str): Name of the reference species.
-            exclude_tracks (List[str]): List of input track names to consider.
-            kmer_length (int): Length of the k-mers used during track generations.
-            offset_step (int): Step size for the offset used during track generations.
-            bwa (Optional[BWAParameters]): BWA alignment parameters for track selection.
-            stringency (float): Cross-stringency threshold, must be between 0.0 and 1.0.
-            consider_all (bool): If True, all k-mers are considered in the cross-stringency
-               calculation. If False (default), only uniquely aligned k-mers are considered.
-            output_report_tsv (Optional[str]): Path to the output TSV report file.
-            export_bam: If True, splits the input BAM into filtered and excluded BAM files.
-            output_filtered_bam (Optional[str]): Path to the output BAM file containing filtered reads if export_bam is True.
-            output_excluded_bam (Optional[str]): Path to the output BAM file containing excluded reads if export_bam is True.
-            db_root (str): Root directory of the database.
-            no_cache (bool): If True, do not use and generate cached tracks.
-            n_threads (int): Number of threads to use for parallel processing.
-    """
-    if pysam is None:
-        raise RuntimeError("pysam is required for report generation and BAM filtering")
-
-    # Parameters validation
-    input_bam_path = Path(input_bam)
-    if not input_bam_path.exists() or not input_bam_path.is_file():
-        raise FileNotFoundError(f"Input BAM not found: {input_bam_path}")
-
-    if kmer_length < 1:
-        raise ValueError("kmer_length must be a positive integer")
-    if offset_step < 1:
-        raise ValueError("offset_step must be a positive integer")
-    if not (0.0 <= stringency <= 1.0):
-        raise ValueError("stringency must be between 0.0 and 1.0")
-
-    normalized_tracks = from_charlist_to_list(exclude_tracks)
-    if not normalized_tracks:
-        raise ValueError("exclude_tracks cannot be empty")
-
-    # Fail fast on initial-file incompatibility before any mask computation.
-    ref_dir = Path(db_root) / ref
-    reference_seq_sizes = ref_dir / f"{ref}.sizes"
-    validate_bam_compatibility(
-        input_bam_path,
-        reference_seq_sizes,
-        bwa_params=bwa_params,
-    )
-
-    sorted_tracks = sorted(set(normalized_tracks))
-
-    tracks_for_params = get_tracks(
-        ref_species=ref,
-        kmer_length=kmer_length,
-        offset_step=offset_step,
-        db_root=db_root,
-        bwa_params=bwa_params,
-    )
-    normalized_requested_tracks = set(sorted_tracks)
-    track_to_tags: Dict[str, Set[str]] = {}
-    for track in tracks_for_params:
-        if track.track_name not in normalized_requested_tracks:
-            continue
-        tags = set(from_charlist_to_list(track.info.get("tags", []), lowercase=True))
-        for key in {
-            track.track_name,
-            track.identity.query_species,
-            track.query_name,
-            track.track_name.split("_k")[0],
-        }:
-            track_to_tags.setdefault(key, set()).update(tags)
-
-    report_tsv = (
-        Path(output_report_tsv)
-        if output_report_tsv
-        else _default_output_table(input_bam_path)
-    )
-    report_tsv.parent.mkdir(parents=True, exist_ok=True)
-
-    merged_mask = generate_global_mask(
-        ref_species=ref,
-        inputs=sorted_tracks,
-        kmer_length=kmer_length,
-        offset_step=offset_step,
-        cross_stringency=stringency,
-        consider_all=consider_all,
-        n_threads=n_threads,
-        db_root=db_root,
-        output_file=None,
-        bwa_params=bwa_params,
-        no_cache=no_cache,
-    )
-
-    filtered_bam: Optional[Path] = None
-    excluded_bam: Optional[Path] = None
-    try:
-        (
-            read_tracks,
-            read_tags,
-            excluded_read_ids,
-            n_total,
-            n_excluded,
-            n_total_records,
-        ) = _filter_bam_with_mask(
-            input_bam=input_bam_path,
-            mask_path=merged_mask,
-            track_to_tags=track_to_tags,
-        )
-        report_path = write_filtration_report(
-            output_report_tsv=report_tsv,
-            read_tracks=read_tracks,
-            read_tags=read_tags,
-        )
-        n_filtered = max(0, n_total - n_excluded)
-
-        if export_bam:
-            filtered_bam = (
-                Path(output_filtered_bam)
-                if output_filtered_bam
-                else _default_output_bam(input_bam_path, "filtered")
-            )
-            excluded_bam = (
-                Path(output_excluded_bam)
-                if output_excluded_bam
-                else _default_output_bam(input_bam_path, "excluded")
-            )
-            log("Filtering BAM from excluded read IDs...", "I")
-            filter_bam_from_reads_id(
-                input_bam=input_bam_path,
-                excluded_read_ids=excluded_read_ids,
-                output_filtered_bam=filtered_bam,
-                output_excluded_bam=excluded_bam,
-            )
-
-            for bam_path in (filtered_bam, excluded_bam):
-                try:
-                    pysam.index(str(bam_path))
-                except Exception:
-                    log(f"Could not index BAM (possibly unsorted): {bam_path}", "W")
-    finally:
-        # Clean up any temporary mask generated when cache is disabled.
-        if no_cache:
-            try:
-                merged_mask.unlink(missing_ok=True)
-            except TypeError:
-                if merged_mask.exists():
-                    merged_mask.unlink()
-
-    return {
-        "mask": merged_mask,
-        "filtered_bam": filtered_bam,
-        "excluded_bam": excluded_bam,
-        "report_tsv": report_path,
-        "n_total": n_total,
-        "n_filtered": n_filtered,
-        "n_excluded": n_excluded,
-        "n_total_records": n_total_records,
-    }
-
-
-def _filter_bam_with_mask(
-    input_bam: Path,
-    mask_path: Path,
-    track_to_tags: Optional[Dict[str, Set[str]]] = None,
-) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Set[str], int, int, int]:
-    """Filter a BAM file using a mask file and identify overlapping reads.
-
-    Args:
-            input_bam (Path): Path to the input BAM file.
-            mask_path (Path): Path to the mask file.
-            track_to_tags (Optional[Dict[str, Set[str]]]): Dictionary mapping track names to sets of tags.
-
-    Returns:
-            - Dict[str, Set[str]]: read_tracks mapping read IDs to overlapping track names
-            - Dict[str, Set[str]]: read_tags mapping read IDs to overlapping track tags
-            - Set[str]: excluded_read_ids set of read IDs that overlap the mask
-            - int: n_total total number of distinct read IDs
-            - int: n_excluded number of excluded read IDs
-            - int: n_total_records total number of input BAM records processed
-
-    Notes:
-            This function currently use subprocesses to avoid to parse every .bw in memory.
-            This may evolve in future version to use pyBigWig instead. However, it currently
-            excludes reads using IDs, which can lead to the exclusion of different reads using
-            same IDs.
-    """
-
-    log("Identifying overlapping reads...", "I")
-
-    # Initialize data structures
-    track_to_tags = track_to_tags or {}
-    read_tracks = defaultdict(set)
-    read_tags = defaultdict(set)
-    excluded_read_ids: Set[str] = set()
-
-    all_read_ids = {}
-    n_total_records = 0
-
-    # Get reads count
-    log(f"samtools view {input_bam}", "C")
-    view_cmd = ["samtools", "view", str(input_bam)]
-    view_proc = subprocess.Popen(view_cmd, stdout=subprocess.PIPE, text=True)
-    for line in view_proc.stdout:
-        n_total_records += 1
-        read_id = line.split("\t", 1)[0]
-        all_read_ids[read_id] = None
-    view_proc.wait()
-
-    for rid in all_read_ids.keys():
-        read_tracks[rid] = set()
-        read_tags[rid] = set()
-
-    # Get the intersection between the BAM file and the mask file
-    log(f"bedtools intersect -abam {input_bam} -b {mask_path} -wa -wb -bed", "C")
-    intersect_cmd = [
-        "bedtools",
-        "intersect",
-        "-abam",
-        str(input_bam),
-        "-b",
-        str(mask_path),
-        "-wa",
-        "-wb",
-        "-bed",
-    ]
-
-    process = subprocess.Popen(
-        intersect_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
-
-    # Process reads
-    try:
-        for line in process.stdout:
-            parts = line.strip().split("\t")
-            if len(parts) >= 16:
-                read_id = parts[3]
-                excluded_read_ids.add(read_id)
-
-                tracks_str = parts[-1]
-                tracks = tracks_str.split(",") if tracks_str else []
-
-                for track in tracks:
-                    if track:
-                        read_tracks[read_id].add(track)
-                        read_tags[read_id].update(track_to_tags.get(track, set()))
-            else:
-                raise RuntimeError(f"Unexpected ouput from bedtools: {line}")
-    finally:
-        process.stdout.close()
-
-    if process.wait() != 0:
-        raise subprocess.CalledProcessError(process.returncode, intersect_cmd)
-
-    if len(all_read_ids) != n_total_records:
-        log(
-            f"Number of unique IDs in BAM ({len(all_read_ids)}) does not match number of records in BED ({n_total_records}): this could be"
-            " due to duplicates. Currently, WizardEye filter using read-id and will then exclude duplicates if at least one is filtered.",
-            "W",
-        )
-
-    return (
-        dict(read_tracks),
-        dict(read_tags),
-        excluded_read_ids,
-        len(all_read_ids),
-        len(excluded_read_ids),
-        n_total_records,
-    )
-
-
-def filter_bam_from_reads_id(
-    input_bam: Path,
-    excluded_read_ids: Set[str],
-    output_filtered_bam: Path,
-    output_excluded_bam: Path,
-) -> Tuple[int, int, int]:
-    """Split BAM in one pysam pass using excluded read IDs.
-
-    Args:
-            input_bam: Path to input BAM file.
-            excluded_read_ids: Set of read IDs to exclude.
-            output_filtered_bam: Path to output BAM file with filtered reads.
-            output_excluded_bam: Path to output BAM file with excluded reads.
-
-    Returns:
-            Tuple[int, int, int]: Number of total records, number of filtered records and number of excluded records."""
-
-    log("Splitting BAM into excluded/filtered files based on filtration...", "I")
-
-    if pysam is None:
-        raise RuntimeError("pysam is required to filter BAM from read IDs")
-
-    output_filtered_bam.parent.mkdir(parents=True, exist_ok=True)
-    output_excluded_bam.parent.mkdir(parents=True, exist_ok=True)
-
-    n_total_records = 0
-    n_excluded_records = 0
-
-    with pysam.AlignmentFile(str(input_bam), "rb") as bam:
-        with pysam.AlignmentFile(
-            str(output_filtered_bam), "wb", template=bam
-        ) as filtered_handle:
-            with pysam.AlignmentFile(
-                str(output_excluded_bam), "wb", template=bam
-            ) as excluded_handle:
-                for read in bam.fetch(until_eof=True):
-                    n_total_records += 1
-                    read_id = read.query_name
-                    if read_id and read_id in excluded_read_ids:
-                        excluded_handle.write(read)
-                        n_excluded_records += 1
-                    else:
-                        filtered_handle.write(read)
-
-    n_filtered_records = n_total_records - n_excluded_records
-    return n_total_records, n_filtered_records, n_excluded_records
-
-
-# -- Alternative filtration using pyBigWig --
-
-
-def filter_bam_alternative(
-    input_bam: str,
-    ref: str,
-    db_root: str,
     exclude_tracks: List[str],
     kmer_length: int,
     offset_step: int,
@@ -698,8 +360,6 @@ def filter_bam_alternative(
     export_bam: bool = False,
     output_filtered_bam: Optional[str] = None,
     output_excluded_bam: Optional[str] = None,
-    no_cache: bool = False,
-    n_threads: int = 1,
 ) -> Dict[str, object]:
     """Alternative BAM filtering function using pyBigWig directly instead of bedtools mask intersection.
 
@@ -720,7 +380,6 @@ def filter_bam_alternative(
             output_filtered_bam (Optional[str]): Path to the output BAM file containing filtered reads if export_bam is True.
             output_excluded_bam (Optional[str]): Path to the output BAM file containing excluded reads if export_bam is True.
             db_root (str): Root directory of the database.
-            no_cache (bool): If True, do not use and generate cached tracks.
 
     Returns:
             Dict[str, object]: Dictionary containing mask path (None for this alternative), filtered/excluded BAM paths, report path, and counts.
@@ -899,6 +558,54 @@ def filter_bam_alternative(
     finally:
         for bw in opened_bws:
             bw.close()
+
+
+def filter_bam_from_reads_id(
+    input_bam: Path,
+    excluded_read_ids: Set[str],
+    output_filtered_bam: Path,
+    output_excluded_bam: Path,
+) -> Tuple[int, int, int]:
+    """Split BAM in one pysam pass using excluded read IDs.
+
+    Args:
+            input_bam: Path to input BAM file.
+            excluded_read_ids: Set of read IDs to exclude.
+            output_filtered_bam: Path to output BAM file with filtered reads.
+            output_excluded_bam: Path to output BAM file with excluded reads.
+
+    Returns:
+            Tuple[int, int, int]: Number of total records, number of filtered records and number of excluded records."""
+
+    log("Splitting BAM into excluded/filtered files based on filtration...", "I")
+
+    if pysam is None:
+        raise RuntimeError("pysam is required to filter BAM from read IDs")
+
+    output_filtered_bam.parent.mkdir(parents=True, exist_ok=True)
+    output_excluded_bam.parent.mkdir(parents=True, exist_ok=True)
+
+    n_total_records = 0
+    n_excluded_records = 0
+
+    with pysam.AlignmentFile(str(input_bam), "rb") as bam:
+        with pysam.AlignmentFile(
+            str(output_filtered_bam), "wb", template=bam
+        ) as filtered_handle:
+            with pysam.AlignmentFile(
+                str(output_excluded_bam), "wb", template=bam
+            ) as excluded_handle:
+                for read in bam.fetch(until_eof=True):
+                    n_total_records += 1
+                    read_id = read.query_name
+                    if read_id and read_id in excluded_read_ids:
+                        excluded_handle.write(read)
+                        n_excluded_records += 1
+                    else:
+                        filtered_handle.write(read)
+
+    n_filtered_records = n_total_records - n_excluded_records
+    return n_total_records, n_filtered_records, n_excluded_records
 
 
 # --- Count-report related function ---
