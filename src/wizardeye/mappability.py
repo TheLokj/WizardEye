@@ -45,7 +45,8 @@ from .utils import (
 # This control the maximum number of best hits to refers
 # Despite bwa manual, it seems to also alterate bwa results in single end condition
 # This is only useful without -N
-BWA_R_BEST_HITS = 10000000
+# 2147483647 (0x7FFFFFFF) is the maximum possible number based on bwaaln.c
+BWA_R_BEST_HITS = 2147483647
 
 # -- WizardEye mappability utilities --
 

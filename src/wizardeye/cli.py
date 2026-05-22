@@ -447,7 +447,7 @@ def align(
         None,
         "--track_ID",
         "--track-id",
-        help="Manual identifier used to name/reference the generated track (defaults to input FASTA stem).",
+        help="Manual identifier to store in track metadata.",
     ),
     tag: Optional[List[str]] = typer.Option(
         None,
@@ -531,9 +531,6 @@ def align(
             if not manual_track_id:
                 log("--track_ID cannot be empty.", "E")
                 raise typer.Exit(code=1)
-            manual_track_id = (
-                manual_track_id.replace("/", "_").replace("\\", "_").replace(" ", "_")
-            )
 
         bwa_params = BWAParameters(
             missing_prob_err_rate=bwa_missing_prob_err_rate,
@@ -546,11 +543,7 @@ def align(
         total_inputs = len(input_fastas)
         for idx, one_input_fasta in enumerate(input_fastas, start=1):
             base_query_name = Path(one_input_fasta).stem
-            query_track_id = (
-                base_query_name
-                if not manual_track_id
-                else f"{base_query_name}__{manual_track_id}"
-            )
+            query_track_id = base_query_name
 
             all_aln_str = "_N" if bwa_all_aln else ""
             track_name = f"{query_track_id}_k{kmer_length}_w{offset_step}_n{float(bwa_missing_prob_err_rate):g}_o{bwa_max_gap_opens}_l{bwa_seed_length}{all_aln_str}"
