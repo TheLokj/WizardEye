@@ -3,16 +3,16 @@
 """Mappability track generation and export utilities for WizardEye.
 
 This Python module provides functions to create mappability tracks from input FASTA files
-by splitting a query sequence into k-mers and aligning them to a reference genome using BWA, 
-and exporting the results as BigWig files in order to fill the database. 
+by splitting a query sequence into k-mers and aligning them to a reference genome using BWA,
+and exporting the results as BigWig files in order to fill the database.
 
-This module is the direct Python implementation of the original generate_cross_mappability_filter_bwa.sh script, 
+This module is the direct Python implementation of the original generate_cross_mappability_filter_bwa.sh script,
 with added features and optimizations.
 
 It includes utilities for handling temporary files, validating inputs, and saving track metadata.
 
-	See Also:
-		The original script: https://github.com/TheLokj/generate_cross_mappability_filter/blob/master/BWA/generate_cross_mappability_filter_bwa.sh
+        See Also:
+                The original script: https://github.com/TheLokj/generate_cross_mappability_filter/blob/master/BWA/generate_cross_mappability_filter_bwa.sh
 """
 
 import subprocess
@@ -29,16 +29,16 @@ from typing import Dict, List, Optional, Tuple
 
 from .version import PACKAGE_VERSION
 from .utils import (
-	log,
-	run,
-	file_md5,
-	from_charlist_to_list,
-	convert_bedgraph_to_bigwig,
-	write_seq_sizes_from_bam,
-	write_seq_sizes_from_fasta,
-	iterate_mapping_intervals,
-	iterate_unique_mapping_intervals,
-	BWAParameters
+    log,
+    run,
+    file_md5,
+    from_charlist_to_list,
+    convert_bedgraph_to_bigwig,
+    write_seq_sizes_from_bam,
+    write_seq_sizes_from_fasta,
+    iterate_mapping_intervals,
+    iterate_unique_mapping_intervals,
+    BWAParameters,
 )
 
 # bwa aln -R & bwa samse -n parameter
@@ -49,451 +49,541 @@ BWA_R_BEST_HITS = 10000000
 
 # -- WizardEye mappability utilities --
 
-def from_alignment_to_bigWig(bam_file: Path, out_dir: Path, kmer_length: int, n_threads: int = 1, tmp_dir: Optional[Path] = None) -> Tuple[Path, Path, Dict[str, int]]:
-	"""Convert alignment results to BigWig tracks.
-	
-	Args:
-		bam_file(Path): Path to the BAM file containing all mapped k-mers.
-		out_dir(Path): Directory where the output BigWig files and intermediate files will be saved.
-		kmer_length(int): Length of the k-mers used for mapping, needed for coverage calculations.
-		n_threads(int): Number of threads to use for parallel operations. Default is 1.
-		tmp_dir(Optional[Path]): Temporary directory for sort operations. Defaults to out_dir.
 
-	Returns:
-		Tuple[Path, Path, Dict[str, int] :
-			- Path: Path to the BigWig file for all mappings (map_all).
-			- Path: Path to the BigWig file for uniquely mapping k-mers (map_uniq).
-			- Dict[str, int]: dictionary with covered base counts for both masks, e.g. {"map_all": 123456, "map_uniq": 78910}.
-	"""
-	if tmp_dir is None:
-		tmp_dir = out_dir
+def from_alignment_to_bigWig(
+    bam_file: Path,
+    out_dir: Path,
+    kmer_length: int,
+    n_threads: int = 1,
+    tmp_dir: Optional[Path] = None,
+) -> Tuple[Path, Path, Dict[str, int]]:
+    """Convert alignment results to BigWig tracks.
 
-	cov_map_bg = out_dir / "map_all.bg"
-	cov_uniq_bg = out_dir / "map_uniq.bg"
-	cov_map_bw = out_dir / "map_all.bw"
-	cov_uniq_bw = out_dir / "map_uniq.bw"
-	seq_sizes = out_dir / "chrom.sizes"
+    Args:
+            bam_file(Path): Path to the BAM file containing all mapped k-mers.
+            out_dir(Path): Directory where the output BigWig files and intermediate files will be saved.
+            kmer_length(int): Length of the k-mers used for mapping, needed for coverage calculations.
+            n_threads(int): Number of threads to use for parallel operations. Default is 1.
+            tmp_dir(Optional[Path]): Temporary directory for sort operations. Defaults to out_dir.
 
-	# Write raw intervals to temporary BED files
-	n_map_bed = out_dir / "n_map.bed"
-	n_uniq_bed = out_dir / "n_uniq.bed"
+    Returns:
+            Tuple[Path, Path, Dict[str, int] :
+                    - Path: Path to the BigWig file for all mappings (map_all).
+                    - Path: Path to the BigWig file for uniquely mapping k-mers (map_uniq).
+                    - Dict[str, int]: dictionary with covered base counts for both masks, e.g. {"map_all": 123456, "map_uniq": 78910}.
+    """
+    if tmp_dir is None:
+        tmp_dir = out_dir
 
-	with n_map_bed.open("w", encoding="utf-8") as f:
-		for chrom, start, end in iterate_mapping_intervals(bam_file, kmer_length):
-			f.write(f"{chrom}\t{start}\t{end}\n")
+    cov_map_bg = out_dir / "map_all.bg"
+    cov_uniq_bg = out_dir / "map_uniq.bg"
+    cov_map_bw = out_dir / "map_all.bw"
+    cov_uniq_bw = out_dir / "map_uniq.bw"
+    seq_sizes = out_dir / "chrom.sizes"
 
-	with n_uniq_bed.open("w", encoding="utf-8") as f:
-		for chrom, start, end in iterate_unique_mapping_intervals(bam_file, kmer_length):
-			f.write(f"{chrom}\t{start}\t{end}\n")
+    # Write raw intervals to temporary BED files
+    n_map_bed = out_dir / "n_map.bed"
+    n_uniq_bed = out_dir / "n_uniq.bed"
 
-	# Sort BED files by chrom then position (required by bedtools genomecov)
-	log("Sorting BED files by chromosome and position...", "I")
-	for bed_file in (n_map_bed, n_uniq_bed):
-		tmp_sorted = bed_file.with_suffix(".sorted")
-		run(["sort", "-k1,1", "-k2,2n", "--parallel=" + str(n_threads), "-T", str(tmp_dir), str(bed_file), "-o", str(tmp_sorted)], check=True, env={**os.environ, "LC_ALL": "C"})
-		tmp_sorted.replace(bed_file)
+    with n_map_bed.open("w", encoding="utf-8") as f:
+        for chrom, start, end in iterate_mapping_intervals(bam_file, kmer_length):
+            f.write(f"{chrom}\t{start}\t{end}\n")
 
-	# Use bedtools genomecov to compute coverage
-	write_seq_sizes_from_bam(bam_file, seq_sizes)
+    with n_uniq_bed.open("w", encoding="utf-8") as f:
+        for chrom, start, end in iterate_unique_mapping_intervals(
+            bam_file, kmer_length
+        ):
+            f.write(f"{chrom}\t{start}\t{end}\n")
 
-	with open(cov_map_bg, "w") as f_map:
-		genomecov_map = subprocess.Popen(
-			["bedtools", "genomecov", "-i", str(n_map_bed), "-g", str(seq_sizes), "-bga"],
-			stdout=subprocess.PIPE,
-		)
-		sort_map = subprocess.Popen(
-			["sort", "-k1,1", "-k2,2n", "--parallel=" + str(n_threads), "-T", str(tmp_dir)],
-			stdin=genomecov_map.stdout,
-			stdout=f_map,
-			env={**os.environ, "LC_ALL": "C"},
-		)
-		genomecov_map.stdout.close()
-		return_code = sort_map.wait()
-		if return_code != 0:
-			raise subprocess.CalledProcessError(return_code, sort_map.args)
+    # Sort BED files by chrom then position (required by bedtools genomecov)
+    log("Sorting BED files by chromosome and position...", "I")
+    for bed_file in (n_map_bed, n_uniq_bed):
+        tmp_sorted = bed_file.with_suffix(".sorted")
+        run(
+            [
+                "sort",
+                "-k1,1",
+                "-k2,2n",
+                "--parallel=" + str(n_threads),
+                "-T",
+                str(tmp_dir),
+                str(bed_file),
+                "-o",
+                str(tmp_sorted),
+            ],
+            check=True,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        tmp_sorted.replace(bed_file)
 
-	with open(cov_uniq_bg, "w") as f_uniq:
-		genomecov_uniq = subprocess.Popen(
-			["bedtools", "genomecov", "-i", str(n_uniq_bed), "-g", str(seq_sizes), "-bga"],
-			stdout=subprocess.PIPE,
-		)
-		sort_uniq = subprocess.Popen(
-			["sort", "-k1,1", "-k2,2n", "--parallel=" + str(n_threads), "-T", str(tmp_dir)],
-			stdin=genomecov_uniq.stdout,
-			stdout=f_uniq,
-			env={**os.environ, "LC_ALL": "C"},
-		)
-		genomecov_uniq.stdout.close()
-		return_code = sort_uniq.wait()
-		if return_code != 0:
-			raise subprocess.CalledProcessError(return_code, sort_uniq.args)
+    # Use bedtools genomecov to compute coverage
+    write_seq_sizes_from_bam(bam_file, seq_sizes)
 
-	# Count covered bases from bedGraph files
-	def count_bp_from_bedgraph(bg_path: Path) -> int:
-		total = 0
-		with bg_path.open("r", encoding="utf-8") as f:
-			for line in f:
-				parts = line.strip().split("\t")
-				if len(parts) >= 4:
-					start, end = int(parts[1]), int(parts[2])
-					total += (end - start)
-		return total
+    with open(cov_map_bg, "w") as f_map:
+        genomecov_map = subprocess.Popen(
+            [
+                "bedtools",
+                "genomecov",
+                "-i",
+                str(n_map_bed),
+                "-g",
+                str(seq_sizes),
+                "-bga",
+            ],
+            stdout=subprocess.PIPE,
+        )
+        sort_map = subprocess.Popen(
+            [
+                "sort",
+                "-k1,1",
+                "-k2,2n",
+                "--parallel=" + str(n_threads),
+                "-T",
+                str(tmp_dir),
+            ],
+            stdin=genomecov_map.stdout,
+            stdout=f_map,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        genomecov_map.stdout.close()
+        return_code = sort_map.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, sort_map.args)
 
-	covered_bp = {
-		"map_all": count_bp_from_bedgraph(cov_map_bg),
-		"map_uniq": count_bp_from_bedgraph(cov_uniq_bg),
-	}
+    with open(cov_uniq_bg, "w") as f_uniq:
+        genomecov_uniq = subprocess.Popen(
+            [
+                "bedtools",
+                "genomecov",
+                "-i",
+                str(n_uniq_bed),
+                "-g",
+                str(seq_sizes),
+                "-bga",
+            ],
+            stdout=subprocess.PIPE,
+        )
+        sort_uniq = subprocess.Popen(
+            [
+                "sort",
+                "-k1,1",
+                "-k2,2n",
+                "--parallel=" + str(n_threads),
+                "-T",
+                str(tmp_dir),
+            ],
+            stdin=genomecov_uniq.stdout,
+            stdout=f_uniq,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        genomecov_uniq.stdout.close()
+        return_code = sort_uniq.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, sort_uniq.args)
 
-	convert_bedgraph_to_bigwig(cov_map_bg, seq_sizes, cov_map_bw)
-	convert_bedgraph_to_bigwig(cov_uniq_bg, seq_sizes, cov_uniq_bw)
+    # Count covered bases from bedGraph files
+    def count_bp_from_bedgraph(bg_path: Path) -> int:
+        total = 0
+        with bg_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split("\t")
+                if len(parts) >= 4:
+                    start, end = int(parts[1]), int(parts[2])
+                    total += end - start
+        return total
 
-	# Clean up temporary files
-	for tmp_file in (n_map_bed, n_uniq_bed, cov_map_bg, cov_uniq_bg, seq_sizes):
-		if tmp_file.exists():
-			tmp_file.unlink()
+    covered_bp = {
+        "map_all": count_bp_from_bedgraph(cov_map_bg),
+        "map_uniq": count_bp_from_bedgraph(cov_uniq_bg),
+    }
 
-	return cov_map_bw, cov_uniq_bw, covered_bp
+    convert_bedgraph_to_bigwig(cov_map_bg, seq_sizes, cov_map_bw)
+    convert_bedgraph_to_bigwig(cov_uniq_bg, seq_sizes, cov_uniq_bw)
+
+    # Clean up temporary files
+    for tmp_file in (n_map_bed, n_uniq_bed, cov_map_bg, cov_uniq_bg, seq_sizes):
+        if tmp_file.exists():
+            tmp_file.unlink()
+
+    return cov_map_bw, cov_uniq_bw, covered_bp
+
 
 # --- WizardEye mappability pipeline blocks ---
 
+
 def align_with_bwa_aln(
-	input_fasta: Path,
-	reference: Path,
-	bwa_params: BWAParameters = BWAParameters(),
+    input_fasta: Path,
+    reference: Path,
+    bwa_params: BWAParameters = BWAParameters(),
 ) -> Path:
-	"""Align a FASTA file using bwa aln and return the path to the resulting BAM file containing mapped reads.
-	
-	Args:
-		input_fasta(Path): Path to the input FASTA file containing k-mers to align.
-		reference(Path): Path to the reference genome FASTA file that has been indexed with BWA.
-		bwa(BWAParameters): BWA alignment parameters.
-		
-	Returns:
-		Path: the BAM file containing the mapped reads for the input chunk.
-	"""
-	sai_file = input_fasta.with_suffix(".sai")
-	bam_file = input_fasta.with_suffix(".bam")
+    """Align a FASTA file using bwa aln and return the path to the resulting BAM file containing mapped reads.
 
-	if bwa_params.all_aln:
-		log("bwa will compute every alternative mapping.", "I")
+    Args:
+            input_fasta(Path): Path to the input FASTA file containing k-mers to align.
+            reference(Path): Path to the reference genome FASTA file that has been indexed with BWA.
+            bwa(BWAParameters): BWA alignment parameters.
 
-	bwa_cmd = [
-		"bwa",
-		"aln",
-		"-t",
-		str(bwa_params.threads),
-	]
-	if bwa_params.all_aln:
-		bwa_cmd.append("-N")
-	bwa_cmd.extend([
-		"-n",
-		str(bwa_params.missing_prob_err_rate),
-		"-o",
-		str(bwa_params.max_gap_opens),
-		"-l",
-		str(bwa_params.seed_length),
-		"-R",
-		str(BWA_R_BEST_HITS),
-		str(reference),
-		str(input_fasta),
-	])
+    Returns:
+            Path: the BAM file containing the mapped reads for the input chunk.
+    """
+    sai_file = input_fasta.with_suffix(".sai")
+    bam_file = input_fasta.with_suffix(".bam")
 
-	with sai_file.open("w", encoding="utf-8") as sai_out:
-		run(bwa_cmd, check=True, stdout=sai_out)
+    if bwa_params.all_aln:
+        log("bwa will compute every alternative mapping.", "I")
 
-	with bam_file.open("wb") as bam_out:
-		log(f"bwa samse -n {str(BWA_R_BEST_HITS)} {reference} {sai_file} {input_fasta}", "C")
-		bwa_samse = subprocess.Popen(
-			[
-				"bwa",
-				"samse",
-				"-n",
-				str(BWA_R_BEST_HITS),
-				str(reference),
-				str(sai_file),
-				str(input_fasta),
-			],
-			stdout=subprocess.PIPE,
-		)
-		try:
-			run(
-				["samtools", "view", "-b", "-F", "4", "-"],
-				check=True,
-				stdin=bwa_samse.stdout,
-				stdout=bam_out,
-			)
-		finally:
-			if bwa_samse.stdout is not None:
-				bwa_samse.stdout.close()
+    bwa_cmd = [
+        "bwa",
+        "aln",
+        "-t",
+        str(bwa_params.threads),
+    ]
+    if bwa_params.all_aln:
+        bwa_cmd.append("-N")
+    bwa_cmd.extend(
+        [
+            "-n",
+            str(bwa_params.missing_prob_err_rate),
+            "-o",
+            str(bwa_params.max_gap_opens),
+            "-l",
+            str(bwa_params.seed_length),
+            "-R",
+            str(BWA_R_BEST_HITS),
+            str(reference),
+            str(input_fasta),
+        ]
+    )
 
-		return_code = bwa_samse.wait()
-		if return_code != 0:
-			raise subprocess.CalledProcessError(return_code, bwa_samse.args)
+    with sai_file.open("w", encoding="utf-8") as sai_out:
+        run(bwa_cmd, check=True, stdout=sai_out)
 
-	for tmp_file in (sai_file, input_fasta):
-		if tmp_file.exists():
-			tmp_file.unlink()
+    with bam_file.open("wb") as bam_out:
+        log(
+            f"bwa samse -n {str(BWA_R_BEST_HITS)} {reference} {sai_file} {input_fasta}",
+            "C",
+        )
+        bwa_samse = subprocess.Popen(
+            [
+                "bwa",
+                "samse",
+                "-n",
+                str(BWA_R_BEST_HITS),
+                str(reference),
+                str(sai_file),
+                str(input_fasta),
+            ],
+            stdout=subprocess.PIPE,
+        )
+        try:
+            run(
+                ["samtools", "view", "-b", "-F", "4", "-"],
+                check=True,
+                stdin=bwa_samse.stdout,
+                stdout=bam_out,
+            )
+        finally:
+            if bwa_samse.stdout is not None:
+                bwa_samse.stdout.close()
 
-	return bam_file
+        return_code = bwa_samse.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, bwa_samse.args)
+
+    for tmp_file in (sai_file, input_fasta):
+        if tmp_file.exists():
+            tmp_file.unlink()
+
+    return bam_file
+
 
 def create_mappability_track(
-	input_fasta,
-	input_target,
-	track_id,
-	kmer_length,
-	offset_step,
-	chunk_size,
-	n_threads,
-	bwa_params: BWAParameters = BWAParameters(),
-	db_root="database",
-	tags: Optional[List[str]] = None,
-	manual_track_id=None,
-	tmp_dir_custom: Optional[str] = None,
+    input_fasta,
+    input_target,
+    track_id,
+    kmer_length,
+    offset_step,
+    chunk_size,
+    n_threads,
+    bwa_params: BWAParameters = BWAParameters(),
+    db_root="database",
+    tags: Optional[List[str]] = None,
+    manual_track_id=None,
+    tmp_dir_custom: Optional[str] = None,
 ):
-	"""Pipeline to create a mappability track from an input FASTA file by aligning k-mers to a reference genome and exporting BigWig files.
-	
-	Args:
-		input_fasta: Path to the input FASTA file containing sequences to analyze.
-		reference: Path to the reference genome FASTA file that has been indexed with BWA.
-		track_id: Optional string to use as the track ID in metadata and naming. If not provided, it will be derived from the input FASTA name.
-		kmer_length: Length of the k-mers to generate from the input FASTA for alignment.
-		offset_step: Step size for the sliding window when generating k-mers. Default is 1 for fully overlapping k-mers.
-		chunk_size: Number of k-mers to include in each chunk for parallel alignment. Must be a positive integer.
-		n_threads: Number of threads to use for chunk parallel alignment.
-		bwa_params: BWA alignment parameters.
-		db_root: Root directory for the database where target-specific directories and track outputs will be saved. Default is "database".
-		tags: Optional list of tags to associate with the track in metadata.
-		manual_track_id: Optional string to use as the track ID in metadata and naming, overriding automatic derivation.
-		tmp_dir_custom: Optional custom temporary directory path. If provided, overrides the default TMPDIR=/tmp location.
-	Returns:
-		Path to the directory where the generated track and its metadata are saved.
-	"""
+    """Pipeline to create a mappability track from an input FASTA file by aligning k-mers to a reference genome and exporting BigWig files.
 
-	# Validate inputs and prepare paths
-	input_fasta = Path(input_fasta)
-	input_target = Path(input_target)
-	target_name = input_target.stem
-	input_name = input_fasta.stem
+    Args:
+            input_fasta: Path to the input FASTA file containing sequences to analyze.
+            reference: Path to the reference genome FASTA file that has been indexed with BWA.
+            track_id: Optional string to use as the track ID in metadata and naming. If not provided, it will be derived from the input FASTA name.
+            kmer_length: Length of the k-mers to generate from the input FASTA for alignment.
+            offset_step: Step size for the sliding window when generating k-mers. Default is 1 for fully overlapping k-mers.
+            chunk_size: Number of k-mers to include in each chunk for parallel alignment. Must be a positive integer.
+            n_threads: Number of threads to use for chunk parallel alignment.
+            bwa_params: BWA alignment parameters.
+            db_root: Root directory for the database where target-specific directories and track outputs will be saved. Default is "database".
+            tags: Optional list of tags to associate with the track in metadata.
+            manual_track_id: Optional string to use as the track ID in metadata and naming, overriding automatic derivation.
+            tmp_dir_custom: Optional custom temporary directory path. If provided, overrides the default TMPDIR=/tmp location.
+    Returns:
+            Path to the directory where the generated track and its metadata are saved.
+    """
 
-	if chunk_size < 1:
-		raise ValueError("chunk_size must be a positive integer")
-	query_track_id = track_id.strip() if track_id else input_name
-	if not query_track_id:
-		raise ValueError("track_id cannot be empty")
-	
-	input_md5 = file_md5(input_fasta)
-	all_aln_str = "_N" if bwa_params.all_aln else ""
-	track_name = f"{query_track_id}_k{kmer_length}_w{offset_step}_n{float(bwa_params.missing_prob_err_rate):g}_o{bwa_params.max_gap_opens}_l{bwa_params.seed_length}{all_aln_str}"
-	target_dir = Path(db_root) / target_name
-	target_dir.mkdir(parents=True, exist_ok=True)
-	out_dir = Path(db_root) / target_name / track_name
-	out_dir.mkdir(parents=True, exist_ok=True)
+    # Validate inputs and prepare paths
+    input_fasta = Path(input_fasta)
+    input_target = Path(input_target)
+    target_name = input_target.stem
+    input_name = input_fasta.stem
 
-	# Persist reference fingerprint once at target level and validate it on subsequent runs.
-	target_md5 = file_md5(input_target)
-	target_meta_yaml = target_dir / f"{target_name}.yaml"
-	target_md5_file = target_dir / f"{target_name}.md5"
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be a positive integer")
+    query_track_id = track_id.strip() if track_id else input_name
+    if not query_track_id:
+        raise ValueError("track_id cannot be empty")
 
-	existing_md5 = None
-	if target_meta_yaml.exists():
-		with open(target_meta_yaml, "r", encoding="utf-8") as f:
-			existing_meta = yaml.safe_load(f) or {}
-		if isinstance(existing_meta, dict):
-			existing_md5 = existing_meta.get("reference_fasta_md5")
+    input_md5 = file_md5(input_fasta)
+    all_aln_str = "_N" if bwa_params.all_aln else ""
+    track_name = f"{query_track_id}_k{kmer_length}_w{offset_step}_n{float(bwa_params.missing_prob_err_rate):g}_o{bwa_params.max_gap_opens}_l{bwa_params.seed_length}{all_aln_str}"
+    target_dir = Path(db_root) / target_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(db_root) / target_name / track_name
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-	if not existing_md5 and target_md5_file.exists():
-		with open(target_md5_file, "r", encoding="utf-8") as f:
-			first_token = (f.readline().strip().split() or [None])[0]
-			existing_md5 = first_token
+    # Persist reference fingerprint once at target level and validate it on subsequent runs.
+    target_md5 = file_md5(input_target)
+    target_meta_yaml = target_dir / f"{target_name}.yaml"
+    target_md5_file = target_dir / f"{target_name}.md5"
 
-	if existing_md5 and existing_md5 != target_md5:
-		raise ValueError(
-			f"Reference MD5 mismatch for '{target_name}'. "
-			f"Stored={existing_md5}, provided={target_md5}. "
-			"Use the exact same reference FASTA used to build this target database."
-		)
+    existing_md5 = None
+    if target_meta_yaml.exists():
+        with open(target_meta_yaml, "r", encoding="utf-8") as f:
+            existing_meta = yaml.safe_load(f) or {}
+        if isinstance(existing_meta, dict):
+            existing_md5 = existing_meta.get("reference_fasta_md5")
 
-	target_meta_content = {
-		"reference_name": target_name,
-		"reference_fasta": str(input_target.resolve()),
-		"reference_fasta_md5": target_md5,
-		"last_updated": datetime.now().isoformat(timespec="seconds"),
-	}
-	with open(target_meta_yaml, "w", encoding="utf-8") as f:
-		yaml.safe_dump(target_meta_content, f, sort_keys=False)
-	with open(target_md5_file, "w", encoding="utf-8") as f:
-		f.write(f"{target_md5}  {input_target.name}\n")
+    if not existing_md5 and target_md5_file.exists():
+        with open(target_md5_file, "r", encoding="utf-8") as f:
+            first_token = (f.readline().strip().split() or [None])[0]
+            existing_md5 = first_token
 
-	target_seq_sizes = target_dir / f"{target_name}.sizes"
-	if not target_seq_sizes.exists():
-		log(f"Generating sequence sizes file for reference '{target_name}'...", "I")
-		write_seq_sizes_from_fasta(input_target, target_seq_sizes)
+    if existing_md5 and existing_md5 != target_md5:
+        raise ValueError(
+            f"Reference MD5 mismatch for '{target_name}'. "
+            f"Stored={existing_md5}, provided={target_md5}. "
+            "Use the exact same reference FASTA used to build this target database."
+        )
 
-	# Create temporary directory in cluster TMPDIR or /tmp, or use custom directory if provided
-	if tmp_dir_custom:
-		tmp_root = Path(tmp_dir_custom)
-	else:
-		tmp_root = Path(os.environ.get("TMPDIR", "/tmp"))
-	user = getpass.getuser()
-	tmp_dir = tmp_root / f"{user}_wizardeye"
-	tmp_dir.mkdir(parents=True, exist_ok=True)
+    target_meta_content = {
+        "reference_name": target_name,
+        "reference_fasta": str(input_target.resolve()),
+        "reference_fasta_md5": target_md5,
+        "last_updated": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(target_meta_yaml, "w", encoding="utf-8") as f:
+        yaml.safe_dump(target_meta_content, f, sort_keys=False)
+    with open(target_md5_file, "w", encoding="utf-8") as f:
+        f.write(f"{target_md5}  {input_target.name}\n")
 
-	try:
-	
-		# Index with BWA if needed
-		bwt_file = input_target.with_suffix(input_target.suffix + ".bwt")
-		if not bwt_file.exists():
-			log(f"BWA index not found for {input_target}, running bwa index...", "I")
-			run(["bwa", "index", str(input_target)], check=True)
-		else:
-			log(f"BWA index found for {input_target}, skipping index.", "I")
+    target_seq_sizes = target_dir / f"{target_name}.sizes"
+    if not target_seq_sizes.exists():
+        log(f"Generating sequence sizes file for reference '{target_name}'...", "I")
+        write_seq_sizes_from_fasta(input_target, target_seq_sizes)
 
-		log(f"Splitting {input_fasta} into {kmer_length}-mers, deduplicating, and chunking with seqkit pipeline...", "I")
-		chunk_dir = tmp_dir / f"{input_name}_chunks"
-		chunk_dir.mkdir(parents=True, exist_ok=True)
+    # Create temporary directory in cluster TMPDIR or /tmp, or use custom directory if provided
+    if tmp_dir_custom:
+        tmp_root = Path(tmp_dir_custom)
+    else:
+        tmp_root = Path(os.environ.get("TMPDIR", "/tmp"))
+    user = getpass.getuser()
+    tmp_dir = tmp_root / f"{user}_wizardeye"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
 
-		p1 = p2 = p3 = None
+    try:
+        # Index with BWA if needed
+        bwt_file = input_target.with_suffix(input_target.suffix + ".bwt")
+        if not bwt_file.exists():
+            log(f"BWA index not found for {input_target}, running bwa index...", "I")
+            run(["bwa", "index", str(input_target)], check=True)
+        else:
+            log(f"BWA index found for {input_target}, skipping index.", "I")
 
-		try:
-			# 1. Sliding window
-			p1 = subprocess.Popen(
-				["seqkit", "sliding", "-j", str(n_threads), "-W", str(kmer_length), "-s", str(offset_step), str(input_fasta)],
-				stdout=subprocess.PIPE,
-				stderr=sys.stderr  
-			)
-			
-			# 2. Deduplication
-			p2 = subprocess.Popen(
-				["seqkit", "rmdup", "-j", str(n_threads), "-s"],
-				stdin=p1.stdout,
-				stdout=subprocess.PIPE,
-				stderr=sys.stderr
-			)
-			
-			# 3. Splitting
-			p3 = subprocess.Popen(
-				["seqkit", "split2", "-j", str(n_threads), "-s", str(chunk_size), "-O", str(chunk_dir), "--extension", ".fasta", "-"],
-				stdin=p2.stdout,
-				stderr=sys.stderr
-			)
+        log(
+            f"Splitting {input_fasta} into {kmer_length}-mers, deduplicating, and chunking with seqkit pipeline...",
+            "I",
+        )
+        chunk_dir = tmp_dir / f"{input_name}_chunks"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
 
-			p1.stdout.close()
-			p2.stdout.close()
-			
-			p1.wait()
-			p2.wait()
-			p3.wait()
+        p1 = p2 = p3 = None
 
-			for p in (p1, p2, p3):
-				if p.returncode != 0:
-					raise subprocess.CalledProcessError(p.returncode, p.args)
+        try:
+            # 1. Sliding window
+            p1 = subprocess.Popen(
+                [
+                    "seqkit",
+                    "sliding",
+                    "-j",
+                    str(n_threads),
+                    "-W",
+                    str(kmer_length),
+                    "-s",
+                    str(offset_step),
+                    str(input_fasta),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=sys.stderr,
+            )
 
-		finally:
-			for p in (p1, p2, p3):
-				if p is not None and p.poll() is None:
-					p.kill()
+            # 2. Deduplication
+            p2 = subprocess.Popen(
+                ["seqkit", "rmdup", "-j", str(n_threads), "-s"],
+                stdin=p1.stdout,
+                stdout=subprocess.PIPE,
+                stderr=sys.stderr,
+            )
 
-		chunk_fastas = sorted(chunk_dir.rglob("*.fasta"))
-		if not chunk_fastas:
-			raise RuntimeError("No chunk FASTA files were produced by seqkit split2")
+            # 3. Splitting
+            p3 = subprocess.Popen(
+                [
+                    "seqkit",
+                    "split2",
+                    "-j",
+                    str(n_threads),
+                    "-s",
+                    str(chunk_size),
+                    "-O",
+                    str(chunk_dir),
+                    "--extension",
+                    ".fasta",
+                    "-",
+                ],
+                stdin=p2.stdout,
+                stderr=sys.stderr,
+            )
 
-		workers = max(1, n_threads)
-		if n_threads > 1:
-			log(f"Aligning {len(chunk_fastas)} chunks with {workers} parallel workers...", "I")
+            p1.stdout.close()
+            p2.stdout.close()
 
-		chunk_bams: List[Path] = []
-		with ThreadPoolExecutor(max_workers=workers) as executor:
-			futures = [
-				executor.submit(
-					align_with_bwa_aln,
-					chunk_fasta,
-					input_target,
-					bwa_params,
-				)
-				for chunk_fasta in chunk_fastas
-			]
-			for future in futures:
-				chunk_bams.append(future.result())
+            p1.wait()
+            p2.wait()
+            p3.wait()
 
-		# Merge all chunk-level BAM files into one temporary BAM.
-		bam_file = tmp_dir / f"{input_name}_{kmer_length}{f'_s{offset_step}' if offset_step != 1 else ''}_{Path(input_target).stem}.bam"
-		
-		log(f"Merging {len(chunk_bams)} chunk BAM files into one unique BAM...", "I")
-		log(f"samtools cat {' '.join(str(path) for path in chunk_bams)}", "C")
-		samtools_cat = subprocess.Popen(
-			["samtools", "cat", *[str(path) for path in chunk_bams]],
-			stdout=subprocess.PIPE,
-		)
-		try:
-			run(
-				["samtools", "sort", "-@", str(workers), "-o", str(bam_file), "-"],
-				check=True,
-				stdin=samtools_cat.stdout,
-			)
-		finally:
-			if samtools_cat.stdout is not None:
-				samtools_cat.stdout.close()
+            for p in (p1, p2, p3):
+                if p.returncode != 0:
+                    raise subprocess.CalledProcessError(p.returncode, p.args)
 
-		return_code = samtools_cat.wait()
-		if return_code != 0:
-			raise subprocess.CalledProcessError(return_code, samtools_cat.args)
+        finally:
+            for p in (p1, p2, p3):
+                if p is not None and p.poll() is None:
+                    p.kill()
 
-		for tmp_bam in chunk_bams:
-			if tmp_bam.exists():
-				tmp_bam.unlink()
+        chunk_fastas = sorted(chunk_dir.rglob("*.fasta"))
+        if not chunk_fastas:
+            raise RuntimeError("No chunk FASTA files were produced by seqkit split2")
 
-		# Export only final BigWig depth tracks.
-		log("Exporting mappability BigWig tracks from temporary BAM...", "I")
-		cov_map_bw, cov_uniq_bw, covered_bp = from_alignment_to_bigWig(
-			bam_file=bam_file,
-			out_dir=out_dir,
-			kmer_length=kmer_length,
-			n_threads=n_threads,
-			tmp_dir=tmp_dir,
-		)
+        workers = max(1, n_threads)
+        if n_threads > 1:
+            log(
+                f"Aligning {len(chunk_fastas)} chunks with {workers} parallel workers...",
+                "I",
+            )
 
-		# Save parameters
-		log("Saving track parameters and metadata...", "I")
-		param_yaml = out_dir / "param.yaml"
-		param_content = {
-			"generation_date": datetime.now().isoformat(timespec="seconds"),
-			"wizardeye_version": PACKAGE_VERSION,
-			"reference": str(input_target),
-			"reference_fasta_md5": target_md5,
-			"track_id": str(manual_track_id) if manual_track_id else None,
-			"input": str(input_fasta),
-			"input_fasta_md5": input_md5,
-			"tags": from_charlist_to_list(tags, lowercase=True),
-			"kmer_size": kmer_length,
-			"sliding_window": offset_step,
-			"chunk_size": chunk_size,
-			"mapping_tool": "bwa aln",
-			"bwa_parameters": {
-				"-n": bwa_params.missing_prob_err_rate,
-				"-o": bwa_params.max_gap_opens,
-				"-l": bwa_params.seed_length,
-				"-N": bwa_params.all_aln,
-				"-t": bwa_params.threads,
-			},
-			"chunk_parameters": {
-				"-j": n_threads,
-			},
-			"covered_bases": {
-				"map_all_bp": covered_bp["map_all"],
-				"map_uniq_bp": covered_bp["map_uniq"],
-			},
-		}
-		if param_content["track_id"] is None:
-			param_content.pop("track_id")
-		with open(param_yaml, "w") as f:
-			yaml.safe_dump(param_content, f, sort_keys=False)
+        chunk_bams: List[Path] = []
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(
+                    align_with_bwa_aln,
+                    chunk_fasta,
+                    input_target,
+                    bwa_params,
+                )
+                for chunk_fasta in chunk_fastas
+            ]
+            for future in futures:
+                chunk_bams.append(future.result())
 
-		log(f"Track saved in: {out_dir}", "S")
-		return out_dir
-	finally:
-		log("Cleaning up temporary files and directories...", "I")
-		try:
-			shutil.rmtree(tmp_dir)
-		except Exception as e:
-			log(f"Could not remove tmp dir {tmp_dir}: {e}", "WARN")
-	
+        # Merge all chunk-level BAM files into one temporary BAM.
+        bam_file = (
+            tmp_dir
+            / f"{input_name}_{kmer_length}{f'_s{offset_step}' if offset_step != 1 else ''}_{Path(input_target).stem}.bam"
+        )
+
+        log(f"Merging {len(chunk_bams)} chunk BAM files into one unique BAM...", "I")
+        log(f"samtools cat {' '.join(str(path) for path in chunk_bams)}", "C")
+        samtools_cat = subprocess.Popen(
+            ["samtools", "cat", *[str(path) for path in chunk_bams]],
+            stdout=subprocess.PIPE,
+        )
+        try:
+            run(
+                ["samtools", "sort", "-@", str(workers), "-o", str(bam_file), "-"],
+                check=True,
+                stdin=samtools_cat.stdout,
+            )
+        finally:
+            if samtools_cat.stdout is not None:
+                samtools_cat.stdout.close()
+
+        return_code = samtools_cat.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, samtools_cat.args)
+
+        for tmp_bam in chunk_bams:
+            if tmp_bam.exists():
+                tmp_bam.unlink()
+
+        # Export only final BigWig depth tracks.
+        log("Exporting mappability BigWig tracks from temporary BAM...", "I")
+        cov_map_bw, cov_uniq_bw, covered_bp = from_alignment_to_bigWig(
+            bam_file=bam_file,
+            out_dir=out_dir,
+            kmer_length=kmer_length,
+            n_threads=n_threads,
+            tmp_dir=tmp_dir,
+        )
+
+        # Save parameters
+        log("Saving track parameters and metadata...", "I")
+        param_yaml = out_dir / "param.yaml"
+        param_content = {
+            "generation_date": datetime.now().isoformat(timespec="seconds"),
+            "wizardeye_version": PACKAGE_VERSION,
+            "reference": str(input_target),
+            "reference_fasta_md5": target_md5,
+            "track_id": str(manual_track_id) if manual_track_id else None,
+            "input": str(input_fasta),
+            "input_fasta_md5": input_md5,
+            "tags": from_charlist_to_list(tags, lowercase=True),
+            "kmer_size": kmer_length,
+            "sliding_window": offset_step,
+            "chunk_size": chunk_size,
+            "mapping_tool": "bwa aln",
+            "bwa_parameters": {
+                "-n": bwa_params.missing_prob_err_rate,
+                "-o": bwa_params.max_gap_opens,
+                "-l": bwa_params.seed_length,
+                "-N": bwa_params.all_aln,
+                "-t": bwa_params.threads,
+            },
+            "chunk_parameters": {
+                "-j": n_threads,
+            },
+            "covered_bases": {
+                "map_all_bp": covered_bp["map_all"],
+                "map_uniq_bp": covered_bp["map_uniq"],
+            },
+        }
+        if param_content["track_id"] is None:
+            param_content.pop("track_id")
+        with open(param_yaml, "w") as f:
+            yaml.safe_dump(param_content, f, sort_keys=False)
+
+        log(f"Track saved in: {out_dir}", "S")
+        return out_dir
+    finally:
+        log("Cleaning up temporary files and directories...", "I")
+        try:
+            shutil.rmtree(tmp_dir)
+        except Exception as e:
+            log(f"Could not remove tmp dir {tmp_dir}: {e}", "WARN")
