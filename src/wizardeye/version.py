@@ -11,7 +11,7 @@ import sys
 from typing import Optional
 
 DISPLAY_VERSION = "beta-0.1.0"
-PACKAGE_VERSION = "0.1.0b0"
+PACKAGE_VERSION = "0.1.0b1"
 
 
 def _get_git_commit_hash() -> Optional[str]:

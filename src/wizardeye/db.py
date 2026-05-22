@@ -11,7 +11,7 @@ for each reference species.
 import shutil
 import yaml
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime
 from importlib import metadata
@@ -131,7 +131,7 @@ class TrackParameters:
 
     kmer_length: int
     offset_step: int
-    bwa_params: BWAParameters = BWAParameters()
+    bwa_params: BWAParameters = field(default_factory=BWAParameters)
 
     def __post_init__(self) -> None:
         if self.kmer_length < 1:
