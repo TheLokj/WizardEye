@@ -1,8 +1,9 @@
 # WizardEye
 
-![Python](https://img.shields.io/badge/Python-green.svg)
+![Python](https://img.shields.io/badge/Python->=3.8-green.svg)
 ![Beta](https://img.shields.io/badge/beta-red.svg)
-[![Version](https://img.shields.io/badge/version-0.1.0b1-orange.svg)](https://github.com/TheLokj/WizardEye/releases)
+[![Version](https://img.shields.io/badge/version-0.1.2-yellow.svg)](https://github.com/TheLokj/WizardEye/releases)
+[![Install WizardEye using bioconda](https://img.shields.io/badge/Install%20WizardEye%20using-bioconda-brightblue.svg?style=flat)](http://bioconda.github.io/recipes/wizardeye/README.html)
 [![Python CI](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml/badge.svg)](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml)
 ![GitHub bugs](https://img.shields.io/github/issues/TheLokj/WizardEye/bug)
 
@@ -47,7 +48,13 @@ Please also note that WizardEye is only designed to identify ambiguous regions *
 
 ## Installation
 
-You can install WizardEye by cloning this repository and by running the following commands from the main folder:
+The last WizardEye version can be installed using conda:
+
+```
+conda install -c bioconda wizardeye
+```
+
+You can also install WizardEye by cloning this repository and by running the following commands from the main folder:
 
 ```
 python3 -m venv .wizardeye
@@ -134,9 +141,9 @@ wizardeye database --clean -d /path/to/database
 You can compute ambiguous regions of `reference.fa` that can be targeted, using specific BWA parameters, by reads from `risky.fa` with:
 
 ```
-wizardeye align -i /path/to/risky.fa -r /path/to/reference.fa -d /path/to/database \ 
-					-k k_mer_length -w sliding_windows \
-					-bn bwa_missing_prob_err_rate -bo bwa_max_gap_opens -bl bwa_seed_length
+wizardeye align -i /path/to/risky.fa -r /path/to/reference.fa -d /path/to/database \
+					-k 35 -w 1 \
+					-bn 0.01 -bo 2 -bl 16500
 ```
 
 Note that you can provide tags here to describe `risky.fa`. This can be used to describe the sequence, for example by specifying phylogeny and/or a particular environment: `-t Mammalia,Carnivora,Felis,Cave`. This is useful to filter a `.bam` file directly according to specific tags. You can manually set a track identifier with `--track_ID`, in order to save it in database metadata. Note also that, to prevent misuse, it is not possible to add a new track to the database if the reference alignment file is not exactly the same, including sequence names. This is due to an MD5-based control to avoid silently corrupted analyses.
@@ -170,12 +177,12 @@ This will filter out all reads that can be ambiguously aligned to your target if
 
 For `filter`, `-r` must be the reference identifier already present in your WizardEye database (for example `hg19`), and `-d/--db-root` is mandatory.
 
-By default, WizardEye only considers reads that can be aligned with a single position in the reference. However, if you want to exclude reads that can be aligned with multiple positions, and then be even more restrictive, specify the additional parameter `--considere-all`.
+By default, WizardEye considers all reads that can be aligned to the reference. However, if you want to only consider reads that can be aligned with a single position in the reference, specify the `--only-unique` parameter to be more restrictive.
 
 You can also filter out reads based on specific tracks:
 
 ```
-wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -d /path/to/database
+wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database
 ```
 
 > [!WARNING]  
@@ -187,21 +194,18 @@ If sequence naming differs between BAM and tracks (for example `chr1` vs `1`), f
 
 To handle the trade-off between sensitivity and specificity, you can specify a stringency value during filtering. This criterion is defined as described below.
 
-For a position $P$ in the target, there are exactly `-k`/`-w` different possible k-mers that overlap that position perfectly. After mapping, among the `n` k-mers overlapping the position (maximum `-k`/`-w` if no mismatches are allowed, otherwise more), `u` is computed as the number of these k-mers that are unique in the target. The position is then highlighted as ambiguous if `u`/(`-k`/`-w`) >= `-rc`, i.e., if the proportion of unique k-mers overlapping the position compared with the total number of possible k-mers overlapping the position is higher than the stringency.
+For a position $P$ in the target, there are exactly `-k`/`-w` different possible k-mers that overlap that position perfectly. After mapping, `n` k-mers can overlap the position (maximum `-k`/`-w` if no mismatches are allowed, otherwise more). The position is then highlighted as ambiguous if `n`/(`-k`/`-w`) >= `-rc`, i.e., if the proportion of k-mers overlapping the position compared with the total number of possible k-mers overlapping the position is higher than the stringency.
 
-For example, in a situation with one mismatch allowed, with `-k=40` and `-rc=0.25`, if a position is overlapped by 10 exact k-mers and 10 k-mers with one mismatch, the position is retained only if 10 of these k-mers are unique, regardless of exactness. In a similar case with `-rc=0.50`, the region is highlighted only if all 20 k-mers map uniquely there.
+If `--only-unique` is used, the same behavior and formulae are still used but only uniquely aligned k-mers are considered, i.e. k-mers without BWA `XA` tag and with `MAPQ>0`. For example, in a situation with one mismatch allowed, with `-k=40` and `-rc=0.25`, if a position is overlapped by 10 exact k-mers and 10 k-mers with one mismatch, the position is retained only if 10 of these k-mers are unique, regardless of exactness. In a similar case with `-rc=0.50`, the region is highlighted only if all 20 k-mers map uniquely there.
 
 ```
-wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -r 0.25 -d /path/to/database
+wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -p 0.25 -d /path/to/database --only-unique
 ```
 
-Note that the ratio is not weighted by depth. In another case with a repetitive region, where a position is overlapped by 3000 k-mers, the ratio is still the same: if 40 of these are unique, the position is highlighted.
-
-Unique k-mers are defined as k-mers without BWA `XA` tag and with `MAPQ>0`. 
+Note that the ratio is not weighted by depth. In another case with a repetitive region, where a position is overlapped by 3000 k-mers, the ratio is still the same.
 
 This behavior aims to reproduce the [Heng Li's seqbility](https://github.com/lh3/misc/tree/cc0f36a9a19f35765efb9387389d9f3a6756f08f/seq/seqbility) logic, which is not directly usable in a cross-mappability context. 
 
-If `--considere-all` is used, the same behavior and formulae are still used but uniqueness is simply no longer required.
 
 ##### Frequency
 
@@ -221,31 +225,31 @@ wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus
 
 #### Output
 
-WizardEye produces a tabulation-separated report containing, for each read, the decision and the overlapping tracks and tags, such as follows: 
+WizardEye produces a tabulation-separated report containing, for each read, the decision and the overlapping tracks, such as follows: 
 
 
-| read_id                                  | excluded | overlapped | tags |
-|------------------------------------------|----------|------------|------|
-| read_1								   | true  	  | sus_scrofa,bos_taurus | Suina,Ruminantia |
-| read_2								   | false    |            |      |
-| read_3								   | true     | felis_catus | Feliformia     |
-| read_4								   | true     | bos_taurus | Ruminantia     |
-| read_5								   | true    | bos_taurus,ovis_aries           | Ruminantia     |
-| read_6								   | false    |          |      |
+| read_id                                  | filtered_out | associated_tracks |
+|------------------------------------------|----------|------------|
+| read_1								   | true  	  | sus_scrofa,bos_taurus |
+| read_2								   | false    |            |
+| read_3								   | true     | felis_catus |
+| read_4								   | true     | bos_taurus |
+| read_5								   | true    | bos_taurus,ovis_aries           |
+| read_6								   | false    |          |
 
 With `--export-bam`, WizardEye produces two more files:
 
 - a BAM `excluded` with the reads excluded by the filtration,
-- a BAM `filtered` with the reads kept by the filtration,
+- a BAM `filtered` with the reads kept by the filtration.
 
 ### Count and compute statistics
 
 If you prefer to use your own-made filter, you can export a per-read report which summarizes the number of k-mers which can overlap the reference per read-interval using the `count` command. 
 
-This command take the same parameters as `filter`, plus a parameter `--mode` to specify the type of statistical summary you want betweemn `sum`, `max`, `min`, `cov`, `mean` and `std`. Statistics are computed on interval. For example, if `max` is specified, for each track, the maximum number of overlapping k-mers from this track on a position in the read associated interval is reported. 
+This command takes the same parameters as `filter`, plus a parameter `--mode` to specify the type of statistical summary you want between `sum`, `max`, `min`, `cov`, `mean` and `std`. Statistics are computed on interval. For example, if `max` is specified, for each track, the maximum number of overlapping k-mers from this track on a position in the read associated interval is reported. 
 
 ```
-wizardeye count -i alignment.bam -r hg19 --exclude-tags Farm -k 35 -r 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -m max
+wizardeye count -i alignment.bam -r hg19 --exclude-tags Farm -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -m max
 ```
 
 In this example, track whose are not reported using `filter`+`-r=0.01` should have a `0` in their column, as it means that the maximum number of overlapping k-mers in the interval is 0. 
@@ -291,4 +295,4 @@ This command creates the target/track directory, copies the two BigWig files as 
 
 It is recommanded to complete your filtration using an evolutionnary-aware method such as Kraken2. This combination is useful to remove both reads that belong to completely different organisms and reads that can be ambiguous between closely related organisms.
 
-*Last update of this documentation: beta-0.1.0.*
+*Last update of this documentation: 0.1.2.*

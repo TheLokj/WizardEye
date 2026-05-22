@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "WizardEye"
 dynamic = ["version"]
-description = "Cross-mappability helper CLI"
+description = "A Python tool to create, manage, and filter by cross-mappability tracks."
 readme = "./README.md"
 requires-python = ">=3.8,<3.13"
 dependencies = [

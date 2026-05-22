@@ -559,6 +559,7 @@ def test_export_same_behavior_as_original_script():
             str(wizardeye_mask),
             "-d",
             str(wizardeye_db),
+            "--only-unique",
         ]
 
         result = subprocess.run(
@@ -1010,124 +1011,6 @@ def test_consistency_align_parallelisation():
                     )
 
 
-# def test_consistency_align_chunk_size():
-#     """Test if the results are the same with different chunk sizes for the align function.
-
-#     This should be the case: chunks are computed on k-mers, not complete sequence.
-#     """
-
-#     # Different chunk sizes to test
-#     chunk_sizes = [50, 100, 1000, 2000, 5000, 7500, 10000, 25000, 50000, 100000]
-
-#     # List of query FASTAs to test against HG19_FA as target - use single species for speed
-#     query_fastas = [SUS_SCROFA_FA, CANIS_LUPUS_FA, RATTUS_NORVEGICUS_FA]
-
-#     for query_fa in query_fastas:
-#         # Use a single persistent temp directory for all chunk sizes
-#         with tempfile.TemporaryDirectory(prefix=f"wizardeye_consistency_chunk_{query_fa.stem}_") as base_tmpdir:
-#             base_path = Path(base_tmpdir)
-
-#             # Dictionary to store BigWig paths per chunk size
-#             bw_files = {}
-
-#             for chunk_size in chunk_sizes:
-#                 with tempfile.TemporaryDirectory(prefix=f"cs{chunk_size}_") as tmpdir:
-#                     wizardeye_db = Path(tmpdir) / "database"
-#                     wizardeye_db.mkdir(parents=True)
-
-#                     # Initialize WizardEye database
-#                     subprocess.run(
-#                         ["python3", "-m", "wizardeye", "database", "--init", "-d", str(tmpdir)],
-#                         check=True,
-#                         capture_output=True,
-#                         text=True,
-#                         encoding='utf-8',
-#                         errors='replace',
-#                         env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)}
-#                     )
-
-#                     # Run WizardEye align with this chunk size
-#                     wizardeye_cmd = [
-#                         "python3", "-m", "wizardeye", "align",
-#                         "-i", str(query_fa),
-#                         "-r", str(HG19_FA),
-#                         "-k", str(STANDARD_KMER_LENGTH),
-#                         "-w", str(STANDARD_OFFSET_STEP),
-#                         "-bn", str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
-#                         "-bo", str(STANDARD_BWA_MAX_GAP_OPENINGS),
-#                         "-bl", str(STANDARD_BWA_SEED_LENGTH),
-#                         "-j", str(STANDARD_N_THREADS),
-#                         "-cs", str(chunk_size),
-#                         "-d", str(wizardeye_db),
-#                     ]
-
-#                     result = subprocess.run(
-#                         wizardeye_cmd,
-#                         capture_output=True,
-#                         encoding='utf-8',
-#                         errors='replace',
-#                         text=True,
-#                         env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)}
-#                     )
-#                     if result.returncode != 0:
-#                         print(f"wizardeye align stderr for {query_fa.name} chunk_size {chunk_size}: {result.stderr}")
-#                         print(f"wizardeye align stdout for {query_fa.name} chunk_size {chunk_size}: {result.stdout}")
-#                         raise RuntimeError(f"wizardeye align execution failed with return code {result.returncode}")
-
-#                     # Locate WizardEye output
-#                     hg19_stem = HG19_FA.stem
-#                     query_stem = query_fa.stem
-#                     bn_str = f"{float(STANDARD_BWA_MISSING_PROB_ERR_RATE):g}"
-
-#                     track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_n{bn_str}_o{STANDARD_BWA_MAX_GAP_OPENINGS}_l{STANDARD_BWA_SEED_LENGTH}"
-#                     track_dir = wizardeye_db / hg19_stem / track_pattern
-
-#                     assert track_dir.exists(), f"wizardeye track directory not found: {track_dir}"
-
-#                     wizardeye_map_all_bw = track_dir / "map_all.bw"
-#                     wizardeye_map_uniq_bw = track_dir / "map_uniq.bw"
-
-#                     assert wizardeye_map_all_bw.exists(), f"wizardeye did not create {wizardeye_map_all_bw}"
-#                     assert wizardeye_map_uniq_bw.exists(), f"wizardeye did not create {wizardeye_map_uniq_bw}"
-
-#                     # Copy BigWig files to persistent base directory before tmpdir is cleaned up
-#                     dest_dir = base_path / f"cs{chunk_size}"
-#                     dest_dir.mkdir(parents=True, exist_ok=True)
-#                     shutil.copy(wizardeye_map_all_bw, dest_dir / "map_all.bw")
-#                     shutil.copy(wizardeye_map_uniq_bw, dest_dir / "map_uniq.bw")
-
-#                     bw_files[chunk_size] = (dest_dir / "map_all.bw", dest_dir / "map_uniq.bw")
-
-#             # Compare all outputs with the first one (smallest chunk size)
-#             first_cs = chunk_sizes[0]
-#             first_map_all, first_map_uniq = bw_files[first_cs]
-
-#             for chunk_size in chunk_sizes[1:]:
-#                 current_map_all, current_map_uniq = bw_files[chunk_size]
-
-#                 with tempfile.TemporaryDirectory(prefix=f"wizardeye_compare_chunk_cs{chunk_size}_") as compare_dir:
-#                     compare_path = Path(compare_dir)
-
-#                     # Convert to bedGraph for comparison
-#                     first_all_bg = compare_path / "first_map_all.bg"
-#                     first_uniq_bg = compare_path / "first_map_uniq.bg"
-#                     current_all_bg = compare_path / "current_map_all.bg"
-#                     current_uniq_bg = compare_path / "current_map_uniq.bg"
-
-#                     subprocess.run(["bigWigToBedGraph", str(first_map_all), str(first_all_bg)], check=True)
-#                     subprocess.run(["bigWigToBedGraph", str(first_map_uniq), str(first_uniq_bg)], check=True)
-#                     subprocess.run(["bigWigToBedGraph", str(current_map_all), str(current_all_bg)], check=True)
-#                     subprocess.run(["bigWigToBedGraph", str(current_map_uniq), str(current_uniq_bg)], check=True)
-
-#                     # Compare map_all
-#                     assert compare_bedgraph_files(first_all_bg, current_all_bg, f"map_all cs{first_cs} vs cs{chunk_size} ({query_fa.name})"), \
-#                         f"map_all.bw differs between chunk_size {first_cs} and {chunk_size} for {query_fa.name}"
-
-#                     # Compare map_uniq
-#                     assert compare_bedgraph_files(first_uniq_bg, current_uniq_bg, f"map_uniq cs{first_cs} vs cs{chunk_size} ({query_fa.name})"), \
-#                         f"map_uniq.bw differs between chunk_size {first_cs} and {chunk_size} for {query_fa.name}"
-
-
 def test_consistency_count_same_launch():
     """Test if the results are the same across 10 count rounds with the same parameters."""
 
@@ -1194,8 +1077,6 @@ def test_consistency_count_same_launch():
                     str(STANDARD_BWA_SEED_LENGTH),
                     "-m",
                     "mean",
-                    "-j",
-                    str(STANDARD_N_THREADS),
                     "--exclude-tracks",
                     exclude_tracks_str,
                     "--report-output",
@@ -1327,8 +1208,6 @@ def test_consistency_count_parallelisation():
                     str(STANDARD_BWA_SEED_LENGTH),
                     "-m",
                     "mean",
-                    "-j",
-                    str(n_threads),
                     "--exclude-tracks",
                     exclude_tracks_str,
                     "--report-output",
@@ -1461,13 +1340,10 @@ def test_consistency_filter_same_launch():
                     str(STANDARD_BWA_SEED_LENGTH),
                     "-p",
                     str(STANDARD_CROSS_STRINGENCY),
-                    "-j",
-                    str(STANDARD_N_THREADS),
                     "--exclude-tracks",
                     exclude_tracks_str,
                     "--report-output",
                     str(report_path),
-                    "--count-only",
                     "-d",
                     str(wizardeye_db),
                 ]
@@ -1598,13 +1474,10 @@ def test_consistency_filter_parallelisation():
                     str(STANDARD_BWA_SEED_LENGTH),
                     "-p",
                     str(STANDARD_CROSS_STRINGENCY),
-                    "-j",
-                    str(n_threads),
                     "--exclude-tracks",
                     exclude_tracks_str,
                     "--report-output",
                     str(report_path),
-                    "--count-only",
                     "-d",
                     str(wizardeye_db),
                 ]
@@ -1732,8 +1605,6 @@ def test_export_and_filter_same_results():
                 str(STANDARD_BWA_SEED_LENGTH),
                 "-p",
                 str(cross_stringency),
-                "-j",
-                str(STANDARD_N_THREADS),
                 "--exclude-tracks",
                 exclude_tracks_str,
                 "--report-output",
