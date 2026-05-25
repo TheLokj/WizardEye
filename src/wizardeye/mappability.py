@@ -21,6 +21,7 @@ import yaml
 import os
 import getpass
 import sys
+import tempfile
 
 from pathlib import Path
 from datetime import datetime
@@ -392,13 +393,14 @@ def create_mappability_track(
         write_seq_sizes_from_fasta(input_target, target_seq_sizes)
 
     # Create temporary directory in cluster TMPDIR or /tmp, or use custom directory if provided
+    # Use a unique temp directory per call to avoid conflicts when running multiple aligns in parallel
     if tmp_dir_custom:
         tmp_root = Path(tmp_dir_custom)
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        tmp_dir = Path(tempfile.mkdtemp(dir=str(tmp_root), prefix="wizardeye_"))
     else:
         tmp_root = Path(os.environ.get("TMPDIR", "/tmp"))
-    user = getpass.getuser()
-    tmp_dir = tmp_root / f"{user}_wizardeye"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_dir = Path(tempfile.mkdtemp(dir=str(tmp_root), prefix="wizardeye_"))
 
     try:
         # Index with BWA if needed

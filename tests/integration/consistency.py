@@ -1803,3 +1803,277 @@ def test_export_and_filter_same_results():
             filter_tmpdir.cleanup()
             export_tmpdir.cleanup()
             intersect_tmpdir.cleanup()
+
+
+def test_consistency_align_parallel_same_db():
+    """Test if multiple genomes can be aligned simultaneously in parallel on the same database.
+
+    This test verifies that running multiple WizardEye align processes concurrently
+    on the same database with different query FASTA files:
+    1. Completes without errors (no race conditions or lock issues)
+    2. Produces results identical to sequential alignments
+
+    Uses all 3 available query FASTAs (sus_scrofa, canis_lupus, rattus_norvegicus).
+    """
+    import concurrent.futures
+
+    # List of query FASTAs to test simultaneously
+    query_fastas = [SUS_SCROFA_FA, CANIS_LUPUS_FA, RATTUS_NORVEGICUS_FA]
+
+    with tempfile.TemporaryDirectory(
+        prefix="wizardeye_consistency_parallel_db_"
+    ) as base_tmpdir:
+        base_path = Path(base_tmpdir)
+
+        # Create a shared database
+        wizardeye_db = base_path / "database"
+        wizardeye_db.mkdir(parents=True)
+
+        # Initialize WizardEye database
+        subprocess.run(
+            [
+                "python3",
+                "-m",
+                "wizardeye",
+                "database",
+                "--init",
+                "-d",
+                str(base_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+        )
+
+        def run_align(query_fasta):
+            """Run a single align command and return the output paths."""
+            result = subprocess.run(
+                [
+                    "python3",
+                    "-m",
+                    "wizardeye",
+                    "align",
+                    "-i",
+                    str(query_fasta),
+                    "-r",
+                    str(HG19_FA),
+                    "-k",
+                    str(STANDARD_KMER_LENGTH),
+                    "-w",
+                    str(STANDARD_OFFSET_STEP),
+                    "-bn",
+                    str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                    "-bo",
+                    str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                    "-bl",
+                    str(STANDARD_BWA_SEED_LENGTH),
+                    "-j",
+                    str(STANDARD_N_THREADS),
+                    "-cs",
+                    str(STANDARD_CHUNK_SIZE),
+                    "-d",
+                    str(wizardeye_db),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+            )
+            if result.returncode != 0:
+                print(f"wizardeye align stderr for {query_fasta.name}: {result.stderr}")
+                print(f"wizardeye align stdout for {query_fasta.name}: {result.stdout}")
+                raise RuntimeError(
+                    f"wizardeye align execution failed with return code {result.returncode}"
+                )
+
+            # Return the track directory path for this query
+            hg19_stem = HG19_FA.stem
+            query_stem = query_fasta.stem
+            bn_str = f"{float(STANDARD_BWA_MISSING_PROB_ERR_RATE):g}"
+            track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_n{bn_str}_o{STANDARD_BWA_MAX_GAP_OPENINGS}_l{STANDARD_BWA_SEED_LENGTH}"
+            track_dir = wizardeye_db / hg19_stem / track_pattern
+
+            if not track_dir.exists():
+                raise RuntimeError(f"Track directory not found: {track_dir}")
+
+            map_all_bw = track_dir / "map_all.bw"
+            map_uniq_bw = track_dir / "map_uniq.bw"
+
+            if not map_all_bw.exists():
+                raise RuntimeError(f"map_all.bw not found: {map_all_bw}")
+            if not map_uniq_bw.exists():
+                raise RuntimeError(f"map_uniq.bw not found: {map_uniq_bw}")
+
+            return (query_fasta, map_all_bw, map_uniq_bw)
+
+        # Run all alignments in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(query_fastas)) as executor:
+            future_to_query = {
+                executor.submit(run_align, query_fa): query_fa for query_fa in query_fastas
+            }
+
+            parallel_results = {}
+            for future in concurrent.futures.as_completed(future_to_query):
+                query_fa = future_to_query[future]
+                try:
+                    result = future.result()
+                    parallel_results[query_fa] = result
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Parallel alignment failed for {query_fa.name}: {e}"
+                    )
+
+        # Verify all alignments completed successfully
+        assert len(parallel_results) == len(query_fastas), (
+            f"Expected {len(query_fastas)} results, got {len(parallel_results)}"
+        )
+
+        # Store parallel results for comparison
+        parallel_bw_files = {}
+        for query_fa, (_, map_all_bw, map_uniq_bw) in parallel_results.items():
+            parallel_bw_files[query_fa] = (map_all_bw, map_uniq_bw)
+
+        # Now run sequential alignments for comparison
+        # Use a separate database to ensure isolation
+        with tempfile.TemporaryDirectory(
+            prefix="wizardeye_consistency_parallel_db_sequential_"
+        ) as seq_tmpdir:
+            seq_base_path = Path(seq_tmpdir)
+            seq_db = seq_base_path / "database"
+            seq_db.mkdir(parents=True)
+
+            # Initialize sequential database
+            subprocess.run(
+                [
+                    "python3",
+                    "-m",
+                    "wizardeye",
+                    "database",
+                    "--init",
+                    "-d",
+                    str(seq_tmpdir),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+            )
+
+            sequential_bw_files = {}
+            for query_fa in query_fastas:
+                result = subprocess.run(
+                    [
+                        "python3",
+                        "-m",
+                        "wizardeye",
+                        "align",
+                        "-i",
+                        str(query_fa),
+                        "-r",
+                        str(HG19_FA),
+                        "-k",
+                        str(STANDARD_KMER_LENGTH),
+                        "-w",
+                        str(STANDARD_OFFSET_STEP),
+                        "-bn",
+                        str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                        "-bo",
+                        str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                        "-bl",
+                        str(STANDARD_BWA_SEED_LENGTH),
+                        "-j",
+                        str(STANDARD_N_THREADS),
+                        "-cs",
+                        str(STANDARD_CHUNK_SIZE),
+                        "-d",
+                        str(seq_db),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+                )
+                if result.returncode != 0:
+                    print(f"Sequential align stderr for {query_fa.name}: {result.stderr}")
+                    print(f"Sequential align stdout for {query_fa.name}: {result.stdout}")
+                    raise RuntimeError(
+                        f"Sequential align execution failed with return code {result.returncode}"
+                    )
+
+                # Locate output
+                hg19_stem = HG19_FA.stem
+                query_stem = query_fa.stem
+                bn_str = f"{float(STANDARD_BWA_MISSING_PROB_ERR_RATE):g}"
+                track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_n{bn_str}_o{STANDARD_BWA_MAX_GAP_OPENINGS}_l{STANDARD_BWA_SEED_LENGTH}"
+                track_dir = seq_db / hg19_stem / track_pattern
+
+                if not track_dir.exists():
+                    raise RuntimeError(f"Sequential track directory not found: {track_dir}")
+
+                map_all_bw = track_dir / "map_all.bw"
+                map_uniq_bw = track_dir / "map_uniq.bw"
+
+                if not map_all_bw.exists():
+                    raise RuntimeError(f"Sequential map_all.bw not found: {map_all_bw}")
+                if not map_uniq_bw.exists():
+                    raise RuntimeError(f"Sequential map_uniq.bw not found: {map_uniq_bw}")
+
+                sequential_bw_files[query_fa] = (map_all_bw, map_uniq_bw)
+
+            # Compare parallel and sequential results for each query FASTA
+            for query_fa in query_fastas:
+                par_map_all, par_map_uniq = parallel_bw_files[query_fa]
+                seq_map_all, seq_map_uniq = sequential_bw_files[query_fa]
+
+                with tempfile.TemporaryDirectory(
+                    prefix=f"wizardeye_compare_parallel_db_{query_fa.stem}_"
+                ) as compare_dir:
+                    compare_path = Path(compare_dir)
+
+                    # Convert to bedGraph for comparison
+                    par_all_bg = compare_path / "parallel_map_all.bg"
+                    par_uniq_bg = compare_path / "parallel_map_uniq.bg"
+                    seq_all_bg = compare_path / "sequential_map_all.bg"
+                    seq_uniq_bg = compare_path / "sequential_map_uniq.bg"
+
+                    subprocess.run(
+                        ["bigWigToBedGraph", str(par_map_all), str(par_all_bg)],
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["bigWigToBedGraph", str(par_map_uniq), str(par_uniq_bg)],
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["bigWigToBedGraph", str(seq_map_all), str(seq_all_bg)],
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["bigWigToBedGraph", str(seq_map_uniq), str(seq_uniq_bg)],
+                        check=True,
+                    )
+
+                    # Compare map_all
+                    assert compare_bedgraph_files(
+                        par_all_bg,
+                        seq_all_bg,
+                        f"Parallel vs Sequential map_all ({query_fa.name})",
+                    ), (
+                        f"map_all.bw differs between parallel and sequential for {query_fa.name}"
+                    )
+
+                    # Compare map_uniq
+                    assert compare_bedgraph_files(
+                        par_uniq_bg,
+                        seq_uniq_bg,
+                        f"Parallel vs Sequential map_uniq ({query_fa.name})",
+                    ), (
+                        f"map_uniq.bw differs between parallel and sequential for {query_fa.name}"
+                    )
