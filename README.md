@@ -163,7 +163,7 @@ Using default parameters (`-n 0.01 -o 2 -l 16500 -k 35 -w 1`), a cross-mappabili
 > [!WARNING]  
 Due to BWA behaviour, it is important to note that coverage and intervals are not perfectly determinist between systems and alignment chunk sizes. In fact, BWA is selecting randomly the primary alignment among best hits based on a random number generator and delete secondary alignment starting at the exact same position. This can leads to tiny differences of coverage and, in some intervals, to a difference of 1bp at end position. However, tracks generation is consistent and deterministic if WizardEye is run on the same system with the same alignment chunk, despite the number of threads used. See [issue #1](https://github.com/TheLokj/WizardEye/issues/1) for more details. 
 
-If you want an exhaustive cross-mappability track, you can also specify the `-bN` parameter, which will be passed as `-N` in `bwa aln`. This parameter will force BWA to save every alternative alignments, regardless their qualities and mismatches (within the limit of `-bn bwa_missing_prob_err_rate`). This parameter allows your cross-mappability track to be exhaustive in exchange of highter coverage. It can be used for extreme filtration, but it will reduce your ability to keep informative reads.
+If you want an exhaustive cross-mappability track, you can also specify the `-bN` parameter, which will be passed as `-N` in `bwa aln`. This parameter will force BWA to save every alternative alignments, regardless their qualities and mismatches (within the limit of `-bn bwa_missing_prob_err_rate`). This parameter allows your cross-mappability track to be exhaustive in exchange of highter coverage. It can be used for extreme filtration, but it will reduce your ability to keep informative reads. ***Be careful with this option***: for complete genomes, with repetitions, and allowed mismatches, it will directly leads to biased representation due to `bwa aln` memory limit (alternative mappings will be truncated). See [issue #3](https://github.com/TheLokj/WizardEye/issues/2) for more details. 
 
 ### Filter a BAM file
 
@@ -205,7 +205,6 @@ wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus
 Note that the ratio is not weighted by depth. In another case with a repetitive region, where a position is overlapped by 3000 k-mers, the ratio is still the same.
 
 This behavior aims to reproduce the [Heng Li's seqbility](https://github.com/lh3/misc/tree/cc0f36a9a19f35765efb9387389d9f3a6756f08f/seq/seqbility) logic, which is not directly usable in a cross-mappability context. 
-
 
 ##### Frequency
 
@@ -295,4 +294,4 @@ This command creates the target/track directory, copies the two BigWig files as 
 
 It is recommanded to complete your filtration using an evolutionnary-aware method such as Kraken2. This combination is useful to remove both reads that belong to completely different organisms and reads that can be ambiguous between closely related organisms.
 
-*Last update of this documentation: 0.1.2.*
+*Last update of this documentation: 0.1.3.*

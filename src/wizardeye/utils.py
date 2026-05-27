@@ -19,6 +19,25 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+
+def get_bwa_params_hash(bwa_params: "BWAParameters", hash_length: int = 8) -> str:
+    """Generate a short hash from BWA parameters for track naming.
+
+    Args:
+        bwa_params: BWAParameters object containing alignment parameters.
+        hash_length: Length of the hash string to return (default: 8).
+
+    Returns:
+        A short hash string representing the BWA parameters.
+    """
+    # Create a string representation of all relevant BWA parameters
+    params_str = f"{bwa_params.missing_prob_err_rate}:{bwa_params.max_gap_opens}:{bwa_params.seed_length}:{bwa_params.all_aln}:{bwa_params.threads}:{bwa_params.r_best_hits}:{bwa_params.samse_n}"
+
+    # Generate MD5 hash and return first N characters
+    hash_obj = hashlib.md5(params_str.encode())
+    return hash_obj.hexdigest()[:hash_length]
+
+
 # --- WizardEye development utilities ---
 
 
@@ -1067,6 +1086,8 @@ class BWAParameters:
     - seed_length: -l parameter (default: 16500, None means filter by any value)
     - all_aln: -N parameter (default: False, None means filter by any value)
     - threads: -t parameter (default: 1, None means filter by any value)
+    - r_best_hits: -R parameter for bwa aln (default: 30, None means filter by any value)
+    - samse_n: -n parameter for bwa samse (default: 2000000000, None means filter by any value)
     """
 
     missing_prob_err_rate: Optional[float] = None
@@ -1074,6 +1095,8 @@ class BWAParameters:
     seed_length: Optional[int] = None
     all_aln: Optional[bool] = None
     threads: Optional[int] = None
+    r_best_hits: Optional[int] = None
+    samse_n: Optional[int] = None
 
     def __post_init__(self) -> None:
         # Apply defaults if None - only for mutable dataclass
@@ -1087,3 +1110,7 @@ class BWAParameters:
             self.all_aln = False
         if self.threads is None:
             self.threads = 1
+        if self.r_best_hits is None:
+            self.r_best_hits = 30
+        if self.samse_n is None:
+            self.samse_n = 2000000000

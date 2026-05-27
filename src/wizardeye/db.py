@@ -23,6 +23,7 @@ from .utils import (
     from_charlist_to_list,
     file_md5,
     BWAParameters,
+    get_bwa_params_hash,
 )
 from .version import PACKAGE_VERSION
 
@@ -154,12 +155,8 @@ class TrackIdentity:
 
     @property
     def name(self) -> str:
-        all_aln_str = "_N" if self.parameters.bwa_params.all_aln else ""
-        return (
-            f"{self.query_species}_k{self.parameters.kmer_length}_w{self.parameters.offset_step}"
-            f"_n{self.parameters.n_value:g}_o{self.parameters.bwa_params.max_gap_opens}"
-            f"_l{self.parameters.bwa_params.seed_length}{all_aln_str}"
-        )
+        bwa_hash = get_bwa_params_hash(self.parameters.bwa_params)
+        return f"{self.query_species}_k{self.parameters.kmer_length}_w{self.parameters.offset_step}_bwa{bwa_hash}"
 
 
 @dataclass
@@ -259,10 +256,20 @@ class Track:
             bwa_n = float(bwa_params.get("-n", 0.01))
             bwa_o = int(bwa_params.get("-o", 2))
             bwa_l = int(bwa_params.get("-l", 16500))
-            bwa_all_aln = bool(bwa_params.get("-N", True))
+            bwa_all_aln = bool(bwa_params.get("-N", False))
             bwa_threads = int(bwa_params.get("-t", 1))
+            bwa_r = int(bwa_params.get("-R", 30))
+            bwa_sn = int(bwa_params.get("-sn", 2000000000))
         except (TypeError, ValueError):
-            bwa_n, bwa_o, bwa_l, bwa_all_aln, bwa_threads = 0.01, 2, 16500, True, 1
+            bwa_n, bwa_o, bwa_l, bwa_all_aln, bwa_threads, bwa_r, bwa_sn = (
+                0.01,
+                2,
+                16500,
+                False,
+                1,
+                30,
+                2000000000,
+            )
 
         query_species = track_dir.name.split("_k", 1)[0]
         return cls.from_param(
@@ -277,6 +284,8 @@ class Track:
                 seed_length=bwa_l,
                 all_aln=bwa_all_aln,
                 threads=bwa_threads,
+                r_best_hits=bwa_r,
+                samse_n=bwa_sn,
             ),
             info=param_content,
         )
@@ -449,6 +458,8 @@ def import_track(
             "-o": bwa_params.max_gap_opens,
             "-l": bwa_params.seed_length,
             "-t": bwa_params.threads,
+            "-R": bwa_params.r_best_hits,
+            "-sn": bwa_params.samse_n,
         },
         "imported_track": True,
         "import_sources": {
@@ -520,6 +531,13 @@ def get_tracks(
             if track.identity.parameters.bwa_params.all_aln != bwa_params.all_aln:
                 continue
             if track.identity.parameters.bwa_params.threads != bwa_params.threads:
+                continue
+            if (
+                track.identity.parameters.bwa_params.r_best_hits
+                != bwa_params.r_best_hits
+            ):
+                continue
+            if track.identity.parameters.bwa_params.samse_n != bwa_params.samse_n:
                 continue
 
         tracks.append(track)

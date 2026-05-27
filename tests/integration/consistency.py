@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
 # Constants for test fixtures
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -36,29 +36,12 @@ STANDARD_OFFSET_STEP = 1
 STANDARD_BWA_MISSING_PROB_ERR_RATE = 0.01
 STANDARD_BWA_MAX_GAP_OPENINGS = 2
 STANDARD_BWA_SEED_LENGTH = 16500
+STANDARD_BWA_R_BEST_HITS = 30
+STANDARD_BWA_SAMSE_N = 2000000000
+STANDARD_BWA_HASH = "2b5d0c37"  # MD5 hash of "0.01:2:16500:False:1:30:2000000000"
 STANDARD_N_THREADS = 1
 STANDARD_CHUNK_SIZE = 100000
 STANDARD_CROSS_STRINGENCY = 0.99
-
-# --- Helper functions for test setup ---
-
-
-def compare_bedgraph_files(file1, file2, label):
-    with open(file1, "r") as f1, open(file2, "r") as f2:
-        lines1 = f1.readlines()
-        lines2 = f2.readlines()
-
-    if len(lines1) != len(lines2):
-        print(f"{label}: Different number of lines ({len(lines1)} vs {len(lines2)})")
-        return False
-
-    for i, (line1, line2) in enumerate(zip(lines1, lines2), 1):
-        if line1 != line2:
-            print(f"{label}: Difference at line {i}:")
-            print(f"  First: {line1.rstrip()}")
-            print(f"  Second: {line2.rstrip()}")
-            return False
-    return True
 
 
 def generate_standard_database(
@@ -163,14 +146,36 @@ def generate_standard_database(
         # Verify track directory was created
         ref_stem = Path(reference_fasta).stem
         query_stem = Path(query_fasta).stem
-        bn_str = f"{float(bwa_missing_prob_err_rate):g}"
-        track_pattern = f"{query_stem}_k{kmer_length}_w{offset_step}_n{bn_str}_o{bwa_max_gap_opens}_l{bwa_seed_length}"
+        track_pattern = (
+            f"{query_stem}_k{kmer_length}_w{offset_step}_bwa{STANDARD_BWA_HASH}"
+        )
         track_dir = db_path / ref_stem / track_pattern
 
         if not track_dir.exists():
             raise RuntimeError(f"Track directory not found: {track_dir}")
 
     return db_path
+
+
+# --- Helper functions for test setup ---
+
+
+def compare_bedgraph_files(file1, file2, label):
+    with open(file1, "r") as f1, open(file2, "r") as f2:
+        lines1 = f1.readlines()
+        lines2 = f2.readlines()
+
+    if len(lines1) != len(lines2):
+        print(f"{label}: Different number of lines ({len(lines1)} vs {len(lines2)})")
+        return False
+
+    for i, (line1, line2) in enumerate(zip(lines1, lines2), 1):
+        if line1 != line2:
+            print(f"{label}: Difference at line {i}:")
+            print(f"  First: {line1.rstrip()}")
+            print(f"  Second: {line2.rstrip()}")
+            return False
+    return True
 
 
 # -- Consistency with the script --
@@ -291,6 +296,10 @@ def test_align_same_behavior_as_original_script():
                 str(STANDARD_BWA_MAX_GAP_OPENINGS),
                 "-bl",
                 str(STANDARD_BWA_SEED_LENGTH),
+                "-bR",
+                str(30),
+                "-bsn",
+                str(2000000000),
                 "-j",
                 str(STANDARD_N_THREADS),
                 "-cs",
@@ -315,9 +324,8 @@ def test_align_same_behavior_as_original_script():
             # Locate WizardEye output - track dir name uses float :g format for bwa params
             hg19_stem = HG19_FA.stem
             query_stem = query_fa.stem
-            bn_str = f"{float(STANDARD_BWA_MISSING_PROB_ERR_RATE):g}"
 
-            track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_n{bn_str}_o{STANDARD_BWA_MAX_GAP_OPENINGS}_l{STANDARD_BWA_SEED_LENGTH}"
+            track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_bwa{STANDARD_BWA_HASH}"
             track_dir = wizardeye_db / hg19_stem / track_pattern
 
             assert track_dir.exists(), (
@@ -738,9 +746,7 @@ def test_consistency_align_same_launch():
                     # Locate WizardEye output
                     hg19_stem = HG19_FA.stem
                     query_stem = query_fa.stem
-                    bn_str = f"{float(STANDARD_BWA_MISSING_PROB_ERR_RATE):g}"
-
-                    track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_n{bn_str}_o{STANDARD_BWA_MAX_GAP_OPENINGS}_l{STANDARD_BWA_SEED_LENGTH}"
+                    track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_bwa{STANDARD_BWA_HASH}"
                     track_dir = wizardeye_db / hg19_stem / track_pattern
 
                     assert track_dir.exists(), (
@@ -923,9 +929,7 @@ def test_consistency_align_parallelisation():
                     # Locate WizardEye output
                     hg19_stem = HG19_FA.stem
                     query_stem = query_fa.stem
-                    bn_str = f"{float(STANDARD_BWA_MISSING_PROB_ERR_RATE):g}"
-
-                    track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_n{bn_str}_o{STANDARD_BWA_MAX_GAP_OPENINGS}_l{STANDARD_BWA_SEED_LENGTH}"
+                    track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_bwa{STANDARD_BWA_HASH}"
                     track_dir = wizardeye_db / hg19_stem / track_pattern
 
                     assert track_dir.exists(), (
@@ -1893,8 +1897,7 @@ def test_consistency_align_parallel_same_db():
             # Return the track directory path for this query
             hg19_stem = HG19_FA.stem
             query_stem = query_fasta.stem
-            bn_str = f"{float(STANDARD_BWA_MISSING_PROB_ERR_RATE):g}"
-            track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_n{bn_str}_o{STANDARD_BWA_MAX_GAP_OPENINGS}_l{STANDARD_BWA_SEED_LENGTH}"
+            track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_bwa{STANDARD_BWA_HASH}"
             track_dir = wizardeye_db / hg19_stem / track_pattern
 
             if not track_dir.exists():
@@ -1911,9 +1914,12 @@ def test_consistency_align_parallel_same_db():
             return (query_fasta, map_all_bw, map_uniq_bw)
 
         # Run all alignments in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(query_fastas)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(query_fastas)
+        ) as executor:
             future_to_query = {
-                executor.submit(run_align, query_fa): query_fa for query_fa in query_fastas
+                executor.submit(run_align, query_fa): query_fa
+                for query_fa in query_fastas
             }
 
             parallel_results = {}
@@ -2001,8 +2007,12 @@ def test_consistency_align_parallel_same_db():
                     env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
                 )
                 if result.returncode != 0:
-                    print(f"Sequential align stderr for {query_fa.name}: {result.stderr}")
-                    print(f"Sequential align stdout for {query_fa.name}: {result.stdout}")
+                    print(
+                        f"Sequential align stderr for {query_fa.name}: {result.stderr}"
+                    )
+                    print(
+                        f"Sequential align stdout for {query_fa.name}: {result.stdout}"
+                    )
                     raise RuntimeError(
                         f"Sequential align execution failed with return code {result.returncode}"
                     )
@@ -2010,12 +2020,13 @@ def test_consistency_align_parallel_same_db():
                 # Locate output
                 hg19_stem = HG19_FA.stem
                 query_stem = query_fa.stem
-                bn_str = f"{float(STANDARD_BWA_MISSING_PROB_ERR_RATE):g}"
-                track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_n{bn_str}_o{STANDARD_BWA_MAX_GAP_OPENINGS}_l{STANDARD_BWA_SEED_LENGTH}"
+                track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_bwa{STANDARD_BWA_HASH}"
                 track_dir = seq_db / hg19_stem / track_pattern
 
                 if not track_dir.exists():
-                    raise RuntimeError(f"Sequential track directory not found: {track_dir}")
+                    raise RuntimeError(
+                        f"Sequential track directory not found: {track_dir}"
+                    )
 
                 map_all_bw = track_dir / "map_all.bw"
                 map_uniq_bw = track_dir / "map_uniq.bw"
@@ -2023,7 +2034,9 @@ def test_consistency_align_parallel_same_db():
                 if not map_all_bw.exists():
                     raise RuntimeError(f"Sequential map_all.bw not found: {map_all_bw}")
                 if not map_uniq_bw.exists():
-                    raise RuntimeError(f"Sequential map_uniq.bw not found: {map_uniq_bw}")
+                    raise RuntimeError(
+                        f"Sequential map_uniq.bw not found: {map_uniq_bw}"
+                    )
 
                 sequential_bw_files[query_fa] = (map_all_bw, map_uniq_bw)
 
