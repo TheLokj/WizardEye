@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python->=3.8-green.svg)
 ![Beta](https://img.shields.io/badge/beta-red.svg)
-[![Version](https://img.shields.io/badge/version-0.1.2-yellow.svg)](https://github.com/TheLokj/WizardEye/releases)
+[![Version](https://img.shields.io/badge/version-0.1.3-yellow.svg)](https://github.com/TheLokj/WizardEye/releases)
 [![Install WizardEye using bioconda](https://img.shields.io/badge/Install%20WizardEye%20using-bioconda-brightblue.svg?style=flat)](http://bioconda.github.io/recipes/wizardeye/README.html)
 [![Python CI](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml/badge.svg)](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml)
 ![GitHub bugs](https://img.shields.io/github/issues/TheLokj/WizardEye/bug)
@@ -94,19 +94,19 @@ Required:
 You should initially create a WizardEye database using the following command:
 
 ```
-wizardeye database --init -d /path/to/database
+wizardeye database init -d /path/to/database
 ```
 
 This will generate a `/database/` directory compatible with WizardEye. Feel free to move it elsewhere or rename the folder after this initialisation. 
 
 #### About the database
 
-The database is a directory containing sub-directories representing targets and already processed tracks.
+The database is a directory containing sub-directories representing targets and already processed tracks. 
 
 ```
 database/
 ├── hg19/                           # reference
-│   ├── sus_scrofa_k35_w1_n1_o2_l1/ # a track divided and aligned on the reference
+│   ├── sus_scrofa_k35_bwa8651fd65/ # a track divided and aligned on the reference
 │   │   ├── map_all.bw      	    # all overlapping k-mers
 │   │   ├── map_uniq.bw             # unique overlapping k-mers
 │   │   └── info.yaml               # information about the track
@@ -123,8 +123,8 @@ Every subdirectory contains two `bigWig` files that can be opened in a tradition
 You can update tags of an existing track from the database command by providing the full track-defining parameters and the replacement tags:
 
 ```
-wizardeye database --update-track-tags -d /path/to/database \
-	-r hg19 --track bos_taurus -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 \
+wizardeye database update track-tags -d /path/to/database \
+	-r hg19 -q bos_taurus -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -bN false -bj 1 -bR 30 -bsn 2000000000 \
 	--tags Mammalia,Ruminantia
 ```
 
@@ -133,7 +133,15 @@ wizardeye database --update-track-tags -d /path/to/database \
 Note that masks generated during exportation are cached in the database, to make next exportation quicker. You can avoid that specifying `--no-cache` before exportation. You can delete the cache using the following command:
 
 ```
-wizardeye database --clean -d /path/to/database
+wizardeye database clean -d /path/to/database
+```
+
+##### Migrate from version 0.1.2 to 0.1.3
+
+Version 0.1.3 introduced a new track naming. To migrate an existing database from older version to 0.1.3, use the following command:
+
+```
+wizardeye database migrate -d /path/to/database --from 0.1.2 --to 0.1.3 -bR 30 -bsn 2000000000
 ```
 
 ### Create a new track
@@ -150,20 +158,36 @@ Note that you can provide tags here to describe `risky.fa`. This can be used to 
 
 As WizardEye uses `seqkit split2` to share the computation of the alignment between threads, several parameters can be used to make the computation quicker:
 
-| Parameters | default |  |
+| Parameters | default | Definition |
 |------------|---|---------|
 | `--tmp_dir` | `TMPDIR` | Temporary directory used to process chunks and alignments |
-| `--chunk_size` | 2000000 | Number of sequences per chunk |
-| `--jobs` | 1 | Number of threads used to generate chunks and number of parallel bwa instances processing chunks |
-| `--bwa_threads` | 1 | Number of threads allowed per bwa instances |
+| `--chunk_size` | `2000000` | Number of sequences per chunk |
+| `--jobs` | `1` | Number of threads used to generate chunks and number of parallel bwa instances processing chunks |
+| `--bwa_threads` | `1` | Number of threads allowed per bwa instances |
 
 > [!NOTE]  
 Using default parameters (`-n 0.01 -o 2 -l 16500 -k 35 -w 1`), a cross-mappability track based on hg19 coordinates is generated from a complete mammalian genome in ~48 hours using 128 threads (`--chunk_jobs 128 --bwa_threads 1`). Such computation requires ~200GB of free storage in the temporary directory, due to the huge amount of k-mers before alignment.
 
+#### How to deal with exhaustivity
+
+A few parameters of bwa can be used to be more or less exhaustive during the alignment, and then to manage the exhaustivity of the track. 
+
+| Parameters | default | Definition |
+|------------|---|---------|
+| `-bR` | `30` | Number of hits to reach to avoid suboptimal hits search |
+| `-bsn` | `2000000000 `| Limit of alternative alignments in the SAM file |
+| `-bN` | `False` | should ALL alternative alignments be identified? |
+
+The `-R` parameter is the most important one. It defines the number of hits to reach before stoping the search of suboptimal hits. Hits are processed per score batch, i.e., it will only stop the search if this threshold is reached AND if all the hits sharing the same score are processed. For example, with `-R=30`, the default value of bwa and WizardEye, in a scenario with 50 best hits and 100 suboptimal hits, all the 50 best hits are referenced in the final cross-mappability track, while the others are not. 
+
+Importantly, note than in a classic use of `bwa aln`, the suboptimal search is limited also by a difference of mismatches between the best hit and the suboptimal hits. Then, even if you set a huge `-R`, the search will identify best hits and suboptimal hits having up to 1 mismatch compared to best ones, despite the value of `-n`. 
+
+If you want to avoid this behaviour and to be *truely* exhaustive in your cross-mappability track, you can specify the `-bN` parameter, which will be passed as `-N` in `bwa aln`. This parameter will force BWA to save every alternative alignments, regardless their qualities and mismatches (within the limit of `-n bwa_missing_prob_err_rate`). This parameter allows your cross-mappability track to be exhaustive in exchange of highter coverage. It can be used for extreme filtration, but it will reduce your ability to keep informative reads. ***Be careful with this option***: for complete genomes, with repetitions, and allowed mismatches, it can directly leads to biased representation due to `bwa aln` memory limit (alternative mappings will be truncated). See [issue #3](https://github.com/TheLokj/WizardEye/issues/2) for more details. 
+
+Finally, the `bwa samse -n` parameter, accessible with `-bsn` in WizardEye, is a limit on the number of alternative alignments that will be kept in the SAM file. If there is more than this number of alternative alignments, bwa will remove all of them and just set the MAPQ to 0. This value is then set to a huge value in WizardEye to avoid to loose information and should not be modified. 
+
 > [!WARNING]  
 Due to BWA behaviour, it is important to note that coverage and intervals are not perfectly determinist between systems and alignment chunk sizes. In fact, BWA is selecting randomly the primary alignment among best hits based on a random number generator and delete secondary alignment starting at the exact same position. This can leads to tiny differences of coverage and, in some intervals, to a difference of 1bp at end position. However, tracks generation is consistent and deterministic if WizardEye is run on the same system with the same alignment chunk, despite the number of threads used. See [issue #1](https://github.com/TheLokj/WizardEye/issues/1) for more details. 
-
-If you want an exhaustive cross-mappability track, you can also specify the `-bN` parameter, which will be passed as `-N` in `bwa aln`. This parameter will force BWA to save every alternative alignments, regardless their qualities and mismatches (within the limit of `-bn bwa_missing_prob_err_rate`). This parameter allows your cross-mappability track to be exhaustive in exchange of highter coverage. It can be used for extreme filtration, but it will reduce your ability to keep informative reads. ***Be careful with this option***: for complete genomes, with repetitions, and allowed mismatches, it will directly leads to biased representation due to `bwa aln` memory limit (alternative mappings will be truncated). See [issue #3](https://github.com/TheLokj/WizardEye/issues/2) for more details. 
 
 ### Filter a BAM file
 
@@ -177,7 +201,7 @@ This will filter out all reads that can be ambiguously aligned to your target if
 
 For `filter`, `-r` must be the reference identifier already present in your WizardEye database (for example `hg19`), and `-d/--db-root` is mandatory.
 
-By default, WizardEye considers all reads that can be aligned to the reference. However, if you want to only consider reads that can be aligned with a single position in the reference, specify the `--only-unique` parameter to be more restrictive.
+By default, WizardEye considers all reads that can be aligned to the reference. However, if you want to only consider reads that can be aligned with a single position in the reference (`MAPQ>0`, no `XA` tag), specify the `--only-unique`.
 
 You can also filter out reads based on specific tracks:
 
@@ -202,7 +226,7 @@ If `--only-unique` is used, the same behavior and formulae are still used but on
 wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -p 0.25 -d /path/to/database --only-unique
 ```
 
-Note that the ratio is not weighted by depth. In another case with a repetitive region, where a position is overlapped by 3000 k-mers, the ratio is still the same.
+Note that the ratio is not weighted by depth or mismatches. In another case with a repetitive region, where a position is overlapped by 3000 k-mers, the ratio is still the same.
 
 This behavior aims to reproduce the [Heng Li's seqbility](https://github.com/lh3/misc/tree/cc0f36a9a19f35765efb9387389d9f3a6756f08f/seq/seqbility) logic, which is not directly usable in a cross-mappability context. 
 
