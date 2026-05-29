@@ -49,7 +49,7 @@ jobs:
           ruff check .
 
       - name: Run integration tests
-        working-directory: tests/integration
-        run: python -m pytest consistency.py -v
+        working-directory: tests/
+        run: python -m pytest */*.py -v
         env:
           PYTHONPATH: ${{ github.workspace }}/src

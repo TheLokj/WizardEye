@@ -14,6 +14,7 @@ import pyBigWig
 import shutil
 import subprocess
 import tempfile
+import numpy as np
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -29,6 +30,38 @@ from .utils import (
     convert_bigwig_to_bedGraph,
     BWAParameters,
 )
+
+
+# -- Mask creation related functions --
+
+
+def _filter_bed_by_frequency(bed_path: Path, min_freq: int) -> None:
+    """Filter a merged BED file to only keep positions overlapped by at least min_freq tracks.
+
+    The BED file format has each line as: chrom, start, end, track_names
+    This function modifies the file to keep only positions with >= min_freq tracks.
+
+    Args:
+        bed_path (Path): Path to the BED file to filter.
+        min_freq (int): Minimum number of tracks required.
+    """
+    with open(bed_path, "r") as f:
+        lines = f.readlines()
+
+    filtered_lines = []
+    for line in lines:
+        if line.strip() == "":
+            continue
+        parts = line.strip().split("\t")
+        if len(parts) < 4:
+            continue
+        track_names = [name for name in parts[3].split(",") if name.strip()]
+        if len(track_names) >= min_freq:
+            filtered_lines.append(line)
+
+    with open(bed_path, "w") as f:
+        f.writelines(filtered_lines)
+
 
 # -- Mask creation related functions --
 
@@ -98,7 +131,7 @@ def _build_mask_from_track(
         tmp_input_bg.unlink()
 
     log(f"Mask cached for '{track_name}': {per_input_bed}", "S")
-    return track_name, per_input_bed
+    return track.identity.query_species, per_input_bed
 
 
 def generate_global_mask(
@@ -113,6 +146,7 @@ def generate_global_mask(
     db_root: str = "database",
     no_cache: bool = False,
     n_threads: int = 1,
+    min_freq: Optional[int] = None,
 ) -> Path:
     """Generate a mask based on requested tracks and parameters.
 
@@ -133,6 +167,8 @@ def generate_global_mask(
                 db_root (str): Root directory of the database.
                 no_cache (bool): If True, do not use and generate cached tracks.
                 n_threads (int): Number of threads to use for parallel processing.
+                min_freq (Optional[int]): Minimum number of tracks that must overlap a position
+                    for it to be included in the mask (frequency filtering). If None, uses standard merging.
 
         Returns:
                 Path: Path to the generated mask.
@@ -148,9 +184,17 @@ def generate_global_mask(
         raise ValueError("The cross-stringency threshold must be a positive float")
     if n_threads < 1:
         raise ValueError("n_threads must be a positive integer")
+    if min_freq is not None and min_freq < 1:
+        raise ValueError("min_freq must be a positive integer")
 
     if cross_stringency > 1.0:
         log("Cross-stringency is superior to 1.0.", "W")
+
+    if min_freq is not None:
+        log(
+            f"Frequency filtering enabled: positions must be overlapped by at least {min_freq} tracks to be masked.",
+            "I",
+        )
 
     requested_inputs = from_charlist_to_list(inputs)
     tracks = get_tracks(
@@ -219,9 +263,10 @@ def generate_global_mask(
         ) as tmp_handle:
             merged_mask_bed = Path(tmp_handle.name)
     else:
+        freq_suffix = f"_f{min_freq}" if min_freq is not None else ""
         merged_mask_bed = ref_dir / (
             f"mask_s{cross_stringency}_k{kmer_length}_o{offset_step}"
-            f"_{source_label}_t{len(sorted_track_names)}_{track_fingerprint}.bed"
+            f"_{source_label}_t{len(sorted_track_names)}_{track_fingerprint}{freq_suffix}.bed"
         )
 
     if not no_cache and merged_mask_bed.exists():
@@ -266,6 +311,9 @@ def generate_global_mask(
     try:
         log(f"Merging {len(per_track_beds)} masks into one unique mask...", "I")
         merge_bed_files(per_track_beds, merged_mask_bed)
+
+        if min_freq is not None:
+            _filter_bed_by_frequency(merged_mask_bed, min_freq)
     finally:
         if no_cache:
             for _, per_track_bed in per_track_beds:
@@ -305,6 +353,9 @@ def compute_stringency_on_bedGraph(
 
     Raises:
             RuntimeError: If bedtools or awk are not found.
+
+    Notes:
+            This function will probably be modified to avoid the use of awk in the future.
 
     See also:
             Heng Li's seqbility tool including the original stringency definition used in here,
@@ -355,6 +406,7 @@ def filter_bam(
     offset_step: int,
     bwa_params: Optional[BWAParameters] = None,
     stringency: float = 0.99,
+    min_freq: Optional[int] = None,
     consider_all: bool = False,
     output_report_tsv: Optional[str] = None,
     export_bam: bool = False,
@@ -374,6 +426,8 @@ def filter_bam(
             offset_step (int): Step size for the offset used during track generations.
             bwa (Optional[BWAParameters]): BWA alignment parameters for track selection.
             stringency (float): Cross-stringency threshold, must be between 0.0 and 1.0.
+            min_freq (Optional[int]): Minimum number of tracks that must overlap a position for it to be masked.
+                If None, uses standard logic (any track overlapping).
             consider_all (bool): If True, all k-mers are considered. If False (default), only uniquely aligned k-mers are considered.
             output_report_tsv (Optional[str]): Path to the output TSV report file.
             export_bam (bool): If True, splits the input BAM into filtered and excluded BAM files.
@@ -398,6 +452,8 @@ def filter_bam(
         raise ValueError("offset_step must be a positive integer")
     if not (0.0 <= stringency <= 1.0):
         raise ValueError("stringency must be between 0.0 and 1.0")
+    if min_freq is not None and min_freq < 1:
+        raise ValueError("min_freq must be a positive integer")
 
     normalized_tracks = from_charlist_to_list(exclude_tracks)
     if not normalized_tracks:
@@ -492,22 +548,55 @@ def filter_bam(
 
                 read_tracks[read_id] = set()
                 read_tags[read_id] = set()
-
+                overlapping_tracks = {}
                 # Check each track for overlap exceeding threshold (per bp, using max)
                 for idx, bw in enumerate(opened_bws):
-                    track = selected_tracks[idx]
-                    stat_res = bw.stats(chrom, start, end, type="max", exact=True)
+                    if min_freq is None:
+                        track = selected_tracks[idx]
+                        stat_res = bw.stats(chrom, start, end, type="max", exact=True)
 
-                    # stat_res is (value,) tuple, we want the max value per bp in the region
-                    kmer_max = (
-                        stat_res[0] if stat_res and stat_res[0] is not None else 0.0
+                        # stat_res is (value,) tuple, we want the max value per bp in the region
+                        kmer_max = (
+                            stat_res[0] if stat_res and stat_res[0] is not None else 0.0
+                        )
+
+                        if kmer_max >= threshold:
+                            excluded_read_ids.add(read_id)
+                            track_name = track.identity.query_species
+                            read_tracks[read_id].add(track_name)
+                            read_tags[read_id].update(
+                                track_to_tags.get(track_name, set())
+                            )
+                    else:
+                        overlapping_tracks[idx] = np.array(
+                            [kmer >= threshold for kmer in bw.values(chrom, start, end)]
+                        )
+
+                if min_freq is not None:
+                    sum_overlapping = np.sum(
+                        np.array(
+                            [
+                                arr
+                                for arr in overlapping_tracks.values()
+                                if arr is not None and len(arr) > 0
+                            ]
+                        ),
+                        axis=0,
                     )
-
-                    if kmer_max >= threshold:
+                    max_freq = np.max(sum_overlapping)
+                    if max_freq >= min_freq:
+                        print("+1")
                         excluded_read_ids.add(read_id)
-                        track_name = track.identity.query_species
-                        read_tracks[read_id].add(track_name)
-                        read_tags[read_id].update(track_to_tags.get(track_name, set()))
+                        max_idx = np.argmax(sum_overlapping)
+                        for track in overlapping_tracks.keys():
+                            if overlapping_tracks[track][max_idx]:
+                                track_name = selected_tracks[
+                                    int(track)
+                                ].identity.query_species
+                                read_tracks[read_id].add(track_name)
+                                read_tags[read_id].update(
+                                    track_to_tags.get(track_name, set())
+                                )
 
         report_path = write_filtration_report(
             output_report_tsv=report_tsv, read_tracks=read_tracks

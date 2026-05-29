@@ -23,6 +23,7 @@ from .utils import (
     from_charlist_to_list,
     file_md5,
     BWAParameters,
+    get_bwa_params_hash,
 )
 from .version import PACKAGE_VERSION
 
@@ -154,12 +155,8 @@ class TrackIdentity:
 
     @property
     def name(self) -> str:
-        all_aln_str = "_N" if self.parameters.bwa_params.all_aln else ""
-        return (
-            f"{self.query_species}_k{self.parameters.kmer_length}_w{self.parameters.offset_step}"
-            f"_n{self.parameters.n_value:g}_o{self.parameters.bwa_params.max_gap_opens}"
-            f"_l{self.parameters.bwa_params.seed_length}{all_aln_str}"
-        )
+        bwa_hash = get_bwa_params_hash(self.parameters.bwa_params)
+        return f"{self.query_species}_k{self.parameters.kmer_length}_w{self.parameters.offset_step}_bwa{bwa_hash}"
 
 
 @dataclass
@@ -259,10 +256,20 @@ class Track:
             bwa_n = float(bwa_params.get("-n", 0.01))
             bwa_o = int(bwa_params.get("-o", 2))
             bwa_l = int(bwa_params.get("-l", 16500))
-            bwa_all_aln = bool(bwa_params.get("-N", True))
+            bwa_all_aln = bool(bwa_params.get("-N", False))
             bwa_threads = int(bwa_params.get("-t", 1))
+            bwa_r = int(bwa_params.get("-R", 30))
+            bwa_sn = int(bwa_params.get("-sn", 2000000000))
         except (TypeError, ValueError):
-            bwa_n, bwa_o, bwa_l, bwa_all_aln, bwa_threads = 0.01, 2, 16500, True, 1
+            bwa_n, bwa_o, bwa_l, bwa_all_aln, bwa_threads, bwa_r, bwa_sn = (
+                0.01,
+                2,
+                16500,
+                False,
+                1,
+                30,
+                2000000000,
+            )
 
         query_species = track_dir.name.split("_k", 1)[0]
         return cls.from_param(
@@ -277,6 +284,8 @@ class Track:
                 seed_length=bwa_l,
                 all_aln=bwa_all_aln,
                 threads=bwa_threads,
+                r_best_hits=bwa_r,
+                samse_n=bwa_sn,
             ),
             info=param_content,
         )
@@ -449,6 +458,8 @@ def import_track(
             "-o": bwa_params.max_gap_opens,
             "-l": bwa_params.seed_length,
             "-t": bwa_params.threads,
+            "-R": bwa_params.r_best_hits,
+            "-sn": bwa_params.samse_n,
         },
         "imported_track": True,
         "import_sources": {
@@ -520,6 +531,13 @@ def get_tracks(
             if track.identity.parameters.bwa_params.all_aln != bwa_params.all_aln:
                 continue
             if track.identity.parameters.bwa_params.threads != bwa_params.threads:
+                continue
+            if (
+                track.identity.parameters.bwa_params.r_best_hits
+                != bwa_params.r_best_hits
+            ):
+                continue
+            if track.identity.parameters.bwa_params.samse_n != bwa_params.samse_n:
                 continue
 
         tracks.append(track)
@@ -769,3 +787,229 @@ def print_full_catalogue(db_root: Union[str, Path]) -> None:
 
     for target_dir in sorted(target_dirs, key=lambda p: p.name):
         print_available_species(target_dir.name, db_root)
+
+
+# -- Migration functions ---
+
+
+def _parse_old_track_name(track_dir_name: str) -> Optional[Dict[str, Optional[str]]]:
+    """Parse old track directory name format (e.g., sus_scrofa_k35_w1_n1_o2_l1).
+
+    Returns dict with keys: query_species, kmer_length, offset_step,
+    bwa_missing_prob_err_rate, bwa_max_gap_opens, bwa_seed_length.
+    """
+    import re
+
+    # Expected format: {query_species}_k{k}_w{w}[_n{n}[_o{o}[_l{l}]]]
+    # The query_species can contain underscores, so we need to find the first _k and _w
+    # Pattern to match: everything before _k{number}_w{number}
+    pattern = r"^(.+)_k(\d+)_w(\d+)(?:_n([\d.]+))?(?:_o(\d+))?(?:_l(\d+))?$"
+    match = re.match(pattern, track_dir_name)
+
+    if not match:
+        return None
+
+    query_species = match.group(1)
+    kmer_length = match.group(2)
+    offset_step = match.group(3)
+    bwa_n = match.group(4)
+    bwa_o = match.group(5)
+    bwa_l = match.group(6)
+
+    result: Dict[str, Optional[str]] = {
+        "query_species": query_species,
+        "kmer_length": kmer_length,
+        "offset_step": offset_step,
+        "bwa_missing_prob_err_rate": bwa_n,
+        "bwa_max_gap_opens": bwa_o,
+        "bwa_seed_length": bwa_l,
+    }
+
+    return result
+
+
+def migrate_database(
+    db_root: Union[str, Path],
+    bwa_r_best_hits: int = 2147483647,
+    bwa_samse_n: int = 2147483647,
+) -> Dict[str, object]:
+    """Migrate database tracks from old naming format to new format with bwa hash.
+
+    Old format: {query}_k{k}_w{w}_n{n}_o{o}_l{l}/
+    New format: {query}_k{k}_w{w}_bwa{hash}/
+
+    Creates a copy of the database with _v0_1_3 suffix and applies migration on the copy.
+
+    Args:
+        db_root: Path to the database root directory.
+        bwa_r_best_hits: -bR value for BWA parameters (default: 2147483647).
+        bwa_samse_n: -bsn value for BWA parameters (default: 2147483647).
+
+    Returns:
+        Dict with migration statistics: migrated_count, new_db_path, warnings, errors.
+
+    Raises:
+        ValueError: If database is invalid or no tracks need migration.
+    """
+    db_root = Path(db_root)
+
+    if not valid_database(db_root):
+        raise ValueError(f"Invalid database at {db_root}")
+
+    # Create a copy of the database with _v0_1_3 suffix
+    new_db_root = db_root.parent / f"{db_root.name}_v0_1_3"
+
+    if new_db_root.exists():
+        raise ValueError(f"Migrated database already exists at {new_db_root}")
+
+    log(f"Creating a copy of the database at {new_db_root}", "I")
+
+    # Copy the entire database directory
+    import shutil
+
+    shutil.copytree(db_root, new_db_root)
+
+    # Get all reference directories in the new copy
+    ref_dirs = [
+        d for d in new_db_root.iterdir() if d.is_dir() and not d.name.startswith(".")
+    ]
+
+    if not ref_dirs:
+        raise ValueError(f"No reference directories found in {new_db_root}")
+
+    migrated_count = 0
+    warnings_list: List[str] = []
+    errors_list: List[str] = []
+
+    # Check if defaults are used
+    if bwa_r_best_hits == 2147483647 and bwa_samse_n == 2147483647:
+        warnings_list.append(
+            "WARNING: Using default -bR and -bsn values (2147483647). "
+            "Version 0.1.2 had a major bug that broke tracks and did not reference any alternative alignments. "
+            "For more information, see: https://github.com/TheLokj/WizardEye/issues/3"
+        )
+
+    for ref_dir in sorted(ref_dirs, key=lambda p: p.name):
+        ref_name = ref_dir.name
+        track_dirs = [
+            d for d in ref_dir.iterdir() if d.is_dir() and not d.name.startswith(".")
+        ]
+
+        for old_track_dir in sorted(track_dirs, key=lambda p: p.name):
+            old_name = old_track_dir.name
+
+            # Check if already in new format (contains _bwa)
+            if "_bwa" in old_name:
+                continue
+
+            # Parse old format
+            parsed = _parse_old_track_name(old_name)
+            if parsed is None:
+                warnings_list.append(
+                    f"Skipping {ref_name}/{old_name}: cannot parse old format"
+                )
+                continue
+
+            try:
+                kmer_length = int(parsed["kmer_length"])
+                offset_step = int(parsed["offset_step"])
+            except (ValueError, TypeError):
+                errors_list.append(
+                    f"Skipping {ref_name}/{old_name}: invalid kmer_length or offset_step"
+                )
+                continue
+
+            # Extract existing BWA parameters from param.yaml if available
+            old_param_yaml = old_track_dir / "param.yaml"
+            existing_bwa_n = 0.01
+            existing_bwa_o = 2
+            existing_bwa_l = 16500
+            old_param_content = None
+
+            if old_param_yaml.exists():
+                try:
+                    with old_param_yaml.open("r", encoding="utf-8") as handle:
+                        old_param_content = yaml.safe_load(handle) or {}
+                    bwa_params = old_param_content.get("bwa_parameters", {})
+                    if isinstance(bwa_params, dict):
+                        existing_bwa_n = float(bwa_params.get("-n", 0.01))
+                        existing_bwa_o = int(bwa_params.get("-o", 2))
+                        existing_bwa_l = int(bwa_params.get("-l", 16500))
+                except Exception:
+                    pass
+
+            # Create new BWAParameters with extracted values + provided bR and bns
+            new_bwa_params = BWAParameters(
+                missing_prob_err_rate=existing_bwa_n,
+                max_gap_opens=existing_bwa_o,
+                seed_length=existing_bwa_l,
+                all_aln=False,
+                threads=1,
+                r_best_hits=bwa_r_best_hits,
+                samse_n=bwa_samse_n,
+            )
+
+            # Generate new hash and track name
+            bwa_hash = get_bwa_params_hash(new_bwa_params)
+            query_species = parsed["query_species"]
+            new_track_name = (
+                f"{query_species}_k{kmer_length}_w{offset_step}_bwa{bwa_hash}"
+            )
+
+            # Create new track directory path
+            new_track_dir = ref_dir / new_track_name
+
+            if new_track_dir.exists():
+                errors_list.append(
+                    f"Skipping {ref_name}/{old_name}: new path {new_track_name} already exists"
+                )
+                continue
+
+            # Rename directory in the copied database
+            old_track_dir.rename(new_track_dir)
+
+            # Update metadata in param.yaml
+            if old_param_content is not None:
+                new_param_yaml = new_track_dir / "param.yaml"
+                try:
+                    param_content = (
+                        old_param_content.copy()
+                        if isinstance(old_param_content, dict)
+                        else {}
+                    )
+
+                    # Update bwa_parameters with new values
+                    if "bwa_parameters" not in param_content:
+                        param_content["bwa_parameters"] = {}
+
+                    param_content["bwa_parameters"]["-n"] = (
+                        new_bwa_params.missing_prob_err_rate
+                    )
+                    param_content["bwa_parameters"]["-o"] = new_bwa_params.max_gap_opens
+                    param_content["bwa_parameters"]["-l"] = new_bwa_params.seed_length
+                    param_content["bwa_parameters"]["-t"] = new_bwa_params.threads
+                    param_content["bwa_parameters"]["-R"] = new_bwa_params.r_best_hits
+                    param_content["bwa_parameters"]["-sn"] = new_bwa_params.samse_n
+
+                    # Update kmer_size and sliding_window if needed
+                    param_content["kmer_size"] = kmer_length
+                    param_content["sliding_window"] = offset_step
+
+                    with new_param_yaml.open("w", encoding="utf-8") as handle:
+                        yaml.safe_dump(param_content, handle, sort_keys=False)
+                except Exception as e:
+                    errors_list.append(
+                        f"Failed to update metadata for {ref_name}/{new_track_name}: {e}"
+                    )
+
+            migrated_count += 1
+            log(f"Migrated {ref_name}/{old_name} -> {new_track_name}", "I")
+
+    result = {
+        "migrated_count": migrated_count,
+        "new_db_path": new_db_root,
+        "warnings": warnings_list,
+        "errors": errors_list,
+    }
+
+    return result

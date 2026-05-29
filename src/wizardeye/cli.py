@@ -13,7 +13,7 @@ from typing import List, Optional
 
 from .mappability import create_mappability_track
 from .filter import generate_global_mask, count_k_mers_on_bam, filter_bam
-from .utils import from_charlist_to_list, log, BWAParameters
+from .utils import from_charlist_to_list, log, BWAParameters, get_bwa_params_hash
 from .version import DISPLAY_VERSION, PACKAGE_VERSION, print_version_message
 from .db import (
     import_track,
@@ -27,6 +27,7 @@ from .db import (
     get_refs,
     get_tracks,
     resolve_requested_track_names,
+    migrate_database,
 )
 
 app = typer.Typer(
@@ -35,6 +36,14 @@ app = typer.Typer(
     add_completion=False,
     suggest_commands=False,
 )
+
+# Database command group
+db_app = typer.Typer(
+    help="Initialize, validate, or inspect tracks in a WizardEye database."
+)
+update_app = typer.Typer(help="Update operations for database tracks.")
+db_app.add_typer(update_app, name="update")
+app.add_typer(db_app, name="database", no_args_is_help=True)
 
 # -- Helper functions --
 
@@ -131,6 +140,7 @@ def _request_tracks_from_args(
     only_unique: bool,
     no_cache: bool,
     cross_stringency: float,
+    min_freq: int,
     bwa_params: Optional[BWAParameters] = None,
 ) -> List[str]:
     """Validate CLI arguments and get corresponding tracks from database."""
@@ -218,6 +228,17 @@ def _request_tracks_from_args(
             bwa_params=bwa_params,
         )
 
+    if min_freq is not None:
+        if min_freq < 1 or min_freq > len(valid_tracks):
+            log(
+                f"Minimum frequency ({min_freq}) must be between 1 and the number of found tracks ({len(valid_tracks)}).",
+                "E",
+            )
+            raise typer.Exit(code=1)
+        else:
+            log(f"Requested minimum frequency threshold: {min_freq}", "I")
+
+    if exclude_tags:
         log(f"Requested tags to filter out: {', '.join(requested_tags)}", "I")
 
     if not valid_tracks:
@@ -252,56 +273,192 @@ def common_options(
     return
 
 
-@app.command(
-    help="Initialize, validate, or inspect tracks in a WizardEye database.",
+# Database subcommands
+
+
+@db_app.command(
+    help="Initialize a new WizardEye database.",
     no_args_is_help=True,
 )
-def database(
+def init(
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
     ),
-    # Database management actions (mutually exclusive)
-    init: bool = typer.Option(False, help="Path to the database root directory."),
-    catalogue: bool = typer.Option(
-        False,
-        "-c",
-        "--catalogue",
-        help="Print the full database catalogue after initialization.",
+):
+    """Initialize a new WizardEye database."""
+    print_version_message()
+    try:
+        init_db(db_root)
+    except FileExistsError as e:
+        log(str(e), "E")
+        raise typer.Exit(code=1)
+    raise typer.Exit(code=0)
+
+
+@db_app.command(
+    help="Print the full database catalogue.",
+    no_args_is_help=True,
+)
+def catalogue(
+    db_root: str = typer.Option(
+        ..., "-d", "--db-root", help="Path to the database root directory."
     ),
-    clean: bool = typer.Option(
-        False,
-        "--clean",
-        help="Delete all .bed files from the database (asks for confirmation).",
+):
+    """Print the full database catalogue."""
+    print_version_message()
+    if not valid_database(db_root):
+        log(f"To initialize the database, run 'database init {db_root}'", "E")
+        raise typer.Exit(code=1)
+    print_full_catalogue(db_root)
+    raise typer.Exit(code=0)
+
+
+@db_app.command(
+    help="Migrate database tracks from old naming format (sus_scrofa_k35_w1_n1_o2_l1) to new format (_k_w_bwahash).",
+    no_args_is_help=True,
+)
+def migrate(
+    db_root: str = typer.Option(
+        ..., "-d", "--db-root", help="Path to the database root directory."
     ),
-    clean_yes: bool = typer.Option(
-        False, "-y", "--yes", help="Skip confirmation prompt for --clean."
+    from_version: str = typer.Option(
+        "0.1.2", "--from", help="Source version to migrate from."
     ),
-    # Update track tags action (requires full track parameters
-    update_track_tags_action: bool = typer.Option(
-        False,
-        "--update-track-tags",
-        help="Replace tags for one existing track (requires full track parameters).",
+    to_version: str = typer.Option(
+        "0.1.3", "--to", help="Target version to migrate to."
     ),
-    update_ref: Optional[str] = typer.Option(
+    bwa_r_best_hits: int = typer.Option(
+        2147483647,
+        "-bR",
+        help="bwa aln -R parameter value. When n_best_hits>=-bR, bwa aln do not explore suboptimal hits.",
+    ),
+    bwa_samse_n: int = typer.Option(
+        2147483647,
+        "-bsn",
+        help="bwa samse -n parameter value. If n_kept_hits>-n, kept hits will NOT be saved in the track.",
+    ),
+):
+    """Migrate database tracks from old naming format to new format with BWA parameters hash."""
+    print_version_message()
+
+    if not valid_database(db_root):
+        log(f"To initialize the database, run 'database init {db_root}'", "E")
+        raise typer.Exit(code=1)
+
+    log(f"Starting migration from version {from_version} to {to_version}", "I")
+
+    if from_version == "0.1.2" and to_version == "0.1.3":
+        try:
+            result = migrate_database(
+                db_root=db_root,
+                bwa_r_best_hits=bwa_r_best_hits,
+                bwa_samse_n=bwa_samse_n,
+            )
+        except ValueError as e:
+            log(str(e), "E")
+            raise typer.Exit(code=1)
+    else:
+        log("Unsupported version migration.", "E")
+        raise typer.Exit(code=1)
+
+    # Display warnings
+    for warning in result.get("warnings", []):
+        log(warning, "W")
+
+    # Display errors
+    for error in result.get("errors", []):
+        log(error, "E")
+
+    migrated_count = result.get("migrated_count", 0)
+    new_db_path = result.get("new_db_path")
+    log(f"Migration completed. {migrated_count} track(s) migrated.", "S")
+    log(f"Migrated database created at: {new_db_path}", "S")
+    log(
+        "The original database has NOT been modified. You can now use the migrated version.",
+        "I",
+    )
+
+    raise typer.Exit(code=0)
+
+
+@db_app.command(
+    help="Delete all .bed files from the database (asks for confirmation).",
+    no_args_is_help=True,
+)
+def clean(
+    db_root: str = typer.Option(
+        ..., "-d", "--db-root", help="Path to the database root directory."
+    ),
+    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt."),
+):
+    """Delete all .bed files from the database."""
+    print_version_message()
+    if not valid_database(db_root):
+        log(f"To initialize the database, run 'database init {db_root}'", "E")
+        raise typer.Exit(code=1)
+
+    if not yes:
+        log(
+            f"About to delete the masks cached in '{db_root}'. This will only impact filtering time.",
+            "W",
+        )
+        answer = typer.prompt("Enter 'yes' to confirm cleanup", default="No")
+        if answer.lower() not in ["yes", "y"]:
+            log("Cleanup cancelled.", "I")
+            raise typer.Exit(code=0)
+
+    clean_db(db_root=db_root)
+    raise typer.Exit(code=0)
+
+
+@update_app.command(
+    name="track-tags",
+    help="Replace tags for one existing track (requires full track parameters).",
+    no_args_is_help=True,
+)
+def track_tags(
+    db_root: str = typer.Option(
+        ..., "-d", "--db-root", help="Path to the database root directory."
+    ),
+    ref: Optional[str] = typer.Option(
         None, "-r", "--ref", help="Reference identifier of the track to update."
     ),
-    update_track: Optional[str] = typer.Option(
-        None, "--track", help="Track query identifier to update."
+    track: Optional[str] = typer.Option(
+        None, "-q", "--track", help="Track query identifier to update."
     ),
-    update_kmer_length: Optional[int] = typer.Option(
+    kmer_length: Optional[int] = typer.Option(
         None, "-k", "--kmer-length", help="Track k-mer length."
     ),
-    update_offset_step: Optional[int] = typer.Option(
+    offset_step: Optional[int] = typer.Option(
         None, "-w", "--offset-step", help="Track sliding window/offset step."
     ),
-    update_bwa_missing_prob_err_rate: Optional[float] = typer.Option(
-        None, "-bn", help="Track BWA aln -n value."
+    # BWA aln parameters
+    bwa_missing_prob_err_rate: Optional[float] = typer.Option(
+        None, "-bn", help="bwa aln -n. Max diff. or missing prob. under 0.02 err rate."
     ),
-    update_bwa_max_gap_opens: Optional[int] = typer.Option(
-        None, "-bo", help="Track BWA aln -o value."
+    bwa_max_gap_opens: Optional[int] = typer.Option(
+        None, "-bo", help="bwa aln -o. Maximum number or fraction of gap opens."
     ),
-    update_bwa_seed_length: Optional[int] = typer.Option(
-        None, "-bl", help="Track BWA aln -l value."
+    bwa_seed_length: Optional[int] = typer.Option(
+        None, "-bl", help="bwa aln -l. Seed length."
+    ),
+    bwa_all_aln: Optional[bool] = typer.Option(
+        None,
+        "-bN",
+        help="bwa aln -N. Non-iterative mode: search for all n-difference hits.",
+    ),
+    bwa_threads: Optional[int] = typer.Option(
+        None, "-bj", "--bwa-threads", help="bwa aln -j. Number of threads for bwa aln."
+    ),
+    bwa_r_best_hits: Optional[int] = typer.Option(
+        None,
+        "-bR",
+        help="bwa aln -R. When n_best_hits>=-bR, bwa aln do not explore suboptimal hits.",
+    ),
+    bwa_samse_n: Optional[int] = typer.Option(
+        None,
+        "-bsn",
+        help="bwa samse -n. If n_kept_hits>-n, kept hits will NOT be saved in the track.",
     ),
     new_tags: Optional[List[str]] = typer.Option(
         None,
@@ -311,140 +468,107 @@ def database(
         help="Replacement tags for the track (comma-separated).",
     ),
 ):
+    """Replace tags for one existing track."""
+    print_version_message()
 
-    selected_actions = sum(
-        [
-            1 if init else 0,
-            1 if catalogue else 0,
-            1 if clean else 0,
-            1 if update_track_tags_action else 0,
-        ]
-    )
-    if selected_actions > 1:
+    if not valid_database(db_root):
+        log(f"To initialize the database, run 'database init {db_root}'", "E")
+        raise typer.Exit(code=1)
+
+    required_params = {
+        "--db-root": db_root,
+        "--ref": ref,
+        "--track": track,
+        "--kmer-length": kmer_length,
+        "--offset-step": offset_step,
+        "-bn (bwa_missing_prob_err_rate)": bwa_missing_prob_err_rate,
+        "-bo (bwa_max_gap_opens)": bwa_max_gap_opens,
+        "-bl (bwa_seed_length)": bwa_seed_length,
+        "-bN (bwa_all_aln)": bwa_all_aln,
+        "-bj (bwa_threads)": bwa_threads,
+        "-bR (bwa_r_best_hits)": bwa_r_best_hits,
+        "-bsn (bwa_samse_n)": bwa_samse_n,
+        "--tags": new_tags,
+    }
+    missing = [name for name, value in required_params.items() if value is None]
+    if missing:
         log(
-            "Please choose only one database action among --init, --catalogue, --clean, and --update-track-tags.",
+            "All track parameters are required. Missing: " + ", ".join(missing),
             "E",
         )
         raise typer.Exit(code=1)
 
-    print_version_message()
-
-    if init:
-        try:
-            init_db(db_root)
-        except FileExistsError as e:
-            log(str(e), "E")
-            raise typer.Exit(code=1)
-    elif catalogue:
-        print_full_catalogue(db_root)
-        raise typer.Exit(code=0)
-    elif clean:
-        if not valid_database(db_root):
-            log(f"To initialize the database, run 'database --init {db_root}'", "E")
-            raise typer.Exit(code=1)
-
-        if not clean_yes:
-            log(
-                f"About to delete the masks cached in '{db_root}'. This will only impact filtering time.",
-                "W",
-            )
-            answer = typer.prompt("Enter 'yes' to confirm cleanup", default="No")
-            if answer.lower() not in ["yes", "y"]:
-                log("Cleanup cancelled.", "I")
-                raise typer.Exit(code=0)
-
-        clean_db(db_root=db_root)
-        raise typer.Exit(code=0)
-    elif update_track_tags_action:
-        if not valid_database(db_root):
-            log(f"To initialize the database, run 'database --init {db_root}'", "E")
-            raise typer.Exit(code=1)
-
-        required_params = {
-            "--ref": update_ref,
-            "--track": update_track,
-            "--kmer-length": update_kmer_length,
-            "--offset-step": update_offset_step,
-            "-bn": update_bwa_missing_prob_err_rate,
-            "-bo": update_bwa_max_gap_opens,
-            "-bl": update_bwa_seed_length,
-            "--tags": new_tags,
-        }
-        missing = [name for name, value in required_params.items() if value is None]
-        if missing:
-            log(
-                "--update-track-tags requires all track parameters. Missing: "
-                + ", ".join(missing),
-                "E",
-            )
-            raise typer.Exit(code=1)
-
-        parsed_new_tags = from_charlist_to_list(new_tags, lowercase=True)
-        if not parsed_new_tags:
-            log("No replacement tags provided. Use --tags with at least one tag.", "E")
-            raise typer.Exit(code=1)
-
-        if not check_track_exists(
-            ref_species=update_ref,
-            query_species=update_track,
-            kmer_length=update_kmer_length,
-            offset_step=update_offset_step,
-            db_root=db_root,
-            bwa_missing_prob_err_rate=update_bwa_missing_prob_err_rate,
-            bwa_max_gap_opens=update_bwa_max_gap_opens,
-            bwa_seed_length=update_bwa_seed_length,
-        ):
-            log(
-                f"Track does not exist for ref='{update_ref}', track='{update_track}', "
-                f"k={update_kmer_length}, w={update_offset_step}, "
-                f"-n={float(update_bwa_missing_prob_err_rate):g}, "
-                f"-o={update_bwa_max_gap_opens}, -l={update_bwa_seed_length}.",
-                "E",
-            )
-            raise typer.Exit(code=1)
-
-        try:
-            updated_yaml, old_tags, updated_tags = update_track_tags(
-                ref_species=update_ref,
-                query_species=update_track,
-                kmer_length=update_kmer_length,
-                offset_step=update_offset_step,
-                tags=parsed_new_tags,
-                db_root=db_root,
-                bwa_missing_prob_err_rate=update_bwa_missing_prob_err_rate,
-                bwa_max_gap_opens=update_bwa_max_gap_opens,
-                bwa_seed_length=update_bwa_seed_length,
-            )
-        except FileNotFoundError as e:
-            log(str(e), "E")
-            raise typer.Exit(code=1)
-
-        old_tags_str = ", ".join(old_tags) if old_tags else "-"
-        new_tags_str = ", ".join(updated_tags) if updated_tags else "-"
-        log(f"Track tags updated in: {updated_yaml}", "S")
-        log(f"Previous tags: {old_tags_str}", "I")
-        log(f"New tags: {new_tags_str}", "I")
-        raise typer.Exit(code=0)
-    elif not valid_database(db_root):
-        log(f"To initialize the database, run 'database --init {db_root}'", "E")
+    parsed_new_tags = from_charlist_to_list(new_tags, lowercase=True)
+    if not parsed_new_tags:
+        log("No replacement tags provided. Use --tags with at least one tag.", "E")
         raise typer.Exit(code=1)
-    else:
-        log(f"Database at '{db_root}' is valid and ready to use.", "S")
-        raise typer.Exit(code=0)
+
+    # Create BWAParameters object with all parameters
+    bwa_params = BWAParameters(
+        missing_prob_err_rate=bwa_missing_prob_err_rate,
+        max_gap_opens=bwa_max_gap_opens,
+        seed_length=bwa_seed_length,
+        all_aln=bwa_all_aln,
+        threads=bwa_threads,
+        r_best_hits=bwa_r_best_hits,
+        samse_n=bwa_samse_n,
+    )
+
+    if not check_track_exists(
+        ref_species=ref,
+        query_species=track,
+        kmer_length=kmer_length,
+        offset_step=offset_step,
+        db_root=db_root,
+        bwa_params=bwa_params,
+    ):
+        log(
+            f"Track does not exist for ref='{ref}', track='{track}', "
+            f"k={kmer_length}, w={offset_step}, bwa_params={bwa_params}.",
+            "E",
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        updated_yaml, old_tags, updated_tags = update_track_tags(
+            ref_species=ref,
+            query_species=track,
+            kmer_length=kmer_length,
+            offset_step=offset_step,
+            tags=parsed_new_tags,
+            db_root=db_root,
+            bwa_params=bwa_params,
+        )
+    except FileNotFoundError as e:
+        log(str(e), "E")
+        raise typer.Exit(code=1)
+
+    old_tags_str = ", ".join(old_tags) if old_tags else "-"
+    new_tags_str = ", ".join(updated_tags) if updated_tags else "-"
+    log(f"Track tags updated in: {updated_yaml}", "S")
+    log(f"Previous tags: {old_tags_str}", "I")
+    log(f"New tags: {new_tags_str}", "I")
+    raise typer.Exit(code=0)
 
 
 # Main alignment command with all parameters for track generation
 # Same behavior that generate_cross_mappability_filter_bwa.sh
 @app.command(
-    help="Generate cross-mappability tracks from input FASTA files using specific bwa aln parameters.",
+    help="Generate a cross-mappability track and associated metadata from input FASTA files using specific bwa parameters.",
     no_args_is_help=True,
 )
 def align(
     # Input parameters
+    db_root: str = typer.Option(
+        ...,
+        "-d",
+        "--db-root",
+        help="Path to the database root directory where to save the track.",
+    ),
     input_fasta: Optional[List[str]] = typer.Option(
         None,
         "-i",
-        help="Path(s) to FASTA file(s) to align on the target (query). Repeat -i and/or use comma-separated values.",
+        help="Path to FASTA file to align on the target (query).",
     ),
     input_target: str = typer.Option(
         None, "-r", help="Path to the reference target FASTA."
@@ -471,33 +595,48 @@ def align(
         help="Offset/sliding window step for k-mers.",
     ),
     # Alignment parameters
-    bwa_missing_prob_err_rate: float = typer.Option(0.01, "-bn", help="BWA aln -n."),
-    bwa_max_gap_opens: int = typer.Option(2, "-bo", help="BWA aln -o."),
-    bwa_seed_length: int = typer.Option(16500, "-bl", help="BWA aln -l."),
+    bwa_missing_prob_err_rate: float = typer.Option(
+        0.01, "-bn", help="bwa aln -n. Max diff. or missing prob. under 0.02 err rate."
+    ),
+    bwa_max_gap_opens: int = typer.Option(
+        2, "-bo", help="bwa aln -o. Maximum number or fraction of gap opens."
+    ),
+    bwa_seed_length: int = typer.Option(16500, "-bl", help="bwa aln -l. Seed length."),
     bwa_all_aln: bool = typer.Option(
-        False, "-bN", help="BWA -N (compute every alternative mapping)."
+        False,
+        "-bN",
+        help="bwa aln -N. Non-iterative mode: search for all n-difference hits (please read README.md before using it).",
     ),
     bwa_threads: int = typer.Option(
-        1, "-bj", "--bwa-threads", help="Number of threads for bwa aln."
+        1, "-bj", "--bwa-threads", help="bwa aln -j. Number of threads for bwa aln."
+    ),
+    bwa_r_best_hits: int = typer.Option(
+        30,
+        "-bR",
+        help="bwa aln -R. When n_best_hits>=-bR, bwa aln do not explore suboptimal hits. Processed per score, i.e. does not affect best hits count.",
+    ),
+    bwa_samse_n: int = typer.Option(
+        2000000000,
+        "-bsn",
+        help="bwa samse -n. If n_kept_hits>-n, kept hits will NOT be saved in the track.",
     ),
     # Parallelisation parameters
     jobs: int = typer.Option(
-        1, "-j", "--jobs", help="Number of threads for chunk parallelisation."
+        1,
+        "-j",
+        "--jobs",
+        help="Number of threads to parallelize bwa instances and data processing.",
     ),
     chunk_size: int = typer.Option(
         2000000,
         "-cs",
         "--chunk-size",
-        help="Number of k-mers per chunk for parallel alignment.",
-    ),
-    # Other parameters
-    db_root: str = typer.Option(
-        ..., "-d", "--db-root", help="Path to the database root directory."
+        help="Number of k-mers to align per bwa instances.",
     ),
     tmp_dir: Optional[str] = typer.Option(
         None,
         "--tmp-dir",
-        help="Custom temporary directory path. If provided, overrides the default TMPDIR=/tmp location for wizardeye temporary files.",
+        help="Custom temporary directory path. If provided, overrides the default TMPDIR=/tmp location for WizardEye temporary files.",
     ),
     force: bool = typer.Option(
         None, help="Force track creation even if it already exists."
@@ -505,6 +644,29 @@ def align(
 ):
     print_version_message()
     start_time = time.perf_counter()
+
+    # Validate BWA parameters to prevent overflow in bwa aln and bwa samse
+    max_bwa_int = 2147483647
+    if bwa_r_best_hits >= max_bwa_int:
+        log(
+            f"Error: -bR value ({bwa_r_best_hits}) must be less than {max_bwa_int} (BWA maximum integer value).",
+            "E",
+        )
+        raise typer.Exit(code=1)
+    if bwa_samse_n >= max_bwa_int:
+        log(
+            f"Error: -bsn value ({bwa_samse_n}) must be less than {max_bwa_int} (BWA maximum integer value).",
+            "E",
+        )
+        raise typer.Exit(code=1)
+
+    if bwa_all_aln:
+        log(
+            "-N parameter used. Results may still not be exhaustive due to how bwa works. See README for more details.",
+            "W",
+        )
+        log("-R set to 2147483647 to map bwa internal behaviour.", "W")
+        bwa_r_best_hits = 2147483647
 
     if input_fasta and input_target and kmer_length:
         if not valid_database(db_root):
@@ -544,6 +706,8 @@ def align(
             seed_length=bwa_seed_length,
             all_aln=bwa_all_aln,
             threads=bwa_threads,
+            r_best_hits=bwa_r_best_hits,
+            samse_n=bwa_samse_n,
         )
 
         total_inputs = len(input_fastas)
@@ -551,8 +715,8 @@ def align(
             base_query_name = Path(one_input_fasta).stem
             query_track_id = base_query_name
 
-            all_aln_str = "_N" if bwa_all_aln else ""
-            track_name = f"{query_track_id}_k{kmer_length}_w{offset_step}_n{float(bwa_missing_prob_err_rate):g}_o{bwa_max_gap_opens}_l{bwa_seed_length}{all_aln_str}"
+            bwa_hash = get_bwa_params_hash(bwa_params)
+            track_name = f"{query_track_id}_k{kmer_length}_w{offset_step}_bwa{bwa_hash}"
             log(
                 f"[{idx}/{total_inputs}] Processing input FASTA: {one_input_fasta}", "I"
             )
@@ -622,18 +786,24 @@ def filter(
     ),
     ref: Optional[str] = typer.Option(None, "-r", help="Reference used for alignment."),
     bwa_missing_prob_err_rate: Optional[float] = typer.Option(
-        None, "-bn", help="BWA aln -n used for alignment."
+        None, "-bn", help="bwa aln -n used for alignment."
     ),
     bwa_max_gap_opens: Optional[int] = typer.Option(
-        None, "-bo", help="BWA aln -o used for alignment."
+        None, "-bo", help="bwa aln -o used for alignment."
     ),
     bwa_seed_length: Optional[int] = typer.Option(
-        None, "-bl", help="BWA aln -l used for alignment."
+        None, "-bl", help="bwa aln -l used for alignment."
     ),
     bwa_all_aln: Optional[bool] = typer.Option(
         None,
         "-bN",
-        help="BWA aln -N used for alignment (compute every alternative mapping).",
+        help="bwa aln -N used for alignment (compute every alternative mapping).",
+    ),
+    bwa_r_best_hits: int = typer.Option(
+        30, "-bR", help="bwa aln -R used for alignment."
+    ),
+    bwa_samse_n: int = typer.Option(
+        2000000000, "-bsn", help="bwa samse -n used for alignment."
     ),
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
@@ -656,6 +826,12 @@ def filter(
         "-rc",
         "--cross-stringency",
         help="Stringency threshold in [0.0, 1.0].",
+    ),
+    min_freq: Optional[int] = typer.Option(
+        None,
+        "-mf",
+        "--min-frequency",
+        help="Minimum number of tracks that must overlap a position for it to be masked (frequency filtering).",
     ),
     only_unique: bool = typer.Option(
         False,
@@ -710,6 +886,8 @@ def filter(
         seed_length=bwa_seed_length,
         all_aln=bwa_all_aln,
         threads=None,
+        r_best_hits=bwa_r_best_hits,
+        samse_n=bwa_samse_n,
     )
     valid_tracks = _request_tracks_from_args(
         ref,
@@ -722,8 +900,10 @@ def filter(
         only_unique,
         None,
         cross_stringency,
+        min_freq,
         bwa_params,
     )
+
     print("-" * 80)
     log("Starting filtration...", "I")
 
@@ -741,6 +921,7 @@ def filter(
             offset_step=offset_step,
             bwa_params=bwa_params,
             stringency=cross_stringency,
+            min_freq=min_freq,
             consider_all=not (only_unique),
             output_filtered_bam=output_filtered_bam,
             output_excluded_bam=output_excluded_bam,
@@ -812,18 +993,24 @@ def export(
         help="Offset/sliding window to target.",
     ),
     bwa_missing_prob_err_rate: Optional[float] = typer.Option(
-        None, "-bn", help="BWA aln -n used to generate selected tracks."
+        None, "-bn", help="bwa aln -n used to generate selected tracks."
     ),
     bwa_max_gap_opens: Optional[int] = typer.Option(
-        None, "-bo", help="BWA aln -o used to generate selected tracks."
+        None, "-bo", help="bwa aln -o used to generate selected tracks."
     ),
     bwa_seed_length: Optional[int] = typer.Option(
-        None, "-bl", help="BWA aln -l used to generate selected tracks."
+        None, "-bl", help="bwa aln -l used to generate selected tracks."
     ),
     bwa_all_aln: Optional[bool] = typer.Option(
         None,
         "-bN",
-        help="BWA aln -N used to generate selected tracks (compute every alternative mapping).",
+        help="bwa aln -N used to generate selected tracks (compute every alternative mapping).",
+    ),
+    bwa_r_best_hits: int = typer.Option(
+        30, "-bR", help="bwa aln -R used to generate selected tracks."
+    ),
+    bwa_samse_n: int = typer.Option(
+        2000000000, "-bsn", help="bwa samse -n used to generate selected tracks."
     ),
     cross_stringency: float = typer.Option(
         0.99,
@@ -832,6 +1019,12 @@ def export(
         "-rc",
         "--cross-stringency",
         help="Stringency threshold in [0.0, 1.0].",
+    ),
+    min_freq: Optional[int] = typer.Option(
+        None,
+        "-mf",
+        "--min-frequency",
+        help="Minimum number of tracks that must overlap a position for it to be masked (frequency filtering).",
     ),
     only_unique: bool = typer.Option(
         False,
@@ -863,6 +1056,8 @@ def export(
         seed_length=bwa_seed_length,
         all_aln=bwa_all_aln,
         threads=None,
+        r_best_hits=bwa_r_best_hits,
+        samse_n=bwa_samse_n,
     )
 
     valid_tracks = _request_tracks_from_args(
@@ -876,6 +1071,7 @@ def export(
         only_unique,
         None,
         cross_stringency,
+        min_freq,
         bwa_params,
     )
 
@@ -886,6 +1082,7 @@ def export(
             kmer_length=kmer_length,
             offset_step=offset_step,
             cross_stringency=cross_stringency,
+            min_freq=min_freq,
             consider_all=not (only_unique),
             n_threads=n_threads,
             db_root=db_root,
@@ -956,27 +1153,37 @@ def import_tracks(
     bwa_missing_prob_err_rate: float = typer.Option(
         0.01,
         "-bn",
-        help="BWA aln -n used for generation.",
+        help="bwa aln -n used for alignment.",
     ),
     bwa_max_gap_opens: int = typer.Option(
         2,
         "-bo",
-        help="BWA aln -o used for generation.",
+        help="bwa aln -o used for alignment.",
     ),
     bwa_seed_length: int = typer.Option(
         16500,
         "-bl",
-        help="BWA aln -l used for generation.",
+        help="bwa aln -l used for alignment.",
     ),
     bwa_all_aln: Optional[bool] = typer.Option(
         None,
         "-bN",
-        help="BWA aln -N used for alignment (compute every alternative mapping).",
+        help="bwa aln -N used for alignment.",
+    ),
+    bwa_r_best_hits: int = typer.Option(
+        30,
+        "-bR",
+        help="bwa aln -R used for alignment.",
+    ),
+    bwa_samse_n: int = typer.Option(
+        2000000000,
+        "-bsn",
+        help="bwa samse -n used after alignment.",
     ),
     n_threads: int = typer.Option(
         1,
         "-j",
-        help="Thread count used for generation.",
+        help="Thread count used for alignment.",
     ),
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
@@ -1003,6 +1210,8 @@ def import_tracks(
         max_gap_opens=bwa_max_gap_opens,
         seed_length=bwa_seed_length,
         all_aln=bwa_all_aln,
+        r_best_hits=bwa_r_best_hits,
+        samse_n=bwa_samse_n,
         threads=1,
     )
 
@@ -1056,18 +1265,24 @@ def count(
         "mean", "-m", "--mode", help="Count mode (mean, std, max, min, cov or sum)"
     ),
     bwa_missing_prob_err_rate: Optional[float] = typer.Option(
-        None, "-bn", help="BWA aln -n used for alignment."
+        None, "-bn", help="bwa aln -n used for alignment."
     ),
     bwa_max_gap_opens: Optional[int] = typer.Option(
-        None, "-bo", help="BWA aln -o used for alignment."
+        None, "-bo", help="bwa aln -o used for alignment."
     ),
     bwa_seed_length: Optional[int] = typer.Option(
-        None, "-bl", help="BWA aln -l used for alignment."
+        None, "-bl", help="bwa aln -l used for alignment."
     ),
     bwa_all_aln: Optional[bool] = typer.Option(
         None,
         "-bN",
-        help="BWA aln -N used for alignment (compute every alternative mapping).",
+        help="bwa aln -N used for alignment (compute every alternative mapping).",
+    ),
+    bwa_r_best_hits: int = typer.Option(
+        30, "-bR", help="bwa aln -R used for alignment."
+    ),
+    bwa_samse_n: int = typer.Option(
+        2000000000, "-bsn", help="bwa samse -n used for alignment."
     ),
     # Track generation parameters
     db_root: str = typer.Option(
@@ -1139,6 +1354,8 @@ def count(
         seed_length=bwa_seed_length,
         all_aln=bwa_all_aln,
         threads=None,
+        r_best_hits=bwa_r_best_hits,
+        samse_n=bwa_samse_n,
     )
 
     valid_tracks = _request_tracks_from_args(
@@ -1151,6 +1368,7 @@ def count(
         offset_step,
         only_unique,
         no_cache,
+        None,
         None,
         bwa_params,
     )

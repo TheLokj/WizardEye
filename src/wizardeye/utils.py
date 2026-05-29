@@ -7,7 +7,6 @@ file hashing, sequence size handling, BAM metadata parsing, and BED file merging
 """
 
 import subprocess
-import tempfile
 import pysam
 import hashlib
 import shutil
@@ -15,9 +14,27 @@ import shlex
 import sys
 
 from typing import Dict, Iterable, List, Optional, Tuple
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def get_bwa_params_hash(bwa_params: "BWAParameters", hash_length: int = 8) -> str:
+    """Generate a short hash from BWA parameters for track naming.
+
+    Args:
+        bwa_params: BWAParameters object containing alignment parameters.
+        hash_length: Length of the hash string to return (default: 8).
+
+    Returns:
+        A short hash string representing the BWA parameters.
+    """
+    # Create a string representation of all relevant BWA parameters
+    params_str = f"{bwa_params.missing_prob_err_rate}:{bwa_params.max_gap_opens}:{bwa_params.seed_length}:{bwa_params.all_aln}:{bwa_params.threads}:{bwa_params.r_best_hits}:{bwa_params.samse_n}"
+
+    # Generate MD5 hash and return first N characters
+    hash_obj = hashlib.md5(params_str.encode())
+    return hash_obj.hexdigest()[:hash_length]
+
 
 # --- WizardEye development utilities ---
 
@@ -636,114 +653,60 @@ def write_seq_sizes_from_bam(bam_file: Path, out_path: Path) -> Path:
 
 
 def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path:
-    """Merge multiple BED files with track names into a single BED file with merged intervals and comma-separated track annotations.
+    """Merge multiple BED files with track names into a single BED file with merged intervals
+    and comma-separated track annotations, using bedtools multiinter.
 
     Args:
-        bed_files (List[Tuple[str, Path]]): A list of tuples containing track names and BED file paths.
-        output_bed (Path): The path to the output merged BED file.
+        bed_files: List of (track_name, bed_path) tuples.
+        output_bed: Destination BED file path.
 
     Returns:
-        Path: The path to the merged BED file.
+        Path to the written output BED file.
     """
     output_bed.parent.mkdir(parents=True, exist_ok=True)
+
     if not bed_files:
         output_bed.write_text("", encoding="utf-8")
         return output_bed
 
     bedtools = shutil.which("bedtools")
-    if bedtools:
-        with tempfile.NamedTemporaryFile(
-            prefix="wizardeye_", suffix=".bed", delete=False
-        ) as tmp_handle:
-            tmp_tagged_path = Path(tmp_handle.name)
-
-        try:
-            with tmp_tagged_path.open("w", encoding="utf-8") as tagged_out:
-                for track_name, bed_path in bed_files:
-                    # Merger intra-track uniquement
-                    with bed_path.open("r", encoding="utf-8") as bed_in:
-                        p_sort = subprocess.Popen(
-                            ["sort", "-k1,1", "-k2,2n"],
-                            stdin=bed_in,
-                            stdout=subprocess.PIPE,
-                            text=True,
-                        )
-                        p_merge = subprocess.Popen(
-                            [bedtools, "merge", "-i", "stdin"],
-                            stdin=p_sort.stdout,
-                            stdout=subprocess.PIPE,
-                            text=True,
-                        )
-                        if p_sort.stdout is not None:
-                            p_sort.stdout.close()
-
-                        for line in p_merge.stdout:
-                            parts = line.strip().split("\t")
-                            if len(parts) < 3:
-                                continue
-                            start = int(parts[1])
-                            end = int(parts[2])
-                            if end <= start:
-                                continue
-                            tagged_out.write(
-                                f"{parts[0]}\t{start}\t{end}\t{track_name.split('_k')[0]}\n"
-                            )
-
-                        p_merge.stdout.close()
-                        rc_merge = p_merge.wait()
-                        rc_sort = p_sort.wait()
-                        if rc_sort != 0:
-                            raise subprocess.CalledProcessError(rc_sort, ["sort"])
-                        if rc_merge != 0:
-                            raise subprocess.CalledProcessError(
-                                rc_merge, [bedtools, "merge"]
-                            )
-
-            with tmp_tagged_path.open("r", encoding="utf-8") as tagged_in:
-                log(f"sort -k1,1 -k2,2n {tmp_tagged_path}", "C")
-                p_sort_final = subprocess.Popen(
-                    ["sort", "-k1,1", "-k2,2n"],
-                    stdin=tagged_in,
-                    stdout=output_bed.open("w", encoding="utf-8"),
-                    text=True,
-                )
-                rc_sort_final = p_sort_final.wait()
-                if rc_sort_final != 0:
-                    raise subprocess.CalledProcessError(rc_sort_final, ["sort"])
-
-            return output_bed
-
-        finally:
-            if tmp_tagged_path.exists():
-                tmp_tagged_path.unlink()
-
-    all_intervals: List[Tuple[str, int, int, str]] = []
-    for track_name, bed in bed_files:
-        iv = Intervals()
-        iv.read_from_bed(bed)
-        track_intervals = sorted(
-            [(interval.chrom, interval.start, interval.end) for interval in iv],
-            key=lambda x: (x[0], x[1]),
+    if bedtools is None:
+        raise RuntimeError(
+            "bedtools is required but was not found on PATH. "
+            "Install it with: conda install -c bioconda bedtools"
         )
-        merged: List[Tuple[str, int, int]] = []
-        for chrom, start, end in track_intervals:
-            if not merged:
-                merged.append((chrom, start, end))
+
+    track_names = [name.split("_k")[0] for name, _ in bed_files]
+    bed_paths = [str(p) for _, p in bed_files]
+
+    cmd = [bedtools, "multiinter", "-i"] + bed_paths + ["-names"] + track_names
+    log(" ".join(cmd), "C")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+
+    # multiinter output columns:
+    #   0: chrom  1: start  2: end  3: num_intersecting  4: track_names (comma-sep)
+    with output_bed.open("w", encoding="utf-8") as out_fh:
+        for line in result.stdout.splitlines():
+            if not line:
                 continue
-            last_chrom, last_start, last_end = merged[-1]
-            if last_chrom == chrom and start <= last_end:
-                merged[-1] = (last_chrom, last_start, max(last_end, end))
-            else:
-                merged.append((chrom, start, end))
-
-        for chrom, start, end in merged:
-            all_intervals.append((chrom, start, end, track_name.split("_k")[0]))
-
-    all_intervals.sort(key=lambda x: (x[0], x[1], x[2]))
-
-    with output_bed.open("w", encoding="utf-8") as out:
-        for chrom, start, end, track_name in all_intervals:
-            out.write(f"{chrom}\t{start}\t{end}\t{track_name}\n")
+            parts = line.split("\t")
+            if len(parts) < 5:
+                continue
+            chrom, start, end, tracks = parts[0], parts[1], parts[2], parts[4]
+            seen: set[str] = set()
+            deduped = []
+            for t in tracks.split(","):
+                if t not in seen:
+                    seen.add(t)
+                    deduped.append(t)
+            out_fh.write(f"{chrom}\t{start}\t{end}\t{','.join(deduped)}\n")
 
     return output_bed
 
@@ -792,268 +755,6 @@ def convert_bigwig_to_bedGraph(bigwig_path: Path, bedgraph_path: Path) -> Path:
     return bedgraph_path
 
 
-# BED interval classes for non-bedtools merging and manipulation
-class Interval:
-    """Represents a genomic interval with chromosome, start, end, and optional depth.
-
-    Attributes:
-            chrom (str): Chromosome name.
-            start (int): 0-based start position (inclusive).
-            end (int): 0-based end position (exclusive).
-            depth (Optional[float]): Optional depth or annotation value.
-    """
-
-    def __init__(self, chrom: str, start: int, end: int, depth: Optional[float] = None):
-        """Initialize an Interval.
-
-        Args:
-                chrom (str): Chromosome name.
-                start (int): 0-based start position (inclusive).
-                end (int): 0-based end position (exclusive).
-                depth (Optional[float]): Optional depth value, defaults to None.
-
-        Raises:
-                ValueError: If end <= start.
-        """
-        if end <= start:
-            raise ValueError(f"Invalid interval: end ({end}) must be > start ({start})")
-        self.chrom = chrom
-        self.start = start
-        self.end = end
-        self.depth = depth
-
-    @property
-    def length(self) -> int:
-        """Return the length of this interval."""
-        return self.end - self.start
-
-    def overlaps(self, other: "Interval") -> bool:
-        """Check if this interval overlaps with another."""
-        return (
-            self.chrom == other.chrom
-            and self.start < other.end
-            and other.start < self.end
-        )
-
-    def adjacent_to(self, other: "Interval") -> bool:
-        """Check if this interval is adjacent to another (same chrom, touching positions)."""
-        return self.chrom == other.chrom and (
-            self.end == other.start or other.end == self.start
-        )
-
-    def can_merge_with(self, other: "Interval") -> bool:
-        """Check if this interval can be merged with another (overlapping or adjacent)."""
-        return self.chrom == other.chrom and self.start <= other.end
-
-    def merge(self, other: "Interval") -> "Interval":
-        """Merge this interval with another, returning a new merged interval.
-
-        Args:
-                other (Interval): The interval to merge with.
-
-        Returns:
-                Interval: A new interval spanning both intervals. Depth is lost in merge.
-
-        Raises:
-                ValueError: If intervals cannot be merged (different chromosomes or non-overlapping).
-        """
-        if not self.can_merge_with(other):
-            raise ValueError(
-                "Cannot merge intervals on different chromosomes or with gap"
-            )
-        return Interval(
-            self.chrom, min(self.start, other.start), max(self.end, other.end)
-        )
-
-    def contains(self, pos: int) -> bool:
-        """Check if this interval contains a position."""
-        return self.start <= pos < self.end
-
-    def __repr__(self) -> str:
-        depth_str = f", depth={self.depth}" if self.depth is not None else ""
-        return f"Interval({self.chrom}:{self.start}-{self.end}{depth_str})"
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Interval):
-            return NotImplemented
-        return (
-            self.chrom == other.chrom
-            and self.start == other.start
-            and self.end == other.end
-            and self.depth == other.depth
-        )
-
-    def __lt__(self, other: "Interval") -> bool:
-        """Sort by chromosome, then start, then end."""
-        if self.chrom != other.chrom:
-            return self.chrom < other.chrom
-        if self.start != other.start:
-            return self.start < other.start
-        return self.end < other.end
-
-
-class Intervals:
-    """Container for managing a collection of genomic intervals with operations like merge, read, write.
-
-    Attributes:
-            intervals (List[Interval]): The list of intervals, kept sorted.
-    """
-
-    def __init__(self, intervals: Optional[List[Interval]] = None):
-        """Initialize an Intervals container.
-
-        Args:
-                intervals (Optional[List[Interval]]): Optional list of intervals to initialize with.
-        """
-        self.intervals = sorted(intervals) if intervals else []
-
-    def append(self, interval: Interval) -> None:
-        """Append an interval, merging with existing intervals if they overlap or are adjacent.
-
-        Args:
-                interval (Interval): The interval to append.
-        """
-        if not self.intervals:
-            self.intervals.append(interval)
-            return
-
-        last = self.intervals[-1]
-        if last.can_merge_with(interval):
-            self.intervals[-1] = last.merge(interval)
-        else:
-            self.intervals.append(interval)
-
-    def read_from_bed(self, bed_path: Path) -> None:
-        """Read intervals from a BED file (chrom, start, end columns).
-
-        Args:
-                bed_path (Path): Path to the BED file to read.
-        """
-        with bed_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                parts = line.strip().split("\t")
-                if len(parts) < 3:
-                    continue
-                try:
-                    start = int(parts[1])
-                    end = int(parts[2])
-                    if end > start:
-                        self.append(Interval(parts[0], start, end))
-                except (ValueError, IndexError):
-                    continue
-
-    def read_from_bedgraph(self, bedgraph_path: Path) -> None:
-        """Read intervals with depth from a bedGraph file (chrom, start, end, depth columns).
-
-        Args:
-                bedgraph_path (Path): Path to the bedGraph file to read.
-        """
-        with bedgraph_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                parts = line.strip().split("\t")
-                if len(parts) < 4:
-                    continue
-                try:
-                    start = int(parts[1])
-                    end = int(parts[2])
-                    depth = float(parts[3])
-                    if end > start:
-                        self.intervals.append(Interval(parts[0], start, end, depth))
-                except (ValueError, IndexError):
-                    continue
-        self.intervals.sort()
-
-    def write_to_bed(self, out_path: Path) -> Path:
-        """Write intervals to a BED file (chrom, start, end format).
-
-        Args:
-                out_path (Path): Path to write the BED file.
-
-        Returns:
-                Path: The output file path.
-        """
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with out_path.open("w", encoding="utf-8") as handle:
-            for interval in self.intervals:
-                handle.write(f"{interval.chrom}\t{interval.start}\t{interval.end}\n")
-        return out_path
-
-    def write_to_bedgraph(self, out_path: Path) -> Path:
-        """Write intervals with depth to a bedGraph file.
-
-        Args:
-                out_path (Path): Path to write the bedGraph file.
-
-        Returns:
-                Path: The output file path.
-        """
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        events_by_chrom: Dict[str, Dict[int, int]] = defaultdict(
-            lambda: defaultdict(int)
-        )
-
-        for interval in self.intervals:
-            events_by_chrom[interval.chrom][interval.start] += 1
-            events_by_chrom[interval.chrom][interval.end] -= 1
-
-        with out_path.open("w", encoding="utf-8") as handle:
-            for chrom in sorted(events_by_chrom):
-                events = events_by_chrom[chrom]
-                positions = sorted(events)
-                depth = 0
-                for idx, pos in enumerate(positions):
-                    depth += events[pos]
-                    if idx + 1 >= len(positions):
-                        continue
-                    next_pos = positions[idx + 1]
-                    if depth > 0 and next_pos > pos:
-                        handle.write(f"{chrom}\t{pos}\t{next_pos}\t{depth}\n")
-
-        return out_path
-
-    def count_covered_bases(self, min_depth: float = 0.0) -> int:
-        """Count the number of covered base pairs.
-
-        Args:
-                min_depth (float): Minimum depth to count (default 0.0 for any interval).
-
-        Returns:
-                int: Total number of bases with depth > min_depth.
-        """
-        total_bp = 0
-        for interval in self.intervals:
-            if interval.depth is None or interval.depth > min_depth:
-                total_bp += interval.length
-        return total_bp
-
-    def merge_all(self) -> None:
-        """Merge all overlapping or adjacent intervals in place."""
-        if len(self.intervals) <= 1:
-            return
-
-        self.intervals.sort()
-        merged = [self.intervals[0]]
-
-        for interval in self.intervals[1:]:
-            if merged[-1].can_merge_with(interval):
-                merged[-1] = merged[-1].merge(interval)
-            else:
-                merged.append(interval)
-
-        self.intervals = merged
-
-    def __len__(self) -> int:
-        """Return the number of intervals."""
-        return len(self.intervals)
-
-    def __iter__(self):
-        """Iterate over intervals."""
-        return iter(self.intervals)
-
-    def __repr__(self) -> str:
-        return f"Intervals({len(self.intervals)} intervals)"
-
-
 # -- BWA parameters class --
 
 
@@ -1067,6 +768,8 @@ class BWAParameters:
     - seed_length: -l parameter (default: 16500, None means filter by any value)
     - all_aln: -N parameter (default: False, None means filter by any value)
     - threads: -t parameter (default: 1, None means filter by any value)
+    - r_best_hits: -R parameter for bwa aln (default: 30, None means filter by any value)
+    - samse_n: -n parameter for bwa samse (default: 2000000000, None means filter by any value)
     """
 
     missing_prob_err_rate: Optional[float] = None
@@ -1074,6 +777,8 @@ class BWAParameters:
     seed_length: Optional[int] = None
     all_aln: Optional[bool] = None
     threads: Optional[int] = None
+    r_best_hits: Optional[int] = None
+    samse_n: Optional[int] = None
 
     def __post_init__(self) -> None:
         # Apply defaults if None - only for mutable dataclass
@@ -1087,3 +792,7 @@ class BWAParameters:
             self.all_aln = False
         if self.threads is None:
             self.threads = 1
+        if self.r_best_hits is None:
+            self.r_best_hits = 30
+        if self.samse_n is None:
+            self.samse_n = 2000000000

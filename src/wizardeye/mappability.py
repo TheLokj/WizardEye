@@ -19,8 +19,8 @@ import subprocess
 import shutil
 import yaml
 import os
-import getpass
 import sys
+import tempfile
 
 from pathlib import Path
 from datetime import datetime
@@ -39,14 +39,8 @@ from .utils import (
     iterate_mapping_intervals,
     iterate_unique_mapping_intervals,
     BWAParameters,
+    get_bwa_params_hash,
 )
-
-# bwa aln -R & bwa samse -n parameter
-# This control the maximum number of best hits to refers
-# Despite bwa manual, it seems to also alterate bwa results in single end condition
-# This is only useful without -N
-# 2147483647 (0x7FFFFFFF) is the maximum possible number based on bwaaln.c
-BWA_R_BEST_HITS = 2147483647
 
 # -- WizardEye mappability utilities --
 
@@ -250,7 +244,7 @@ def align_with_bwa_aln(
             "-l",
             str(bwa_params.seed_length),
             "-R",
-            str(BWA_R_BEST_HITS),
+            str(bwa_params.r_best_hits),
             str(reference),
             str(input_fasta),
         ]
@@ -261,7 +255,7 @@ def align_with_bwa_aln(
 
     with bam_file.open("wb") as bam_out:
         log(
-            f"bwa samse -n {str(BWA_R_BEST_HITS)} {reference} {sai_file} {input_fasta}",
+            f"bwa samse -n {str(bwa_params.samse_n)} {reference} {sai_file} {input_fasta}",
             "C",
         )
         bwa_samse = subprocess.Popen(
@@ -269,7 +263,7 @@ def align_with_bwa_aln(
                 "bwa",
                 "samse",
                 "-n",
-                str(BWA_R_BEST_HITS),
+                str(bwa_params.samse_n),
                 str(reference),
                 str(sai_file),
                 str(input_fasta),
@@ -344,8 +338,8 @@ def create_mappability_track(
         raise ValueError("track_id cannot be empty")
 
     input_md5 = file_md5(input_fasta)
-    all_aln_str = "_N" if bwa_params.all_aln else ""
-    track_name = f"{query_track_id}_k{kmer_length}_w{offset_step}_n{float(bwa_params.missing_prob_err_rate):g}_o{bwa_params.max_gap_opens}_l{bwa_params.seed_length}{all_aln_str}"
+    bwa_hash = get_bwa_params_hash(bwa_params)
+    track_name = f"{query_track_id}_k{kmer_length}_w{offset_step}_bwa{bwa_hash}"
     target_dir = Path(db_root) / target_name
     target_dir.mkdir(parents=True, exist_ok=True)
     out_dir = Path(db_root) / target_name / track_name
@@ -392,13 +386,14 @@ def create_mappability_track(
         write_seq_sizes_from_fasta(input_target, target_seq_sizes)
 
     # Create temporary directory in cluster TMPDIR or /tmp, or use custom directory if provided
+    # Use a unique temp directory per call to avoid conflicts when running multiple aligns in parallel
     if tmp_dir_custom:
         tmp_root = Path(tmp_dir_custom)
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        tmp_dir = Path(tempfile.mkdtemp(dir=str(tmp_root), prefix="wizardeye_"))
     else:
         tmp_root = Path(os.environ.get("TMPDIR", "/tmp"))
-    user = getpass.getuser()
-    tmp_dir = tmp_root / f"{user}_wizardeye"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_dir = Path(tempfile.mkdtemp(dir=str(tmp_root), prefix="wizardeye_"))
 
     try:
         # Index with BWA if needed
@@ -566,6 +561,10 @@ def create_mappability_track(
                 "-l": bwa_params.seed_length,
                 "-N": bwa_params.all_aln,
                 "-t": bwa_params.threads,
+                "-R": bwa_params.r_best_hits,
+            },
+            "bwa_samse_parameters": {
+                "-n": bwa_params.samse_n,
             },
             "chunk_parameters": {
                 "-j": n_threads,

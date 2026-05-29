@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
 # Constants for test fixtures
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -36,29 +36,12 @@ STANDARD_OFFSET_STEP = 1
 STANDARD_BWA_MISSING_PROB_ERR_RATE = 0.01
 STANDARD_BWA_MAX_GAP_OPENINGS = 2
 STANDARD_BWA_SEED_LENGTH = 16500
+STANDARD_BWA_R_BEST_HITS = 30
+STANDARD_BWA_SAMSE_N = 2000000000
+STANDARD_BWA_HASH = "2b5d0c37"  # MD5 hash of "0.01:2:16500:False:1:30:2000000000"
 STANDARD_N_THREADS = 1
 STANDARD_CHUNK_SIZE = 100000
 STANDARD_CROSS_STRINGENCY = 0.99
-
-# --- Helper functions for test setup ---
-
-
-def compare_bedgraph_files(file1, file2, label):
-    with open(file1, "r") as f1, open(file2, "r") as f2:
-        lines1 = f1.readlines()
-        lines2 = f2.readlines()
-
-    if len(lines1) != len(lines2):
-        print(f"{label}: Different number of lines ({len(lines1)} vs {len(lines2)})")
-        return False
-
-    for i, (line1, line2) in enumerate(zip(lines1, lines2), 1):
-        if line1 != line2:
-            print(f"{label}: Difference at line {i}:")
-            print(f"  First: {line1.rstrip()}")
-            print(f"  Second: {line2.rstrip()}")
-            return False
-    return True
 
 
 def generate_standard_database(
@@ -106,7 +89,7 @@ def generate_standard_database(
 
     # Initialize database if needed
     subprocess.run(
-        ["python3", "-m", "wizardeye", "database", "--init", "-d", str(db_root)],
+        ["python3", "-m", "wizardeye", "database", "init", "-d", str(db_root)],
         check=True,
         capture_output=True,
         text=True,
@@ -163,14 +146,36 @@ def generate_standard_database(
         # Verify track directory was created
         ref_stem = Path(reference_fasta).stem
         query_stem = Path(query_fasta).stem
-        bn_str = f"{float(bwa_missing_prob_err_rate):g}"
-        track_pattern = f"{query_stem}_k{kmer_length}_w{offset_step}_n{bn_str}_o{bwa_max_gap_opens}_l{bwa_seed_length}"
+        track_pattern = (
+            f"{query_stem}_k{kmer_length}_w{offset_step}_bwa{STANDARD_BWA_HASH}"
+        )
         track_dir = db_path / ref_stem / track_pattern
 
         if not track_dir.exists():
             raise RuntimeError(f"Track directory not found: {track_dir}")
 
     return db_path
+
+
+# --- Helper functions for test setup ---
+
+
+def compare_bedgraph_files(file1, file2, label):
+    with open(file1, "r") as f1, open(file2, "r") as f2:
+        lines1 = f1.readlines()
+        lines2 = f2.readlines()
+
+    if len(lines1) != len(lines2):
+        print(f"{label}: Different number of lines ({len(lines1)} vs {len(lines2)})")
+        return False
+
+    for i, (line1, line2) in enumerate(zip(lines1, lines2), 1):
+        if line1 != line2:
+            print(f"{label}: Difference at line {i}:")
+            print(f"  First: {line1.rstrip()}")
+            print(f"  Second: {line2.rstrip()}")
+            return False
+    return True
 
 
 # -- Consistency with the script --
@@ -261,7 +266,7 @@ def test_align_same_behavior_as_original_script():
                     "-m",
                     "wizardeye",
                     "database",
-                    "--init",
+                    "init",
                     "-d",
                     str(wizardeye_tmpdir),
                 ],
@@ -291,6 +296,10 @@ def test_align_same_behavior_as_original_script():
                 str(STANDARD_BWA_MAX_GAP_OPENINGS),
                 "-bl",
                 str(STANDARD_BWA_SEED_LENGTH),
+                "-bR",
+                str(30),
+                "-bsn",
+                str(2000000000),
                 "-j",
                 str(STANDARD_N_THREADS),
                 "-cs",
@@ -315,9 +324,8 @@ def test_align_same_behavior_as_original_script():
             # Locate WizardEye output - track dir name uses float :g format for bwa params
             hg19_stem = HG19_FA.stem
             query_stem = query_fa.stem
-            bn_str = f"{float(STANDARD_BWA_MISSING_PROB_ERR_RATE):g}"
 
-            track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_n{bn_str}_o{STANDARD_BWA_MAX_GAP_OPENINGS}_l{STANDARD_BWA_SEED_LENGTH}"
+            track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_bwa{STANDARD_BWA_HASH}"
             track_dir = wizardeye_db / hg19_stem / track_pattern
 
             assert track_dir.exists(), (
@@ -470,7 +478,7 @@ def test_export_same_behavior_as_original_script():
                 "-m",
                 "wizardeye",
                 "database",
-                "--init",
+                "init",
                 "-d",
                 str(wizardeye_tmpdir),
             ],
@@ -676,7 +684,7 @@ def test_consistency_align_same_launch():
                             "-m",
                             "wizardeye",
                             "database",
-                            "--init",
+                            "init",
                             "-d",
                             str(tmpdir),
                         ],
@@ -738,9 +746,7 @@ def test_consistency_align_same_launch():
                     # Locate WizardEye output
                     hg19_stem = HG19_FA.stem
                     query_stem = query_fa.stem
-                    bn_str = f"{float(STANDARD_BWA_MISSING_PROB_ERR_RATE):g}"
-
-                    track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_n{bn_str}_o{STANDARD_BWA_MAX_GAP_OPENINGS}_l{STANDARD_BWA_SEED_LENGTH}"
+                    track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_bwa{STANDARD_BWA_HASH}"
                     track_dir = wizardeye_db / hg19_stem / track_pattern
 
                     assert track_dir.exists(), (
@@ -861,7 +867,7 @@ def test_consistency_align_parallelisation():
                             "-m",
                             "wizardeye",
                             "database",
-                            "--init",
+                            "init",
                             "-d",
                             str(tmpdir),
                         ],
@@ -923,9 +929,7 @@ def test_consistency_align_parallelisation():
                     # Locate WizardEye output
                     hg19_stem = HG19_FA.stem
                     query_stem = query_fa.stem
-                    bn_str = f"{float(STANDARD_BWA_MISSING_PROB_ERR_RATE):g}"
-
-                    track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_n{bn_str}_o{STANDARD_BWA_MAX_GAP_OPENINGS}_l{STANDARD_BWA_SEED_LENGTH}"
+                    track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_bwa{STANDARD_BWA_HASH}"
                     track_dir = wizardeye_db / hg19_stem / track_pattern
 
                     assert track_dir.exists(), (
@@ -1803,3 +1807,559 @@ def test_export_and_filter_same_results():
             filter_tmpdir.cleanup()
             export_tmpdir.cleanup()
             intersect_tmpdir.cleanup()
+
+
+def test_export_and_filter_same_results_with_mf():
+    """Test if filter and export+bed_intersect produce the same final results with a minimum frequency.
+
+    It also indirectly tests the consistency between the new pyBigWig implementation
+    and the original filtering based on bedtools for different stringency values.
+    """
+
+    # Different stringency values to test
+    stringency_values = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0]
+    min_frequencies = [1, 2, 3]
+
+    # Get track names for exclude-tracks parameter
+    query_stems = [SUS_SCROFA_FA.stem, CANIS_LUPUS_FA.stem, RATTUS_NORVEGICUS_FA.stem]
+    exclude_tracks_str = ",".join(query_stems)
+    hg19_stem = HG19_FA.stem
+
+    for mf in min_frequencies:
+        for cross_stringency in stringency_values:
+            with tempfile.TemporaryDirectory(
+                prefix=f"wizardeye_export_filter_compare_s{cross_stringency}_"
+            ) as base_tmpdir:
+                base_path = Path(base_tmpdir)
+
+                # Create the database with standard tracks using the helper
+                wizardeye_db = base_path / "database"
+                generate_standard_database(
+                    db_root=base_path,
+                    reference_fasta=HG19_FA,
+                    kmer_length=STANDARD_KMER_LENGTH,
+                    offset_step=STANDARD_OFFSET_STEP,
+                    bwa_missing_prob_err_rate=STANDARD_BWA_MISSING_PROB_ERR_RATE,
+                    bwa_max_gap_opens=STANDARD_BWA_MAX_GAP_OPENINGS,
+                    bwa_seed_length=STANDARD_BWA_SEED_LENGTH,
+                    chunk_size=STANDARD_CHUNK_SIZE,
+                    n_threads=STANDARD_N_THREADS,
+                )
+
+                # Run WizardEye filter to get TSV report with excluded reads
+                filter_tmpdir = tempfile.TemporaryDirectory(
+                    prefix="filter_", dir=base_tmpdir
+                )
+                filter_output_dir = Path(filter_tmpdir.name) / "output"
+                filter_output_dir.mkdir(parents=True)
+                filter_report_path = filter_output_dir / "filter_report.tsv"
+                filter_excluded_bam = filter_output_dir / "excluded.bam"
+
+                filter_cmd = [
+                    "python3",
+                    "-m",
+                    "wizardeye",
+                    "filter",
+                    "-i",
+                    str(SIMULATED_URSUS_BAM),
+                    "-r",
+                    str(hg19_stem),
+                    "-k",
+                    str(STANDARD_KMER_LENGTH),
+                    "-w",
+                    str(STANDARD_OFFSET_STEP),
+                    "-bn",
+                    str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                    "-bo",
+                    str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                    "-bl",
+                    str(STANDARD_BWA_SEED_LENGTH),
+                    "-p",
+                    str(cross_stringency),
+                    "-mf",
+                    str(mf),
+                    "--exclude-tracks",
+                    exclude_tracks_str,
+                    "--report-output",
+                    str(filter_report_path),
+                    "--excluded-output",
+                    str(filter_excluded_bam),
+                    "--export-bam",
+                    "-d",
+                    str(wizardeye_db),
+                ]
+
+                result = subprocess.run(
+                    filter_cmd,
+                    capture_output=False,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+                )
+                if result.returncode != 0:
+                    print(f"wizardeye filter stderr: {result.stderr}")
+                    print(f"wizardeye filter stdout: {result.stdout}")
+                    raise RuntimeError(
+                        f"wizardeye filter execution failed with return code {result.returncode}"
+                    )
+
+                assert filter_report_path.exists(), (
+                    f"wizardeye filter did not create report: {filter_report_path}"
+                )
+                assert filter_excluded_bam.exists(), (
+                    f"wizardeye filter did not create excluded BAM: {filter_excluded_bam}"
+                )
+
+                # Run WizardEye export to get BED mask
+                export_tmpdir = tempfile.TemporaryDirectory(
+                    prefix="export_", dir=base_tmpdir
+                )
+                export_output_dir = Path(export_tmpdir.name) / "output"
+                export_output_dir.mkdir(parents=True)
+                export_mask_path = export_output_dir / "export_mask.bed"
+
+                export_cmd = [
+                    "python3",
+                    "-m",
+                    "wizardeye",
+                    "export",
+                    "-r",
+                    str(hg19_stem),
+                    "-k",
+                    str(STANDARD_KMER_LENGTH),
+                    "-w",
+                    str(STANDARD_OFFSET_STEP),
+                    "-bn",
+                    str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                    "-bo",
+                    str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                    "-bl",
+                    str(STANDARD_BWA_SEED_LENGTH),
+                    "-p",
+                    str(cross_stringency),
+                    "-mf",
+                    str(mf),
+                    "--exclude-tracks",
+                    exclude_tracks_str,
+                    "-o",
+                    str(export_mask_path),
+                    "-d",
+                    str(wizardeye_db),
+                ]
+
+                result = subprocess.run(
+                    export_cmd,
+                    capture_output=False,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+                )
+                if result.returncode != 0:
+                    print(f"wizardeye export stderr: {result.stderr}")
+                    print(f"wizardeye export stdout: {result.stdout}")
+                    raise RuntimeError(
+                        f"wizardeye export execution failed with return code {result.returncode}"
+                    )
+
+                assert export_mask_path.exists(), (
+                    f"wizardeye export did not create mask: {export_mask_path}"
+                )
+
+                # Use bedtools intersect to find reads overlapping the export mask
+                intersect_tmpdir = tempfile.TemporaryDirectory(
+                    prefix="intersect_", dir=base_tmpdir
+                )
+                intersect_output_dir = Path(intersect_tmpdir.name) / "output"
+                intersect_output_dir.mkdir(parents=True)
+                intersect_bam_path = intersect_output_dir / "intersect.bam"
+                intersect_sorted_bam_path = (
+                    intersect_output_dir / "intersect_sorted.bam"
+                )
+
+                # Sort the input BAM first for bedtools intersect
+                sorted_input_bam = intersect_output_dir / "input_sorted.bam"
+                subprocess.run(
+                    [
+                        "samtools",
+                        "sort",
+                        str(SIMULATED_URSUS_BAM),
+                        "-o",
+                        str(sorted_input_bam),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+                # Run bedtools intersect to find reads overlapping the mask
+                # -abam keeps BAM output format, -wa writes all records from A (the BAM)
+                result = subprocess.run(
+                    [
+                        "bedtools",
+                        "intersect",
+                        "-abam",
+                        str(sorted_input_bam),
+                        "-b",
+                        str(export_mask_path),
+                        "-wa",
+                    ],
+                    stdout=open(str(intersect_bam_path), "w"),
+                    check=True,
+                    text=True,
+                )
+
+                # Sort the intersect BAM for comparison
+                subprocess.run(
+                    [
+                        "samtools",
+                        "sort",
+                        str(intersect_bam_path),
+                        "-o",
+                        str(intersect_sorted_bam_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+                # Sort the filter excluded BAM for comparison
+                filter_excluded_sorted = filter_output_dir / "excluded_sorted.bam"
+                subprocess.run(
+                    [
+                        "samtools",
+                        "sort",
+                        str(filter_excluded_bam),
+                        "-o",
+                        str(filter_excluded_sorted),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+                # Compare the read IDs from both approaches
+                # Extract read IDs from filter excluded BAM
+                filter_read_ids = set()
+                result = subprocess.run(
+                    ["samtools", "view", str(filter_excluded_sorted)],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                for line in result.stdout.strip().split("\n"):
+                    if line:
+                        parts = line.split("\t")
+                        filter_read_ids.add(parts[0])
+
+                # Extract read IDs from intersect BAM
+                intersect_read_ids = set()
+                result = subprocess.run(
+                    ["samtools", "view", str(intersect_sorted_bam_path)],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                for line in result.stdout.strip().split("\n"):
+                    if line:
+                        parts = line.split("\t")
+                        intersect_read_ids.add(parts[0])
+
+                # Compare the read sets
+                if filter_read_ids != intersect_read_ids:
+                    only_in_filter = filter_read_ids - intersect_read_ids
+                    only_in_intersect = intersect_read_ids - filter_read_ids
+                    raise AssertionError(
+                        f"Read sets differ for stringency {cross_stringency} and minimum frequency {mf}:\n"
+                        f"  Filtered out using filter: {len(only_in_filter)} reads (e.g., {list(only_in_filter)[:5]})\n"
+                        f"  Filtered out using the exported mask: {len(only_in_intersect)} reads (e.g., {list(only_in_intersect)[:5]})"
+                    )
+
+                # Clean up temp directories
+                filter_tmpdir.cleanup()
+                export_tmpdir.cleanup()
+                intersect_tmpdir.cleanup()
+
+
+def test_consistency_align_parallel_same_db():
+    """Test if multiple genomes can be aligned simultaneously in parallel on the same database.
+
+    This test verifies that running multiple WizardEye align processes concurrently
+    on the same database with different query FASTA files:
+    1. Completes without errors (no race conditions or lock issues)
+    2. Produces results identical to sequential alignments
+
+    Uses all 3 available query FASTAs (sus_scrofa, canis_lupus, rattus_norvegicus).
+    """
+    import concurrent.futures
+
+    # List of query FASTAs to test simultaneously
+    query_fastas = [SUS_SCROFA_FA, CANIS_LUPUS_FA, RATTUS_NORVEGICUS_FA]
+
+    with tempfile.TemporaryDirectory(
+        prefix="wizardeye_consistency_parallel_db_"
+    ) as base_tmpdir:
+        base_path = Path(base_tmpdir)
+
+        # Create a shared database
+        wizardeye_db = base_path / "database"
+        wizardeye_db.mkdir(parents=True)
+
+        # Initialize WizardEye database
+        subprocess.run(
+            [
+                "python3",
+                "-m",
+                "wizardeye",
+                "database",
+                "init",
+                "-d",
+                str(base_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+        )
+
+        def run_align(query_fasta):
+            """Run a single align command and return the output paths."""
+            result = subprocess.run(
+                [
+                    "python3",
+                    "-m",
+                    "wizardeye",
+                    "align",
+                    "-i",
+                    str(query_fasta),
+                    "-r",
+                    str(HG19_FA),
+                    "-k",
+                    str(STANDARD_KMER_LENGTH),
+                    "-w",
+                    str(STANDARD_OFFSET_STEP),
+                    "-bn",
+                    str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                    "-bo",
+                    str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                    "-bl",
+                    str(STANDARD_BWA_SEED_LENGTH),
+                    "-j",
+                    str(STANDARD_N_THREADS),
+                    "-cs",
+                    str(STANDARD_CHUNK_SIZE),
+                    "-d",
+                    str(wizardeye_db),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+            )
+            if result.returncode != 0:
+                print(f"wizardeye align stderr for {query_fasta.name}: {result.stderr}")
+                print(f"wizardeye align stdout for {query_fasta.name}: {result.stdout}")
+                raise RuntimeError(
+                    f"wizardeye align execution failed with return code {result.returncode}"
+                )
+
+            # Return the track directory path for this query
+            hg19_stem = HG19_FA.stem
+            query_stem = query_fasta.stem
+            track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_bwa{STANDARD_BWA_HASH}"
+            track_dir = wizardeye_db / hg19_stem / track_pattern
+
+            if not track_dir.exists():
+                raise RuntimeError(f"Track directory not found: {track_dir}")
+
+            map_all_bw = track_dir / "map_all.bw"
+            map_uniq_bw = track_dir / "map_uniq.bw"
+
+            if not map_all_bw.exists():
+                raise RuntimeError(f"map_all.bw not found: {map_all_bw}")
+            if not map_uniq_bw.exists():
+                raise RuntimeError(f"map_uniq.bw not found: {map_uniq_bw}")
+
+            return (query_fasta, map_all_bw, map_uniq_bw)
+
+        # Run all alignments in parallel
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(query_fastas)
+        ) as executor:
+            future_to_query = {
+                executor.submit(run_align, query_fa): query_fa
+                for query_fa in query_fastas
+            }
+
+            parallel_results = {}
+            for future in concurrent.futures.as_completed(future_to_query):
+                query_fa = future_to_query[future]
+                try:
+                    result = future.result()
+                    parallel_results[query_fa] = result
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Parallel alignment failed for {query_fa.name}: {e}"
+                    )
+
+        # Verify all alignments completed successfully
+        assert len(parallel_results) == len(query_fastas), (
+            f"Expected {len(query_fastas)} results, got {len(parallel_results)}"
+        )
+
+        # Store parallel results for comparison
+        parallel_bw_files = {}
+        for query_fa, (_, map_all_bw, map_uniq_bw) in parallel_results.items():
+            parallel_bw_files[query_fa] = (map_all_bw, map_uniq_bw)
+
+        # Now run sequential alignments for comparison
+        # Use a separate database to ensure isolation
+        with tempfile.TemporaryDirectory(
+            prefix="wizardeye_consistency_parallel_db_sequential_"
+        ) as seq_tmpdir:
+            seq_base_path = Path(seq_tmpdir)
+            seq_db = seq_base_path / "database"
+            seq_db.mkdir(parents=True)
+
+            # Initialize sequential database
+            subprocess.run(
+                [
+                    "python3",
+                    "-m",
+                    "wizardeye",
+                    "database",
+                    "init",
+                    "-d",
+                    str(seq_tmpdir),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+            )
+
+            sequential_bw_files = {}
+            for query_fa in query_fastas:
+                result = subprocess.run(
+                    [
+                        "python3",
+                        "-m",
+                        "wizardeye",
+                        "align",
+                        "-i",
+                        str(query_fa),
+                        "-r",
+                        str(HG19_FA),
+                        "-k",
+                        str(STANDARD_KMER_LENGTH),
+                        "-w",
+                        str(STANDARD_OFFSET_STEP),
+                        "-bn",
+                        str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                        "-bo",
+                        str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                        "-bl",
+                        str(STANDARD_BWA_SEED_LENGTH),
+                        "-j",
+                        str(STANDARD_N_THREADS),
+                        "-cs",
+                        str(STANDARD_CHUNK_SIZE),
+                        "-d",
+                        str(seq_db),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+                )
+                if result.returncode != 0:
+                    print(
+                        f"Sequential align stderr for {query_fa.name}: {result.stderr}"
+                    )
+                    print(
+                        f"Sequential align stdout for {query_fa.name}: {result.stdout}"
+                    )
+                    raise RuntimeError(
+                        f"Sequential align execution failed with return code {result.returncode}"
+                    )
+
+                # Locate output
+                hg19_stem = HG19_FA.stem
+                query_stem = query_fa.stem
+                track_pattern = f"{query_stem}_k{STANDARD_KMER_LENGTH}_w{STANDARD_OFFSET_STEP}_bwa{STANDARD_BWA_HASH}"
+                track_dir = seq_db / hg19_stem / track_pattern
+
+                if not track_dir.exists():
+                    raise RuntimeError(
+                        f"Sequential track directory not found: {track_dir}"
+                    )
+
+                map_all_bw = track_dir / "map_all.bw"
+                map_uniq_bw = track_dir / "map_uniq.bw"
+
+                if not map_all_bw.exists():
+                    raise RuntimeError(f"Sequential map_all.bw not found: {map_all_bw}")
+                if not map_uniq_bw.exists():
+                    raise RuntimeError(
+                        f"Sequential map_uniq.bw not found: {map_uniq_bw}"
+                    )
+
+                sequential_bw_files[query_fa] = (map_all_bw, map_uniq_bw)
+
+            # Compare parallel and sequential results for each query FASTA
+            for query_fa in query_fastas:
+                par_map_all, par_map_uniq = parallel_bw_files[query_fa]
+                seq_map_all, seq_map_uniq = sequential_bw_files[query_fa]
+
+                with tempfile.TemporaryDirectory(
+                    prefix=f"wizardeye_compare_parallel_db_{query_fa.stem}_"
+                ) as compare_dir:
+                    compare_path = Path(compare_dir)
+
+                    # Convert to bedGraph for comparison
+                    par_all_bg = compare_path / "parallel_map_all.bg"
+                    par_uniq_bg = compare_path / "parallel_map_uniq.bg"
+                    seq_all_bg = compare_path / "sequential_map_all.bg"
+                    seq_uniq_bg = compare_path / "sequential_map_uniq.bg"
+
+                    subprocess.run(
+                        ["bigWigToBedGraph", str(par_map_all), str(par_all_bg)],
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["bigWigToBedGraph", str(par_map_uniq), str(par_uniq_bg)],
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["bigWigToBedGraph", str(seq_map_all), str(seq_all_bg)],
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["bigWigToBedGraph", str(seq_map_uniq), str(seq_uniq_bg)],
+                        check=True,
+                    )
+
+                    # Compare map_all
+                    assert compare_bedgraph_files(
+                        par_all_bg,
+                        seq_all_bg,
+                        f"Parallel vs Sequential map_all ({query_fa.name})",
+                    ), (
+                        f"map_all.bw differs between parallel and sequential for {query_fa.name}"
+                    )
+
+                    # Compare map_uniq
+                    assert compare_bedgraph_files(
+                        par_uniq_bg,
+                        seq_uniq_bg,
+                        f"Parallel vs Sequential map_uniq ({query_fa.name})",
+                    ), (
+                        f"map_uniq.bw differs between parallel and sequential for {query_fa.name}"
+                    )
