@@ -7,7 +7,6 @@ file hashing, sequence size handling, BAM metadata parsing, and BED file merging
 """
 
 import subprocess
-import tempfile
 import pysam
 import hashlib
 import shutil
@@ -654,92 +653,62 @@ def write_seq_sizes_from_bam(bam_file: Path, out_path: Path) -> Path:
 
 
 def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path:
-    """Merge multiple BED files with track names into a single BED file with merged intervals and comma-separated track annotations.
+    """Merge multiple BED files with track names into a single BED file with merged intervals
+    and comma-separated track annotations, using bedtools multiinter.
 
     Args:
-        bed_files (List[Tuple[str, Path]]): A list of tuples containing track names and BED file paths.
-        output_bed (Path): The path to the output merged BED file.
+        bed_files: List of (track_name, bed_path) tuples.
+        output_bed: Destination BED file path.
 
     Returns:
-        Path: The path to the merged BED file.
+        Path to the written output BED file.
     """
     output_bed.parent.mkdir(parents=True, exist_ok=True)
+
     if not bed_files:
         output_bed.write_text("", encoding="utf-8")
         return output_bed
 
     bedtools = shutil.which("bedtools")
-    if bedtools:
-        with tempfile.NamedTemporaryFile(
-            prefix="wizardeye_", suffix=".bed", delete=False
-        ) as tmp_handle:
-            tmp_tagged_path = Path(tmp_handle.name)
-
-        try:
-            with tmp_tagged_path.open("w", encoding="utf-8") as tagged_out:
-                for track_name, bed_path in bed_files:
-                    # Merger intra-track uniquement
-                    with bed_path.open("r", encoding="utf-8") as bed_in:
-                        p_sort = subprocess.Popen(
-                            ["sort", "-k1,1", "-k2,2n"],
-                            stdin=bed_in,
-                            stdout=subprocess.PIPE,
-                            text=True,
-                        )
-                        p_merge = subprocess.Popen(
-                            [bedtools, "merge", "-i", "stdin"],
-                            stdin=p_sort.stdout,
-                            stdout=subprocess.PIPE,
-                            text=True,
-                        )
-                        if p_sort.stdout is not None:
-                            p_sort.stdout.close()
-
-                        for line in p_merge.stdout:
-                            parts = line.strip().split("\t")
-                            if len(parts) < 3:
-                                continue
-                            start = int(parts[1])
-                            end = int(parts[2])
-                            if end <= start:
-                                continue
-                            tagged_out.write(
-                                f"{parts[0]}\t{start}\t{end}\t{track_name.split('_k')[0]}\n"
-                            )
-
-                        p_merge.stdout.close()
-                        rc_merge = p_merge.wait()
-                        rc_sort = p_sort.wait()
-                        if rc_sort != 0:
-                            raise subprocess.CalledProcessError(rc_sort, ["sort"])
-                        if rc_merge != 0:
-                            raise subprocess.CalledProcessError(
-                                rc_merge, [bedtools, "merge"]
-                            )
-
-            with tmp_tagged_path.open("r", encoding="utf-8") as tagged_in:
-                log(f"sort -k1,1 -k2,2n {tmp_tagged_path}", "C")
-                p_sort_final = subprocess.Popen(
-                    ["sort", "-k1,1", "-k2,2n"],
-                    stdin=tagged_in,
-                    stdout=output_bed.open("w", encoding="utf-8"),
-                    text=True,
-                )
-                rc_sort_final = p_sort_final.wait()
-                if rc_sort_final != 0:
-                    raise subprocess.CalledProcessError(rc_sort_final, ["sort"])
-
-            return output_bed
-
-        finally:
-            if tmp_tagged_path.exists():
-                tmp_tagged_path.unlink()
-
-    else:
+    if bedtools is None:
         raise RuntimeError(
-            "bedtools not found in PATH. It is required for merging BED files. "
-            "Please install bedtools or ensure it is in your PATH."
+            "bedtools is required but was not found on PATH. "
+            "Install it with: conda install -c bioconda bedtools"
         )
+
+    track_names = [name.split("_k")[0] for name, _ in bed_files]
+    bed_paths = [str(p) for _, p in bed_files]
+
+    cmd = [bedtools, "multiinter", "-i"] + bed_paths + ["-names"] + track_names
+    log(" ".join(cmd), "C")
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+
+    # multiinter output columns:
+    #   0: chrom  1: start  2: end  3: num_intersecting  4: track_names (comma-sep)
+    with output_bed.open("w", encoding="utf-8") as out_fh:
+        for line in result.stdout.splitlines():
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) < 5:
+                continue
+            chrom, start, end, tracks = parts[0], parts[1], parts[2], parts[4]
+            seen: set[str] = set()
+            deduped = []
+            for t in tracks.split(","):
+                if t not in seen:
+                    seen.add(t)
+                    deduped.append(t)
+            out_fh.write(f"{chrom}\t{start}\t{end}\t{','.join(deduped)}\n")
+
+    return output_bed
 
 
 def convert_bedgraph_to_bigwig(

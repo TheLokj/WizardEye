@@ -38,7 +38,9 @@ app = typer.Typer(
 )
 
 # Database command group
-db_app = typer.Typer(help="Initialize, validate, or inspect tracks in a WizardEye database.")
+db_app = typer.Typer(
+    help="Initialize, validate, or inspect tracks in a WizardEye database."
+)
 update_app = typer.Typer(help="Update operations for database tracks.")
 db_app.add_typer(update_app, name="update")
 app.add_typer(db_app, name="database", no_args_is_help=True)
@@ -138,6 +140,7 @@ def _request_tracks_from_args(
     only_unique: bool,
     no_cache: bool,
     cross_stringency: float,
+    min_freq: int,
     bwa_params: Optional[BWAParameters] = None,
 ) -> List[str]:
     """Validate CLI arguments and get corresponding tracks from database."""
@@ -225,6 +228,17 @@ def _request_tracks_from_args(
             bwa_params=bwa_params,
         )
 
+    if min_freq is not None:
+        if min_freq < 1 or min_freq > len(valid_tracks):
+            log(
+                f"Minimum frequency ({min_freq}) must be between 1 and the number of found tracks ({len(valid_tracks)}).",
+                "E",
+            )
+            raise typer.Exit(code=1)
+        else:
+            log(f"Requested minimum frequency threshold: {min_freq}", "I")
+
+    if exclude_tags:
         log(f"Requested tags to filter out: {', '.join(requested_tags)}", "I")
 
     if not valid_tracks:
@@ -260,6 +274,7 @@ def common_options(
 
 
 # Database subcommands
+
 
 @db_app.command(
     help="Initialize a new WizardEye database.",
@@ -325,13 +340,13 @@ def migrate(
 ):
     """Migrate database tracks from old naming format to new format with BWA parameters hash."""
     print_version_message()
-    
+
     if not valid_database(db_root):
         log(f"To initialize the database, run 'database init {db_root}'", "E")
         raise typer.Exit(code=1)
-    
+
     log(f"Starting migration from version {from_version} to {to_version}", "I")
-    
+
     if from_version == "0.1.2" and to_version == "0.1.3":
         try:
             result = migrate_database(
@@ -345,21 +360,24 @@ def migrate(
     else:
         log("Unsupported version migration.", "E")
         raise typer.Exit(code=1)
-    
+
     # Display warnings
     for warning in result.get("warnings", []):
         log(warning, "W")
-    
+
     # Display errors
     for error in result.get("errors", []):
         log(error, "E")
-    
+
     migrated_count = result.get("migrated_count", 0)
     new_db_path = result.get("new_db_path")
     log(f"Migration completed. {migrated_count} track(s) migrated.", "S")
     log(f"Migrated database created at: {new_db_path}", "S")
-    log("The original database has NOT been modified. You can now use the migrated version.", "I")
-    
+    log(
+        "The original database has NOT been modified. You can now use the migrated version.",
+        "I",
+    )
+
     raise typer.Exit(code=0)
 
 
@@ -371,9 +389,7 @@ def clean(
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
     ),
-    yes: bool = typer.Option(
-        False, "-y", "--yes", help="Skip confirmation prompt."
-    ),
+    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt."),
 ):
     """Delete all .bed files from the database."""
     print_version_message()
@@ -811,6 +827,12 @@ def filter(
         "--cross-stringency",
         help="Stringency threshold in [0.0, 1.0].",
     ),
+    min_freq: Optional[int] = typer.Option(
+        None,
+        "-mf",
+        "--min-frequency",
+        help="Minimum number of tracks that must overlap a position for it to be masked (frequency filtering).",
+    ),
     only_unique: bool = typer.Option(
         False,
         "--only-unique",
@@ -878,8 +900,10 @@ def filter(
         only_unique,
         None,
         cross_stringency,
+        min_freq,
         bwa_params,
     )
+
     print("-" * 80)
     log("Starting filtration...", "I")
 
@@ -897,6 +921,7 @@ def filter(
             offset_step=offset_step,
             bwa_params=bwa_params,
             stringency=cross_stringency,
+            min_freq=min_freq,
             consider_all=not (only_unique),
             output_filtered_bam=output_filtered_bam,
             output_excluded_bam=output_excluded_bam,
@@ -995,6 +1020,12 @@ def export(
         "--cross-stringency",
         help="Stringency threshold in [0.0, 1.0].",
     ),
+    min_freq: Optional[int] = typer.Option(
+        None,
+        "-mf",
+        "--min-frequency",
+        help="Minimum number of tracks that must overlap a position for it to be masked (frequency filtering).",
+    ),
     only_unique: bool = typer.Option(
         False,
         "--only-unique",
@@ -1040,6 +1071,7 @@ def export(
         only_unique,
         None,
         cross_stringency,
+        min_freq,
         bwa_params,
     )
 
@@ -1050,6 +1082,7 @@ def export(
             kmer_length=kmer_length,
             offset_step=offset_step,
             cross_stringency=cross_stringency,
+            min_freq=min_freq,
             consider_all=not (only_unique),
             n_threads=n_threads,
             db_root=db_root,
@@ -1335,6 +1368,7 @@ def count(
         offset_step,
         only_unique,
         no_cache,
+        None,
         None,
         bwa_params,
     )

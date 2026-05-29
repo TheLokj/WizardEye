@@ -105,7 +105,7 @@ def test_coverage_repetitive_sequence_with_bN():
 
         # Initialize database
         subprocess.run(
-            ["python3", "-m", "wizardeye", "database", "--init", "-d", str(db_dir)],
+            ["python3", "-m", "wizardeye", "database", "init", "-d", str(db_dir)],
             check=True,
             capture_output=True,
             text=True,
@@ -287,7 +287,7 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
 
             # Initialize database
             subprocess.run(
-                ["python3", "-m", "wizardeye", "database", "--init", "-d", str(db_dir)],
+                ["python3", "-m", "wizardeye", "database", "init", "-d", str(db_dir)],
                 check=True,
                 capture_output=True,
                 text=True,

@@ -1,21 +1,21 @@
 # WizardEye
 
 ![Python](https://img.shields.io/badge/Python->=3.8-green.svg)
-![Beta](https://img.shields.io/badge/beta-red.svg)
 [![Version](https://img.shields.io/badge/version-0.1.3-yellow.svg)](https://github.com/TheLokj/WizardEye/releases)
-[![Install WizardEye using bioconda](https://img.shields.io/badge/Install%20WizardEye%20using-bioconda-brightblue.svg?style=flat)](http://bioconda.github.io/recipes/wizardeye/README.html)
+![Beta](https://img.shields.io/badge/beta-orange.svg)
+[![Install WizardEye using bioconda](https://img.shields.io/badge/Install%20WizardEye%20using-bioconda-brightblue.svg?style=flat)](https://anaconda.org/channels/bioconda/packages/wizardeye/overview)
 [![Python CI](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml/badge.svg)](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml)
 ![GitHub bugs](https://img.shields.io/github/issues/TheLokj/WizardEye/bug)
 
-WizardEye is a Python tool that filters aligned reads according to the risk of ambiguous alignment sources on a reference genome. 
+WizardEye is a Python tool that filters aligned reads based on the risk of ambiguous alignment to a reference genome.
 
 <img src="wizardeye.png" alt="WizardEye" width="700" />
 
 **WizardEye is currently in beta and under active development. Future updates will bring new features, improve stability, and ensure robustness through comprehensive unit testing.**
 
-To do this, WizardEye first identifies all positions in your reference genome that can be targeted by reads from known ambiguous sources using your alignment parameters. For example, it can be used to filter out reads in your alignment that map to regions conserved between your reference genome and several potentially contaminating organisms.
+To achieve this, WizardEye first identifies all positions in your reference genome that could be targeted by reads from known ambiguous sources using your alignment parameters. For example, it can filter out reads that map to regions conserved between your reference genome and potentially contaminating organisms.
 
-The tool is designed both to create a database containing several reference genomes and their associated risky sources, and to filter BAM files according to that stored information. By directly using `bwa`, WizardEye can empirically identify risky reads based on your frequently used alignment parameters.
+The tool both creates a database of reference genomes and their associated risky sources and filters BAM files using that information. By directly using `bwa`, WizardEye empirically identifies risky reads based on your alignment parameters.
 
 This tool is directly adapted from the script [generate_cross_mappability_filter_bwa.sh](https://github.com/TheLokj/generate_cross_mappability_filter/blob/master/BWA/generate_cross_mappability_filter_bwa.sh).
 
@@ -42,19 +42,19 @@ You can then use these cross-mappability tracks to filter your alignment. For ex
 
 ## WizardEye limits
 
-As WizardEye is based only on alignment and prior knowledge, it is recommended to use it when you have an idea of the types of contamination that may be present in the sample. The more exhaustive the database, the more efficient (and restrictive) the filtering.
+Since WizardEye relies only on alignment and prior knowledge, it is recommended for use when you have an idea of the potential contamination types in your sample. The more exhaustive the database, the more effective (and restrictive) the filtering.
 
-Please also note that WizardEye is only designed to identify ambiguous regions **that can align**. This tool **cannot** be used to filter out sequences that are very distant from the target. It is therefore highly recommended to use it as a complementary step to traditional large-scale filtering. Finally, note that WizardEye filtering can be very strict and lead to the loss of substantial information, prioritizing risk avoidance over the statistical power of post-hoc analyses.
+Note that WizardEye only identifies ambiguous regions **that can align**. It **cannot** filter sequences that are very distant from the target. Therefore, it is highly recommended as a complementary step to traditional large-scale filtering. Finally, note that WizardEye filtering can be very strict, leading to the loss of substantial information, as it prioritizes risk avoidance over the statistical power of post-hoc analyses.
 
 ## Installation
 
-The last WizardEye version can be installed using conda:
+The latest WizardEye version can be installed using conda:
 
 ```
 conda install -c bioconda wizardeye
 ```
 
-You can also install WizardEye by cloning this repository and by running the following commands from the main folder:
+You can also install WizardEye by cloning this repository and running the following commands from the main folder:
 
 ```
 python3 -m venv .wizardeye
@@ -65,62 +65,63 @@ python -m pip install -e .
 
 ### Dependencies
 
-WizardEye relies on both Python packages and external command-line tools.
+#### External tools
 
-### External tools (called with subprocess)
+The following command-line tools must be installed and available in your `PATH`:
 
-Required:
+- `bwa` — for read alignment and reference indexing
+- `samtools` — for SAM/BAM file manipulation (conversion, sorting, indexing, concatenation)
+- `seqkit` — for k-mer generation, deduplication, and FASTA chunking
+- `bedtools` — for interval operations (genomecov, merge)
+- `bedGraphToBigWig` — UCSC tool for bedGraph to BigWig conversion (package: `ucsc-bedgraphtobigwig`)
+- `bigWigToBedGraph` — UCSC tool for BigWig to bedGraph conversion (package: `ucsc-bigwigtobedgraph`)
+- `parallel` — GNU parallel for parallel job execution
+- `awk`, `cat`, `sort` — standard Unix utilities
 
-- `bwa` (alignment and indexing)
-- `samtools` (SAM/BAM conversion, sorting, concatenation)
-- `seqkit` (k-mer generation, deduplication, chunking)
-- `bedGraphToBigWig` (UCSC tool, package often named `ucsc-bedgraphtobigwig`)
-- `bigWigToBedGraph` (UCSC tool, package often named `ucsc-bigwigtobedgraph`)
-- `bedtools` (faster interval merging in mask generation)
-- standard Unix tools: `awk`, `sort`, `cat` (used in high-performance paths)
+#### Python packages
 
-### Python packages
+The following Python packages are automatically installed via pip or conda:
 
-Required:
-- `typer` (CLI)
-- `PyYAML` (database and track metadata YAML files)
-- `pysam` (BAM parsing and interval extraction)
-- `pyBigWig` (BigWig parsing and overlapping k-mer computation)
+- `typer>=0.9` — for building the command-line interface
+- `PyYAML>=6.0` — for YAML configuration file handling
+- `pysam>=0.22` — for BAM file parsing and interval extraction
+- `pyBigWig>=0.3.25` — for BigWig file parsing and k-mer overlap computation
+- `numpy` — for numerical operations
 
 ## Usage
 
 ### Create the database
 
-You should initially create a WizardEye database using the following command:
+To start, create a WizardEye database using the following command:
 
 ```
 wizardeye database init -d /path/to/database
 ```
 
-This will generate a `/database/` directory compatible with WizardEye. Feel free to move it elsewhere or rename the folder after this initialisation. 
+This generates a `/database/` directory compatible with WizardEye. You can move it elsewhere or rename the folder after initialization.
 
 #### About the database
 
-The database is a directory containing sub-directories representing targets and already processed tracks. 
+The database is a directory containing subdirectories for targets and processed tracks.
 
 ```
 database/
 ├── hg19/                           # reference
-│   ├── sus_scrofa_k35_bwa8651fd65/ # a track divided and aligned on the reference
-│   │   ├── map_all.bw      	    # all overlapping k-mers
+│   ├── sus_scrofa_k35_bwa8651fd65/ # a track aligned to the reference
+│   │   ├── map_all.bw       	    # all overlapping k-mers
 │   │   ├── map_uniq.bw             # unique overlapping k-mers
 │   │   └── info.yaml               # information about the track
 ...
 │   ├── ref.md5                     # reference md5
 │   └── ref.yaml                    # information about the reference
-└──  info.yaml                      # information about the database
+└── info.yaml                      # information about the database
 ```
 
-Every subdirectory contains two `bigWig` files that can be opened in a traditional genome browser. The `map_all.bw` file represents, for every position of the `reference.fa` genome, the number of overlapping k-mers from the `risky` sequences, while `map_uniq.bw` contains only unique k-mers, i.e., k-mers that overlap only this area of the genome. These two files allow you to compute stringency.
+Every subdirectory contains two `BigWig` files that can be opened in a traditional genome browser. The `map_all.bw` file, for every position in the reference genome, represents the number of overlapping k-mers from the risky sequences, while `map_uniq.bw` contains only unique k-mers (i.e., k-mers overlapping only that genomic region). These two files enable stringency computation.
 
 ##### Update a track
 
-You can update tags of an existing track from the database command by providing the full track-defining parameters and the replacement tags:
+You can update tags for an existing track using the database command by providing the full track-defining parameters and replacement tags:
 
 ```
 wizardeye database update track-tags -d /path/to/database \
@@ -130,7 +131,7 @@ wizardeye database update track-tags -d /path/to/database \
 
 ##### Database cache
 
-Note that masks generated during exportation are cached in the database, to make next exportation quicker. You can avoid that specifying `--no-cache` before exportation. You can delete the cache using the following command:
+Note that masks generated during export are cached in the database to speed up subsequent exports. You can avoid this by specifying `--no-cache` before export. You can delete the cache using the following command:
 
 ```
 wizardeye database clean -d /path/to/database
@@ -138,7 +139,7 @@ wizardeye database clean -d /path/to/database
 
 ##### Migrate from version 0.1.2 to 0.1.3
 
-Version 0.1.3 introduced a new track naming. To migrate an existing database from older version to 0.1.3, use the following command:
+Version 0.1.3 introduced new track naming. To migrate an existing database from an older version to 0.1.3, use the following command:
 
 ```
 wizardeye database migrate -d /path/to/database --from 0.1.2 --to 0.1.3 -bR 30 -bsn 2000000000
@@ -146,7 +147,7 @@ wizardeye database migrate -d /path/to/database --from 0.1.2 --to 0.1.3 -bR 30 -
 
 ### Create a new track
 
-You can compute ambiguous regions of `reference.fa` that can be targeted, using specific BWA parameters, by reads from `risky.fa` with:
+You can compute ambiguous regions of `reference.fa` that can be targeted by reads from `risky.fa` using specific BWA parameters:
 
 ```
 wizardeye align -i /path/to/risky.fa -r /path/to/reference.fa -d /path/to/database \
@@ -154,54 +155,54 @@ wizardeye align -i /path/to/risky.fa -r /path/to/reference.fa -d /path/to/databa
 					-bn 0.01 -bo 2 -bl 16500
 ```
 
-Note that you can provide tags here to describe `risky.fa`. This can be used to describe the sequence, for example by specifying phylogeny and/or a particular environment: `-t Mammalia,Carnivora,Felis,Cave`. This is useful to filter a `.bam` file directly according to specific tags. You can manually set a track identifier with `--track_ID`, in order to save it in database metadata. Note also that, to prevent misuse, it is not possible to add a new track to the database if the reference alignment file is not exactly the same, including sequence names. This is due to an MD5-based control to avoid silently corrupted analyses.
+You can provide tags to describe `risky.fa` (e.g., phylogeny and/or environment: `-t Mammalia,Carnivora,Felis,Cave`). This enables direct BAM file filtering based on specific tags. You can manually set a track identifier with `--track_ID` to store it in the database metadata. Note that to prevent misuse, a new track cannot be added if the reference alignment file differs, including in sequence names. This is enforced by an MD5-based check to prevent silently corrupted analyses.
 
-As WizardEye uses `seqkit split2` to share the computation of the alignment between threads, several parameters can be used to make the computation quicker:
+As WizardEye uses `seqkit split2` to distribute alignment computation across threads, several parameters can speed this up:
 
-| Parameters | default | Definition |
+| Parameters | Default | Definition |
 |------------|---|---------|
-| `--tmp_dir` | `TMPDIR` | Temporary directory used to process chunks and alignments |
+| `--tmp_dir` | `TMPDIR` | Temporary directory for processing chunks and alignments |
 | `--chunk_size` | `2000000` | Number of sequences per chunk |
-| `--jobs` | `1` | Number of threads used to generate chunks and number of parallel bwa instances processing chunks |
-| `--bwa_threads` | `1` | Number of threads allowed per bwa instances |
+| `--jobs` | `1` | Number of threads for generating chunks and running parallel bwa instances |
+| `--bwa_threads` | `1` | Number of threads per bwa instance |
 
-> [!NOTE]  
-Using default parameters (`-n 0.01 -o 2 -l 16500 -k 35 -w 1`), a cross-mappability track based on hg19 coordinates is generated from a complete mammalian genome in ~48 hours using 128 threads (`--chunk_jobs 128 --bwa_threads 1`). Such computation requires ~200GB of free storage in the temporary directory, due to the huge amount of k-mers before alignment.
+> [!NOTE]
+With default parameters (`-n 0.01 -o 2 -l 16500 -k 35 -w 1`), a cross-mappability track based on hg19 coordinates is generated from a complete mammalian genome in ~48 hours using 128 threads (`--chunk_jobs 128 --bwa_threads 1`). Such computation requires ~200GB of free storage in the temporary directory due to the large number of k-mers generated before alignment.
 
 #### How to deal with exhaustivity
 
-A few parameters of bwa can be used to be more or less exhaustive during the alignment, and then to manage the exhaustivity of the track. 
+Several bwa parameters control alignment exhaustiveness and, consequently, track exhaustiveness.
 
-| Parameters | default | Definition |
+| Parameters | Default | Definition |
 |------------|---|---------|
-| `-bR` | `30` | Number of hits to reach to avoid suboptimal hits search |
-| `-bsn` | `2000000000 `| Limit of alternative alignments in the SAM file |
-| `-bN` | `False` | should ALL alternative alignments be identified? |
+| `-bR` | `30` | Number of hits to reach before stopping suboptimal hit search |
+| `-bsn` | `2000000000` | Limit of alternative alignments in the SAM file |
+| `-bN` | `False` | Should all alternative alignments be identified? |
 
-The `-R` parameter is the most important one. It defines the number of hits to reach before stoping the search of suboptimal hits. Hits are processed per score batch, i.e., it will only stop the search if this threshold is reached AND if all the hits sharing the same score are processed. For example, with `-R=30`, the default value of bwa and WizardEye, in a scenario with 50 best hits and 100 suboptimal hits, all the 50 best hits are referenced in the final cross-mappability track, while the others are not. 
+The `-R` parameter is the most important. It defines the number of hits to reach before stopping the search for suboptimal hits. Hits are processed in score batches; the search only stops if this threshold is reached AND all hits with the same score have been processed. For example, with `-R=30` (the default for bwa and WizardEye), in a scenario with 50 best hits and 100 suboptimal hits, all 50 best hits are included in the final cross-mappability track, while the others are not.
 
-Importantly, note than in a classic use of `bwa aln`, the suboptimal search is limited also by a difference of mismatches between the best hit and the suboptimal hits. Then, even if you set a huge `-R`, the search will identify best hits and suboptimal hits having up to 1 mismatch compared to best ones, despite the value of `-n`. 
+Importantly, in classic `bwa aln` usage, the suboptimal search is also limited by the mismatch difference between the best hit and suboptimal hits. Thus, even with a large `-R`, the search identifies best hits and suboptimal hits with up to 1 mismatch compared to the best ones, regardless of `-n`.
 
-If you want to avoid this behaviour and to be *truely* exhaustive in your cross-mappability track, you can specify the `-bN` parameter, which will be passed as `-N` in `bwa aln`. This parameter will force BWA to save every alternative alignments, regardless their qualities and mismatches (within the limit of `-n bwa_missing_prob_err_rate`). This parameter allows your cross-mappability track to be exhaustive in exchange of highter coverage. It can be used for extreme filtration, but it will reduce your ability to keep informative reads. ***Be careful with this option***: for complete genomes, with repetitions, and allowed mismatches, it can directly leads to biased representation due to `bwa aln` memory limit (alternative mappings will be truncated). See [issue #3](https://github.com/TheLokj/WizardEye/issues/2) for more details. 
+If you want to avoid this behavior and be *truly* exhaustive in your cross-mappability track, you can specify the `-bN` parameter, which is passed as `-N` to `bwa aln`. This parameter forces BWA to save all alternative alignments, regardless of their quality and mismatches (within the `-n` (bwa_missing_prob_err_rate) limit). This parameter allows your cross-mappability track to be exhaustive at the expense of higher coverage. It can be used for extreme filtering but reduces the ability to retain informative reads. **Be careful with this option**: for complete genomes with repetitions and allowed mismatches, it can lead to biased representation due to `bwa aln`'s memory limit (alternative mappings are truncated). See [issue #3](https://github.com/TheLokj/WizardEye/issues/3) for more details.
 
-Finally, the `bwa samse -n` parameter, accessible with `-bsn` in WizardEye, is a limit on the number of alternative alignments that will be kept in the SAM file. If there is more than this number of alternative alignments, bwa will remove all of them and just set the MAPQ to 0. This value is then set to a huge value in WizardEye to avoid to loose information and should not be modified. 
+Finally, the `bwa samse -n` parameter (accessible via `-bsn` in WizardEye) limits the number of alternative alignments retained in the SAM file. If there are more alternative alignments than this limit, bwa removes them all and sets MAPQ to 0. This value is set to a large number in WizardEye to avoid losing information and should not be modified.
 
-> [!WARNING]  
-Due to BWA behaviour, it is important to note that coverage and intervals are not perfectly determinist between systems and alignment chunk sizes. In fact, BWA is selecting randomly the primary alignment among best hits based on a random number generator and delete secondary alignment starting at the exact same position. This can leads to tiny differences of coverage and, in some intervals, to a difference of 1bp at end position. However, tracks generation is consistent and deterministic if WizardEye is run on the same system with the same alignment chunk, despite the number of threads used. See [issue #1](https://github.com/TheLokj/WizardEye/issues/1) for more details. 
+> [!WARNING]
+Due to BWA's behavior, coverage and intervals are not perfectly deterministic across systems and alignment chunk sizes. In fact, BWA randomly selects the primary alignment among best hits using a random number generator and deletes secondary alignments starting at the exact same position. This can lead to tiny coverage differences and, in some intervals, a 1 bp difference at the end position. However, track generation is consistent and deterministic if WizardEye is run on the same system with the same alignment chunk, regardless of the number of threads used. See [issue #1](https://github.com/TheLokj/WizardEye/issues/1) for more details.
 
 ### Filter a BAM file
 
-Once you have a representative database, you can use it to filter out reads from your alignment. To do that, you can enter:
+Once you have a representative database, you can filter reads from your alignment:
 
 ```
 wizardeye filter -i alignment.bam -r hg19 --exclude-tags Cave -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database
 ```
 
-This will filter out all reads that can be ambiguously aligned to your target if they come from a source with a tag listed in `--exclude-tags`. 
+This filters out all reads that could be ambiguously aligned to your target if they come from a source with a tag in `--exclude-tags`.
 
-For `filter`, `-r` must be the reference identifier already present in your WizardEye database (for example `hg19`), and `-d/--db-root` is mandatory.
+For `filter`, `-r` must be a reference identifier already in your WizardEye database (e.g., `hg19`), and `-d/--db-root` is mandatory.
 
-By default, WizardEye considers all reads that can be aligned to the reference. However, if you want to only consider reads that can be aligned with a single position in the reference (`MAPQ>0`, no `XA` tag), specify the `--only-unique`.
+By default, WizardEye considers all reads that can align to the reference. However, to only consider reads aligning to a single position (`MAPQ>0`, no `XA` tag), specify `--only-unique`.
 
 You can also filter out reads based on specific tracks:
 
@@ -209,91 +210,83 @@ You can also filter out reads based on specific tracks:
 wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database
 ```
 
-> [!WARNING]  
-If sequence naming differs between BAM and tracks (for example `chr1` vs `1`), filtering stops with an explicit error. Harmonize contig names beforehand.
+> [!WARNING]
+If sequence naming differs between BAM and tracks (e.g., `chr1` vs `1`), filtering stops with an explicit error. Harmonize contig names beforehand.
 
 #### Adjust the filter hardness
 
-##### Stringency 
+##### Stringency
 
-To handle the trade-off between sensitivity and specificity, you can specify a stringency value during filtering. This criterion is defined as described below.
+To balance sensitivity and specificity, you can specify a stringency value during filtering. This criterion is defined as follows.
 
-For a position $P$ in the target, there are exactly `-k`/`-w` different possible k-mers that overlap that position perfectly. After mapping, `n` k-mers can overlap the position (maximum `-k`/`-w` if no mismatches are allowed, otherwise more). The position is then highlighted as ambiguous if `n`/(`-k`/`-w`) >= `-rc`, i.e., if the proportion of k-mers overlapping the position compared with the total number of possible k-mers overlapping the position is higher than the stringency.
+For a position P in the target, there are exactly -k/-w different possible k-mers overlapping this position perfectly. After mapping, n k-mers can overlap the position (maximum -k/-w if no mismatches are allowed, otherwise more). The position is then highlighted as ambiguous if n/(-k/-w) >= -rc; i.e., if the proportion of overlapping k-mers relative to the total possible k-mers exceeds the stringency.
 
-If `--only-unique` is used, the same behavior and formulae are still used but only uniquely aligned k-mers are considered, i.e. k-mers without BWA `XA` tag and with `MAPQ>0`. For example, in a situation with one mismatch allowed, with `-k=40` and `-rc=0.25`, if a position is overlapped by 10 exact k-mers and 10 k-mers with one mismatch, the position is retained only if 10 of these k-mers are unique, regardless of exactness. In a similar case with `-rc=0.50`, the region is highlighted only if all 20 k-mers map uniquely there.
+If `--only-unique` is used, the same behavior and formula apply, but only uniquely aligned k-mers are considered (i.e., k-mers without BWA's `XA` tag and with `MAPQ>0`). For example, with one mismatch allowed, `-k=40`, and `-rc=0.25`, if a position is overlapped by 10 exact k-mers and 10 k-mers with one mismatch, the position is retained only if 10 of these k-mers are unique, regardless of exactness. With `-rc=0.50`, the region is highlighted only if all 20 k-mers map uniquely to it.
 
 ```
 wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -p 0.25 -d /path/to/database --only-unique
 ```
 
-Note that the ratio is not weighted by depth or mismatches. In another case with a repetitive region, where a position is overlapped by 3000 k-mers, the ratio is still the same.
+Note that the ratio is not weighted by depth or mismatches. In another case with a repetitive region, if a position is overlapped by 3000 k-mers, the ratio remains the same.
 
-This behavior aims to reproduce the [Heng Li's seqbility](https://github.com/lh3/misc/tree/cc0f36a9a19f35765efb9387389d9f3a6756f08f/seq/seqbility) logic, which is not directly usable in a cross-mappability context. 
+This behavior aims to reproduce [Heng Li's seqbility](https://github.com/lh3/misc/tree/cc0f36a9a19f35765efb9387389d9f3a6756f08f/seq/seqbility) logic, which is not directly usable in a cross-mappability context.
 
 ##### Frequency
 
-*[Not implemented yet]*
-
-The position will only be masked if at least `-mf` tracks overlap that position.
+Using a frequency threshold, a read is filtered out only if a position is at least overlapped by minimum `-mf` tracks. This threshold is computed *after* the stringency. Then, a read is excluded if one of its position is covered by at least `-mf` tracks that exceeds the stringency threshold at that same position. You can apply such threshold using:
 
 ```
-wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -f 3 -d /path/to/database
+wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -mf 3 -d /path/to/database
 ```
 
-If the `-by_tags` parameter is used, frequency is computed per tag rather than per track. A position is then masked only if there is overlap from tracks belonging to the specified tags, where `-f` represents the number of tags that must be represented. For example, here, a read is masked only if it has a position overlapped by a combination of 2 of the specified clades.
-
-```
-wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -f 2 -by_tags Carnivora,Ruminant -d /path/to/database
-```
+Note that the `-mf` parameter is also available in the `export` command to generate masks with frequency filtering applied. This will remove lines with less than `-mf` from the final bed file.
 
 #### Output
 
-WizardEye produces a tabulation-separated report containing, for each read, the decision and the overlapping tracks, such as follows: 
+WizardEye produces a tabulation-separated report containing, for each read, the decision and overlapping tracks, as follows:
 
+| read_id | filtered_out | associated_tracks |
+|---|---|---|
+| read_1 | true | sus_scrofa,bos_taurus |
+| read_2 | false |  |
+| read_3 | true | felis_catus |
+| read_4 | true | bos_taurus |
+| read_5 | true | bos_taurus,ovis_aries |
+| read_6 | false |  |
 
-| read_id                                  | filtered_out | associated_tracks |
-|------------------------------------------|----------|------------|
-| read_1								   | true  	  | sus_scrofa,bos_taurus |
-| read_2								   | false    |            |
-| read_3								   | true     | felis_catus |
-| read_4								   | true     | bos_taurus |
-| read_5								   | true    | bos_taurus,ovis_aries           |
-| read_6								   | false    |          |
+With `--export-bam`, WizardEye produces two additional files:
 
-With `--export-bam`, WizardEye produces two more files:
-
-- a BAM `excluded` with the reads excluded by the filtration,
-- a BAM `filtered` with the reads kept by the filtration.
+- `excluded.bam`: reads excluded by the filtration,
+- `filtered.bam`: reads retained by the filtration.
 
 ### Count and compute statistics
 
-If you prefer to use your own-made filter, you can export a per-read report which summarizes the number of k-mers which can overlap the reference per read-interval using the `count` command. 
+If you prefer to use your own filter, you can export a per-read report summarizing the number of k-mers overlapping the reference per read interval using the `count` command.
 
-This command takes the same parameters as `filter`, plus a parameter `--mode` to specify the type of statistical summary you want between `sum`, `max`, `min`, `cov`, `mean` and `std`. Statistics are computed on interval. For example, if `max` is specified, for each track, the maximum number of overlapping k-mers from this track on a position in the read associated interval is reported. 
+This command accepts the same parameters as `filter`, plus a `--mode` parameter to specify the statistical summary type (`sum`, `max`, `min`, `cov`, `mean`, or `std`). Statistics are computed per interval. For example, if `max` is specified, for each track, the maximum number of overlapping k-mers from that track at any position in the read's interval is reported.
 
 ```
 wizardeye count -i alignment.bam -r hg19 --exclude-tags Farm -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -m max
 ```
 
-In this example, track whose are not reported using `filter`+`-r=0.01` should have a `0` in their column, as it means that the maximum number of overlapping k-mers in the interval is 0. 
+In this example, tracks not reported by `filter` with `-r=0.01` have a `0` in their column, meaning the maximum number of overlapping k-mers in the interval is 0.
 
 #### Output
 
-WizardEye produces a tabulation-separated report containing, for each read, the requested : 
+WizardEye produces a tabulation-separated report containing, for each read, the requested statistics:
 
-
-| read_id                                  | max_sus_scrofa | max_bos_taurus_max | max_ovis_aries |
-|------------------------------------------|----------|------------|------|
-| read_1								   | 0 | 4524 | 0 |
-| read_2								   | 422 | 0 | 0 |
-| read_3								   | 151 | 1254 | 1515 |
-| read_4								   | 0 | 0 | 0 |
-| read_5								   | 0 | 0 | 311 |
-| read_6								   | 122 | 0 | 111 |
+| read_id | max_sus_scrofa | max_bos_taurus | max_ovis_aries |
+|---|---|---|---|
+| read_1 | 0 | 4524 | 0 |
+| read_2 | 422 | 0 | 0 |
+| read_3 | 151 | 1254 | 1515 |
+| read_4 | 0 | 0 | 0 |
+| read_5 | 0 | 0 | 311 |
+| read_6 | 122 | 0 | 111 |
 
 ### Export a mask
 
-If you plan to use the same configuration often to filter your reads, for example in a pipeline, it is possible to export a mask in order to avoid recomputing it continuously:
+If you plan to use the same configuration frequently (e.g., in a pipeline), you can export a mask to avoid recomputing it continuously:
 
 ```
 wizardeye export -r hg19 --exclude-tags Cave -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -o mask.bed
@@ -301,7 +294,7 @@ wizardeye export -r hg19 --exclude-tags Cave -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500
 
 ### Import an existing track manually
 
-If you already computed a track outside WizardEye, you can import it manually by providing both BigWig files and the parameters that were used to generate them:
+If you computed a track outside WizardEye, you can import it manually by providing both BigWig files and the parameters used to generate them:
 
 ```
 wizardeye import -d /path/to/database -r ref -i input -k 35 -w 20 \
@@ -312,10 +305,11 @@ wizardeye import -d /path/to/database -r ref -i input -k 35 -w 20 \
 	-bn 0.01 -bo 2 -bl 16500 -j 8 \
 	-t Mammalia,Carnivora
 ```
-This command creates the target/track directory, copies the two BigWig files as `map_all.bw` and `map_uniq.bw`, and writes a `param.yaml` with the provided generation metadata.
+
+This command creates the target/track directory, copies the two BigWig files as `map_all.bw` and `map_uniq.bw`, and writes a `param.yaml` file with the provided generation metadata.
 
 # Go beyond WizardEye limits
 
-It is recommanded to complete your filtration using an evolutionnary-aware method such as Kraken2. This combination is useful to remove both reads that belong to completely different organisms and reads that can be ambiguous between closely related organisms.
+It is recommended to complement your filtering with an evolutionarily-aware method such as Kraken2. This combination is useful for removing both reads from completely different organisms and reads that may be ambiguous between closely related organisms.
 
-*Last update of this documentation: 0.1.3.*
+*Last documentation update: 0.1.3.*
