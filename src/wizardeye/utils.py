@@ -12,6 +12,7 @@ import hashlib
 import shutil
 import shlex
 import sys
+import os
 
 from typing import Dict, Iterable, List, Optional, Tuple
 from dataclasses import dataclass
@@ -649,6 +650,41 @@ def write_seq_sizes_from_bam(bam_file: Path, out_path: Path) -> Path:
     return out_path
 
 
+def merge_and_sort_bams(
+    input_bams: List[Path],
+    output_bam: Path,
+    n_threads: int = 1,
+) -> None:
+    """Merge multiple BAM files and sort the result using samtools cat + sort pipeline.
+
+    Runs samtools cat to concatenate BAMs, then pipes through samtools sort.
+
+    Args:
+            input_bams (List[Path]): List of BAM files to merge.
+            output_bam (Path): Path to write the sorted merged BAM to.
+            n_threads (int): Number of threads for samtools sort. Default is 1.
+
+    Raises:
+            subprocess.CalledProcessError: If samtools cat or sort fails.
+    """
+    samtools_cat = subprocess.Popen(
+        ["samtools", "cat"] + [str(path) for path in input_bams],
+        stdout=subprocess.PIPE,
+    )
+    try:
+        run(
+            ["samtools", "sort", "-@", str(n_threads), "-o", str(output_bam), "-"],
+            check=True,
+            stdin=samtools_cat.stdout,
+        )
+    finally:
+        if samtools_cat.stdout is not None:
+            samtools_cat.stdout.close()
+        return_code = samtools_cat.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, samtools_cat.args)
+
+
 # --- BED and genomic interval utilities ---
 
 
@@ -709,6 +745,101 @@ def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path
             out_fh.write(f"{chrom}\t{start}\t{end}\t{','.join(deduped)}\n")
 
     return output_bed
+
+
+def sort_bed_file(
+    input_path: Path,
+    output_path: Optional[Path] = None,
+    n_threads: int = 1,
+    tmp_dir: Optional[Path] = None,
+) -> Path:
+    """Sort a BED file by chromosome and position.
+
+    Args:
+            input_path (Path): The path to the input BED file to sort.
+            output_path (Optional[Path]): The path to write the sorted output to. Defaults to input_path (in-place).
+            n_threads (int): Number of threads for parallel sort. Default is 1.
+            tmp_dir (Optional[Path]): Temporary directory for sort. Defaults to output_path parent.
+
+    Returns:
+            Path: The path to the sorted output file.
+    """
+    output_path = output_path or input_path
+    tmp_dir = tmp_dir or output_path.parent
+    run(
+        [
+            "sort",
+            "-k1,1",
+            "-k2,2n",
+            f"--parallel={n_threads}",
+            "-T",
+            str(tmp_dir),
+            str(input_path),
+            "-o",
+            str(output_path),
+        ],
+        check=True,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    return output_path
+
+
+def compute_sorted_genome_coverage(
+    input_bed: Path,
+    seq_sizes: Path,
+    output_bg: Path,
+    n_threads: int = 1,
+    tmp_dir: Optional[Path] = None,
+) -> None:
+    """Compute genome coverage from BED and write sorted bedGraph output.
+
+    Runs bedtools genomecov with -bga flag and pipes through sort to produce
+    a position-sorted bedGraph file.
+
+    Args:
+            input_bed (Path): The path to the input BED file.
+            seq_sizes (Path): The path to the chrom.sizes file.
+            output_bg (Path): The path to write the sorted bedGraph output to.
+            n_threads (int): Number of threads for parallel sort. Default is 1.
+            tmp_dir (Optional[Path]): Temporary directory for sort. Defaults to output_bg parent.
+
+    Raises:
+            subprocess.CalledProcessError: If bedtools genomecov or sort fails.
+    """
+    tmp_dir = tmp_dir or output_bg.parent
+    genomecov_cmd = subprocess.Popen(
+        [
+            "bedtools",
+            "genomecov",
+            "-i",
+            str(input_bed),
+            "-g",
+            str(seq_sizes),
+            "-bga",
+        ],
+        stdout=subprocess.PIPE,
+    )
+    sort_cmd = subprocess.Popen(
+        [
+            "sort",
+            "-k1,1",
+            "-k2,2n",
+            f"--parallel={n_threads}",
+            "-T",
+            str(tmp_dir),
+        ],
+        stdin=genomecov_cmd.stdout,
+        stdout=open(output_bg, "w"),
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    genomecov_cmd.stdout.close()
+    return_code = sort_cmd.wait()
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, sort_cmd.args)
+    if genomecov_cmd.wait() != 0:
+        raise subprocess.CalledProcessError(
+            genomecov_cmd.returncode, genomecov_cmd.args
+        )
 
 
 def convert_bedgraph_to_bigwig(
