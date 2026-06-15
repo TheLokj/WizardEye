@@ -411,3 +411,256 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
             assert len(all_contigs) == 0, (
                 f"{len(all_contigs)} contigs were not mapped [{error}-{error + 1} errors]."
             )
+
+
+def test_filter_duplicate_read_ids():
+    """
+    Test that filter processes reads with duplicate QNAME independently.
+
+    This test creates a BAM file with reads sharing the same QNAME (read ID) but aligned
+    at different positions. Some positions overlap the track mask while others don't.
+    It verifies that each read is processed individually during filtering:
+    - Reads overlapping masked positions are excluded
+    - Reads not overlapping masked positions are kept
+    - Duplicate IDs do not cause incorrect consolidation
+    """
+    kmer_length = 35
+
+    with tempfile.TemporaryDirectory(prefix="wizardeye_test_dup_ids_") as tmpdir:
+        tmpdir = Path(tmpdir)
+
+        # Create reference FASTA: 100 bp with first 35 as A, rest as T
+        # This ensures the query (35 A's) only matches exactly positions 0-34
+        ref_fasta = tmpdir / "reference.fa"
+        ref_sequence = "A" * 35 + "C" * 65
+        with open(ref_fasta, "w") as f:
+            f.write(f">reference\n{ref_sequence}\n")
+
+        # Create a query FASTA of 35 A's - will match positions 0-34 of reference
+        query_fasta = tmpdir / "query.fa"
+        query_sequence = "A" * kmer_length
+        with open(query_fasta, "w") as f:
+            f.write(f">query1\n{query_sequence}\n")
+
+        # Create SAM file with duplicate read IDs
+        # For each duplicate ID:
+        # - One read overlaps the track (position 10, within 0-34) -> should be excluded
+        # - One read does NOT overlap the track (position 60, in T region) -> should be kept
+        sam_file = tmpdir / "input.sam"
+        read_sequence = "A" * 35  # All A's to match reference A region
+        read_quality = "I" * 35
+        with open(sam_file, "w") as f:
+            # SAM header
+            f.write("@HD\tVN:1.6\tSO:unsorted\n")
+            f.write("@SQ\tSN:reference\tLN:100\n")
+            # Reads with duplicate ID "read1":
+            # - position 10: overlaps track (0-34), should be excluded
+            # - position 55: in T region (50-99), does NOT overlap track, should be kept
+            f.write(
+                f"read1\t0\treference\t10\t35\t35M\t*\t0\t0\t{read_sequence}\t{read_quality}\n"
+            )
+            f.write(
+                f"read1\t0\treference\t55\t60\t35M\t*\t0\t0\t{read_sequence}\t{read_quality}\n"
+            )
+            # Reads with duplicate ID "read2":
+            # - position 20: overlaps track (0-34), should be excluded
+            # - position 52: in T region (50-99), does NOT overlap track, should be kept
+            f.write(
+                f"read2\t0\treference\t20\t35\t35M\t*\t0\t0\t{read_sequence}\t{read_quality}\n"
+            )
+            f.write(
+                f"read2\t0\treference\t52\t60\t35M\t*\t0\t0\t{read_sequence}\t{read_quality}\n"
+            )
+
+        # Convert SAM to BAM and sort it
+        unsorted_bam = tmpdir / "input_unsorted.bam"
+        bam_file = tmpdir / "input.bam"
+        subprocess.run(
+            ["samtools", "view", "-b", str(sam_file), "-o", str(unsorted_bam)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Sort the BAM
+        subprocess.run(
+            ["samtools", "sort", str(unsorted_bam), "-o", str(bam_file)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Index the BAM
+        subprocess.run(
+            ["samtools", "index", str(bam_file)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Initialize database
+        db_dir = tmpdir / "database"
+        db_dir.mkdir()
+        subprocess.run(
+            ["python3", "-m", "wizardeye", "database", "init", "-d", str(db_dir)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+        )
+
+        # Run wizardeye align to create a track
+        # Query (35 A's) will match reference positions 0-34, creating coverage there
+        db_path = db_dir / "database"
+        ref_stem = ref_fasta.stem
+
+        align_cmd = [
+            "python3",
+            "-m",
+            "wizardeye",
+            "align",
+            "-i",
+            str(query_fasta),
+            "-r",
+            str(ref_fasta),
+            "-k",
+            str(kmer_length),
+            "-w",
+            str(1),
+            "-bn",
+            "0.01",
+            "-bo",
+            "2",
+            "-bl",
+            "16500",
+            "-j",
+            "1",
+            "-bR",
+            "30",
+            "-bsn",
+            "2000000000",
+            "-d",
+            str(db_path),
+        ]
+
+        result = subprocess.run(
+            align_cmd,
+            capture_output=True,
+            text=True,
+            env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+        )
+
+        if result.returncode != 0:
+            print(f"WizardEye align failed: {result.stderr}")
+            raise RuntimeError(f"Alignment failed with return code {result.returncode}")
+
+        # Find the track directory
+        track_pattern = f"query_k{kmer_length}_w{1}_bwa{STANDARD_BWA_HASH}"
+        track_dir = db_path / ref_stem / track_pattern
+
+        if not track_dir.exists():
+            possible_tracks = list(
+                (db_path / ref_stem).glob(f"query_k{kmer_length}_w{1}_*")
+            )
+            if not possible_tracks:
+                raise RuntimeError(f"No track directory found in {db_path / ref_stem}")
+            track_dir = possible_tracks[0]
+
+        # Verify map_all.bw exists
+        map_all_bw = track_dir / "map_all.bw"
+        assert map_all_bw.exists(), f"map_all.bw not found in {track_dir}"
+
+        # Run WizardEye filter
+        filtered_bam = tmpdir / "filtered.bam"
+        excluded_bam = tmpdir / "excluded.bam"
+
+        filter_cmd = [
+            "python3",
+            "-m",
+            "wizardeye",
+            "filter",
+            "-i",
+            str(bam_file),
+            "-r",
+            "reference",
+            "-k",
+            str(kmer_length),
+            "-w",
+            str(1),
+            "-bn",
+            "0.01",
+            "-bo",
+            "2",
+            "-bl",
+            "16500",
+            "-bR",
+            "30",
+            "-bsn",
+            "2000000000",
+            "-d",
+            str(db_path),
+            "--export-bam",
+            "-o",
+            str(filtered_bam),
+            "--excluded-output",
+            str(excluded_bam),
+            "-p",
+            "0.01",
+            "--exclude-tracks",
+            "query",
+        ]
+
+        result = subprocess.run(
+            filter_cmd,
+            capture_output=True,
+            text=True,
+            env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+        )
+
+        if result.returncode != 0:
+            print("WizardEye filter failed:")
+            print(f"stdout: {result.stdout}")
+            print(f"stderr: {result.stderr}")
+            raise RuntimeError(f"Filter failed with return code {result.returncode}")
+
+        # Count reads in filtered BAM
+        result = subprocess.run(
+            ["samtools", "view", "-c", str(filtered_bam)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        n_filtered = int(result.stdout.strip())
+
+        # Count reads in excluded BAM
+        result = subprocess.run(
+            ["samtools", "view", "-c", str(excluded_bam)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        n_excluded = int(result.stdout.strip())
+
+        # Total reads should be 4 (2 with "read1" ID + 2 with "read2" ID)
+        total_reads = n_filtered + n_excluded
+        assert total_reads == 4, (
+            f"Expected 4 total reads after filtering, got {total_reads} "
+            f"(filtered: {n_filtered}, excluded: {n_excluded}). "
+            "This indicates reads were lost during filtering."
+        )
+
+        # With stringency=0, reads overlapping track positions (0-34) should be excluded
+        # Expected: reads at positions 10 and 20 overlap track -> excluded (2 reads)
+        #           reads at positions 60 and 70 don't overlap -> kept (2 reads)
+        # Each read is processed independently regardless of duplicate QNAME
+        assert n_filtered == 2 and n_excluded == 2, (
+            f"With stringency=0, expected 2 reads in filtered BAM and 2 in excluded BAM, "
+            f"got {n_filtered} filtered and {n_excluded} excluded. "
+            "This indicates reads with duplicate IDs were not processed independently."
+        )
+
+        print("\nDuplicate read IDs test results:")
+        print("Total reads in input: 4")
+        print(f"Reads in filtered BAM: {n_filtered}")
+        print(f"Reads in excluded BAM: {n_excluded}")
+        print(f"Total reads after filtering: {total_reads}")

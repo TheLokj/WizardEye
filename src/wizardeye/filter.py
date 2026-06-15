@@ -520,7 +520,7 @@ def filter_bam(
     try:
         read_tracks: Dict[str, Set[str]] = {}
         read_tags: Dict[str, Set[str]] = {}
-        excluded_read_ids: Set[str] = set()
+        excluded_reads: Set[Tuple[str, str, int, int]] = set()
         n_total_records = 0
         n_mapped_records = 0
 
@@ -561,7 +561,7 @@ def filter_bam(
                         )
 
                         if kmer_max >= threshold:
-                            excluded_read_ids.add(read_id)
+                            excluded_reads.add((chrom, read_id, start, end))
                             track_name = track.identity.query_species
                             read_tracks[read_id].add(track_name)
                             read_tags[read_id].update(
@@ -586,7 +586,7 @@ def filter_bam(
                     max_freq = np.max(sum_overlapping)
                     if max_freq >= min_freq:
                         print("+1")
-                        excluded_read_ids.add(read_id)
+                        excluded_reads.add((chrom, read_id, start, end))
                         max_idx = np.argmax(sum_overlapping)
                         for track in overlapping_tracks.keys():
                             if overlapping_tracks[track][max_idx]:
@@ -601,7 +601,7 @@ def filter_bam(
         report_path = write_filtration_report(
             output_report_tsv=report_tsv, read_tracks=read_tracks
         )
-        n_filtered = max(0, n_mapped_records - len(excluded_read_ids))
+        n_filtered = max(0, n_mapped_records - len(excluded_reads))
 
         filtered_bam: Optional[Path] = None
         excluded_bam: Optional[Path] = None
@@ -620,7 +620,7 @@ def filter_bam(
             log("Filtering BAM from excluded read IDs...", "I")
             filter_bam_from_reads_id(
                 input_bam=input_bam_path,
-                excluded_read_ids=excluded_read_ids,
+                excluded_reads=excluded_reads,
                 output_filtered_bam=filtered_bam,
                 output_excluded_bam=excluded_bam,
             )
@@ -638,7 +638,7 @@ def filter_bam(
             "report_tsv": report_path,
             "n_total": n_mapped_records,
             "n_filtered": n_filtered,
-            "n_excluded": len(excluded_read_ids),
+            "n_excluded": len(excluded_reads),
             "n_total_records": n_total_records,
         }
 
@@ -649,15 +649,15 @@ def filter_bam(
 
 def filter_bam_from_reads_id(
     input_bam: Path,
-    excluded_read_ids: Set[str],
+    excluded_reads: Set[Tuple[str, str, int, int]],
     output_filtered_bam: Path,
     output_excluded_bam: Path,
 ) -> Tuple[int, int, int]:
-    """Split BAM in one pysam pass using excluded read IDs.
+    """Split BAM in one pysam pass using excluded read IDs with position info.
 
     Args:
             input_bam: Path to input BAM file.
-            excluded_read_ids: Set of read IDs to exclude.
+            excluded_reads: Set of tuples (chrom, read_id, start, stop) to exclude.
             output_filtered_bam: Path to output BAM file with filtered reads.
             output_excluded_bam: Path to output BAM file with excluded reads.
 
@@ -685,7 +685,16 @@ def filter_bam_from_reads_id(
                 for read in bam.fetch(until_eof=True):
                     n_total_records += 1
                     read_id = read.query_name
-                    if read_id and read_id in excluded_read_ids:
+                    chrom = read.reference_name
+                    start = read.reference_start
+                    end = read.reference_end
+                    if (
+                        read_id
+                        and chrom
+                        and start is not None
+                        and end is not None
+                        and (chrom, read_id, start, end) in excluded_reads
+                    ):
                         excluded_handle.write(read)
                         n_excluded_records += 1
                     else:
