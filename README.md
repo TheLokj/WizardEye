@@ -245,13 +245,13 @@ Note that the `-mf` parameter is also available in the `export` command to gener
 
 WizardEye produces a tabulation-separated report containing, for each read, the decision and overlapping tracks, as follows:
 
-| read_id | filtered_out | associated_tracks |
+| read_key | filtered_out | associated_tracks |
 |---|---|---|
-| read_1 | true | sus_scrofa,bos_taurus |
-| read_2 | false |  |
-| read_3 | true | felis_catus |
-| read_4 | true | bos_taurus |
-| read_5 | true | bos_taurus,ovis_aries |
+| read_1:chrom:start:end | true | sus_scrofa,bos_taurus |
+| read_2:chrom:start:end | false |  |
+| read_3:chrom:start:end | true | felis_catus |
+| read_4:chrom:start:end | true | bos_taurus |
+| read_5:chrom:start:end | true | bos_taurus,ovis_aries |
 | read_6 | false |  |
 
 With `--export-bam`, WizardEye produces two additional files:

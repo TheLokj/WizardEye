@@ -518,8 +518,8 @@ def filter_bam(
         opened_bws.append(pyBigWig.open(str(bw_path)))
 
     try:
-        read_tracks: Dict[str, Set[str]] = {}
-        read_tags: Dict[str, Set[str]] = {}
+        read_tracks: Dict[Tuple[str, str, int, int], Set[str]] = {}
+        read_tags: Dict[Tuple[str, str, int, int], Set[str]] = {}
         excluded_reads: Set[Tuple[str, str, int, int]] = set()
         n_total_records = 0
         n_mapped_records = 0
@@ -532,8 +532,9 @@ def filter_bam(
                 read_id = read.query_name or ""
 
                 if not read_id or read.is_unmapped or read.reference_name is None:
-                    read_tracks[read_id] = set()
-                    read_tags[read_id] = set()
+                    read_key = (read_id, "", -1, -1)
+                    read_tracks[read_key] = set()
+                    read_tags[read_key] = set()
                     continue
 
                 n_mapped_records += 1
@@ -542,12 +543,14 @@ def filter_bam(
                 end = read.reference_end
 
                 if start is None or end is None or end <= start:
-                    read_tracks[read_id] = set()
-                    read_tags[read_id] = set()
+                    read_key = (read_id, chrom or "", start or -1, end or -1)
+                    read_tracks[read_key] = set()
+                    read_tags[read_key] = set()
                     continue
 
-                read_tracks[read_id] = set()
-                read_tags[read_id] = set()
+                read_key = (read_id, chrom, start, end)
+                read_tracks[read_key] = set()
+                read_tags[read_key] = set()
                 overlapping_tracks = {}
                 # Check each track for overlap exceeding threshold (per bp, using max)
                 for idx, bw in enumerate(opened_bws):
@@ -563,8 +566,8 @@ def filter_bam(
                         if kmer_max >= threshold:
                             excluded_reads.add((chrom, read_id, start, end))
                             track_name = track.identity.query_species
-                            read_tracks[read_id].add(track_name)
-                            read_tags[read_id].update(
+                            read_tracks[read_key].add(track_name)
+                            read_tags[read_key].update(
                                 track_to_tags.get(track_name, set())
                             )
                     else:
@@ -593,8 +596,8 @@ def filter_bam(
                                 track_name = selected_tracks[
                                     int(track)
                                 ].identity.query_species
-                                read_tracks[read_id].add(track_name)
-                                read_tags[read_id].update(
+                                read_tracks[read_key].add(track_name)
+                                read_tags[read_key].update(
                                     track_to_tags.get(track_name, set())
                                 )
 
@@ -914,23 +917,55 @@ def _default_output_count_table(input_bam: Path) -> Path:
 
 
 def write_filtration_report(
-    output_report_tsv: Path, read_tracks: Dict[str, Set[str]]
+    output_report_tsv: Path, read_tracks: Dict[Tuple[str, str, int, int], Set[str]]
 ) -> Path:
-    """Write one line per read_id with exclusion flag, overlapping tracks and tags.
+    """Write one line per read with exclusion flag, overlapping tracks and tags.
 
     Args:
             output_report_tsv (Path): Path to the output TSV file.
-            read_tracks (Dict[str, Set[str]]): Dictionary mapping read IDs to sets of overlapping tracks.
-            read_tags (Dict[str, Set[str]]): Dictionary mapping read IDs to sets of tags.
+            read_tracks (Dict[Tuple[str, str, int, int], Set[str]]): Dictionary mapping
+                (read_id, chrom, start, end) tuples to sets of overlapping tracks.
 
     Returns:
             Path: The path to the generated report."""
     output_report_tsv.parent.mkdir(parents=True, exist_ok=True)
+
+    # Check for duplicate read IDs (same read_id with different positions)
+    read_id_to_positions: Dict[str, Set[Tuple[str, int, int]]] = {}
+    for read_key in read_tracks.keys():
+        if isinstance(read_key, tuple) and len(read_key) >= 4:
+            rid, chrom, start, end = read_key
+            if rid not in read_id_to_positions:
+                read_id_to_positions[rid] = set()
+            read_id_to_positions[rid].add((chrom, start, end))
+
+    # Log warning if duplicates exist
+    duplicate_read_ids = [
+        rid for rid, positions in read_id_to_positions.items() if len(positions) > 1
+    ]
+    if duplicate_read_ids:
+        log(
+            f"Found {len(duplicate_read_ids)} duplicated read IDs: {duplicate_read_ids}. "
+            f"Using ID:chrom:start:end format in report for all reads.",
+            "W",
+        )
+
     with output_report_tsv.open("w", encoding="utf-8") as handle:
-        handle.write("read_id\tfiltered_out\tassociated_tracks\n")
-        for read_id, track_set in read_tracks.items():
+        handle.write("read_key\tfiltered_out\tassociated_tracks\n")
+        for read_key, track_set in read_tracks.items():
             tracks = sorted(track_set)
             excluded = "true" if tracks else "false"
-            overlapped = ",".join(tracks)
-            handle.write(f"{read_id}\t{excluded}\t{overlapped}\n")
+            overlapped = ",".join(tracks) if tracks else ""
+            # read_key is (read_id, chrom, start, end) where start is 0-based and end is 0-based exclusive
+            if isinstance(read_key, tuple) and len(read_key) >= 4:
+                rid, chrom, start, end = read_key
+                # Use read_id:chrom:start:end format for ALL reads (1-based positions)
+                # start + 1 converts 0-based to 1-based start
+                # end is 0-based exclusive, which equals 1-based end (inclusive)
+                display_id = f"{rid}:{chrom}:{start + 1}:{end}"
+            else:
+                display_id = str(read_key)
+            # Build line with exactly 3 tab-separated columns
+            line_parts = [display_id, excluded, overlapped]
+            handle.write("\t".join(line_parts) + "\n")
     return output_report_tsv
