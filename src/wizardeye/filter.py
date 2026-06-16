@@ -571,9 +571,12 @@ def filter_bam(
                                 track_to_tags.get(track_name, set())
                             )
                     else:
-                        overlapping_tracks[idx] = np.array(
-                            [kmer >= threshold for kmer in bw.values(chrom, start, end)]
-                        )
+                        vals = np.array(bw.values(chrom, start, end), dtype=float)
+                        if np.any(np.isnan(vals)):
+                            raise ValueError(
+                                f"Unexpected NaN values in BigWig for track {selected_tracks[idx].track_name} at {chrom}:{start}-{end}"
+                            )    
+                        overlapping_tracks[idx] = vals >= threshold
 
                 if min_freq is not None:
                     sum_overlapping = np.sum(
