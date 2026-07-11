@@ -717,7 +717,7 @@ def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path
         raw_name, bed_path = bed_files[0]
         track_name = raw_name.split("_k")[0]
 
-        cmd = [bedtools, "merge", "-i", bed_path]
+        cmd = [bedtools, "merge", "-i", str(bed_path)]
         log(" ".join(cmd), "C")
         result = subprocess.run(
             cmd,
