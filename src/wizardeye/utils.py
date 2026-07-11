@@ -707,42 +707,64 @@ def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path
 
     bedtools = shutil.which("bedtools")
     if bedtools is None:
-        raise RuntimeError(
-            "bedtools is required but was not found on PATH. "
-            "Install it with: conda install -c bioconda bedtools"
-        )
+        raise RuntimeError("bedtools is required but was not found on PATH. ")
 
     track_names = [name.split("_k")[0] for name, _ in bed_files]
     bed_paths = [str(p) for _, p in bed_files]
 
-    cmd = [bedtools, "multiinter", "-i"] + bed_paths + ["-names"] + track_names
-    log(" ".join(cmd), "C")
+    if len(bed_files) == 1:
+        log("Only one track requested.", "W")
+        raw_name, bed_path = bed_files[0]
+        track_name = raw_name.split("_k")[0]
 
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=True,
-    )
+        cmd = [bedtools, "merge", "-i", bed_path]
+        log(" ".join(cmd), "C")
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
 
-    # multiinter output columns:
-    #   0: chrom  1: start  2: end  3: num_intersecting  4: track_names (comma-sep)
-    with output_bed.open("w", encoding="utf-8") as out_fh:
-        for line in result.stdout.splitlines():
-            if not line:
-                continue
-            parts = line.split("\t")
-            if len(parts) < 5:
-                continue
-            chrom, start, end, tracks = parts[0], parts[1], parts[2], parts[4]
-            seen: set[str] = set()
-            deduped = []
-            for t in tracks.split(","):
-                if t not in seen:
-                    seen.add(t)
-                    deduped.append(t)
-            out_fh.write(f"{chrom}\t{start}\t{end}\t{','.join(deduped)}\n")
+        with output_bed.open("w", encoding="utf-8") as out_fh:
+            for line in result.stdout.splitlines():
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 3:
+                    chrom, start, end = parts[0], parts[1], parts[2]
+                    out_fh.write(f"{chrom}\t{start}\t{end}\t{track_name}\n")
+
+    else:
+        cmd = [bedtools, "multiinter", "-i"] + bed_paths + ["-names"] + track_names
+        log(" ".join(cmd), "C")
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+
+        # multiinter output columns:
+        #   0: chrom  1: start  2: end  3: num_intersecting  4: track_names (comma-sep)
+        with output_bed.open("w", encoding="utf-8") as out_fh:
+            for line in result.stdout.splitlines():
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 5:
+                    continue
+                chrom, start, end, tracks = parts[0], parts[1], parts[2], parts[4]
+                seen: set[str] = set()
+                deduped = []
+                for t in tracks.split(","):
+                    if t not in seen:
+                        seen.add(t)
+                        deduped.append(t)
+                out_fh.write(f"{chrom}\t{start}\t{end}\t{','.join(deduped)}\n")
 
     return output_bed
 

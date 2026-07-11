@@ -259,7 +259,9 @@ class Track:
             bwa_all_aln = bool(bwa_params.get("-N", False))
             bwa_threads = int(bwa_params.get("-t", 1))
             bwa_r = int(bwa_params.get("-R", 30))
-            bwa_sn = int(bwa_params.get("-sn", 2000000000))
+            bwa_sn = int(
+                param_content.get("bwa_samse_parameters", {}).get("-n", 2000000000)
+            )
         except (TypeError, ValueError):
             bwa_n, bwa_o, bwa_l, bwa_all_aln, bwa_threads, bwa_r, bwa_sn = (
                 0.01,
@@ -529,8 +531,6 @@ def get_tracks(
             ):
                 continue
             if track.identity.parameters.bwa_params.all_aln != bwa_params.all_aln:
-                continue
-            if track.identity.parameters.bwa_params.threads != bwa_params.threads:
                 continue
             if (
                 track.identity.parameters.bwa_params.r_best_hits

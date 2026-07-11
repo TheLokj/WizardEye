@@ -575,7 +575,7 @@ def filter_bam(
                         if np.any(np.isnan(vals)):
                             raise ValueError(
                                 f"Unexpected NaN values in BigWig for track {selected_tracks[idx].track_name} at {chrom}:{start}-{end}"
-                            )    
+                            )
                         overlapping_tracks[idx] = vals >= threshold
 
                 if min_freq is not None:
