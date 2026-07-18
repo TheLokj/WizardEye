@@ -373,9 +373,10 @@ def compute_stringency_on_bedGraph(
 
     awk_script = f'OFS="\\t" {{ if (($4 + 0) >= {threshold:.12f}) print $1, $2, $3; }}'
 
-    with input_bg.open("r", encoding="utf-8") as bg_in, output_bed.open(
-        "w", encoding="utf-8"
-    ) as out:
+    with (
+        input_bg.open("r", encoding="utf-8") as bg_in,
+        output_bed.open("w", encoding="utf-8") as out,
+    ):
         log(f"{awk} '{awk_script}' {input_bg} | {bedtools} merge -i stdin", "C")
         p1 = subprocess.Popen(
             [awk, awk_script], stdin=bg_in, stdout=subprocess.PIPE, text=True
@@ -858,7 +859,7 @@ def _generate_count_only_report(
 
     try:
         with output_report_tsv.open("w", encoding="utf-8") as out_tsv:
-            header = ["read_id"] + track_names
+            header = ["read_key"] + track_names
             out_tsv.write("\t".join(header) + "\n")
 
             with pysam.AlignmentFile(str(input_bam), "rb") as bam:
@@ -877,7 +878,8 @@ def _generate_count_only_report(
                         continue
 
                     n_mapped_records += 1
-                    row_values = [read_id]
+                    read_key = f"{read_id}:{chrom}:{start + 1}:{end}"
+                    row_values = [read_key]
 
                     for bw in opened_bws:
                         stat_res = bw.stats(
@@ -959,12 +961,9 @@ def write_filtration_report(
             tracks = sorted(track_set)
             excluded = "true" if tracks else "false"
             overlapped = ",".join(tracks) if tracks else ""
-            # read_key is (read_id, chrom, start, end) where start is 0-based and end is 0-based exclusive
             if isinstance(read_key, tuple) and len(read_key) >= 4:
                 rid, chrom, start, end = read_key
-                # Use read_id:chrom:start:end format for ALL reads (1-based positions)
-                # start + 1 converts 0-based to 1-based start
-                # end is 0-based exclusive, which equals 1-based end (inclusive)
+                # Use read_id:chrom:start:end format for all reads (1-based positions)
                 display_id = f"{rid}:{chrom}:{start + 1}:{end}"
             else:
                 display_id = str(read_key)

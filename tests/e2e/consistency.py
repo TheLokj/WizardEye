@@ -193,11 +193,14 @@ def test_align_same_behavior_as_original_script():
 
     for query_fa in query_fastas:
         # Create temporary directories for outputs
-        with tempfile.TemporaryDirectory(
-            prefix="wizardeye_test_original_"
-        ) as original_tmpdir, tempfile.TemporaryDirectory(
-            prefix="wizardeye_test_wizardeye_"
-        ) as wizardeye_tmpdir:
+        with (
+            tempfile.TemporaryDirectory(
+                prefix="wizardeye_test_original_"
+            ) as original_tmpdir,
+            tempfile.TemporaryDirectory(
+                prefix="wizardeye_test_wizardeye_"
+            ) as wizardeye_tmpdir,
+        ):
             original_output = Path(original_tmpdir) / "output"
             wizardeye_db = Path(wizardeye_tmpdir) / "database"
             wizardeye_db.mkdir(parents=True)
@@ -409,11 +412,14 @@ def test_export_same_behavior_as_original_script():
     query_fastas = [SUS_SCROFA_FA, CANIS_LUPUS_FA, RATTUS_NORVEGICUS_FA]
     query_stems = [f.stem for f in query_fastas]
 
-    with tempfile.TemporaryDirectory(
-        prefix="wizardeye_export_original_"
-    ) as original_tmpdir, tempfile.TemporaryDirectory(
-        prefix="wizardeye_export_wizardeye_"
-    ) as wizardeye_tmpdir:
+    with (
+        tempfile.TemporaryDirectory(
+            prefix="wizardeye_export_original_"
+        ) as original_tmpdir,
+        tempfile.TemporaryDirectory(
+            prefix="wizardeye_export_wizardeye_"
+        ) as wizardeye_tmpdir,
+    ):
         original_output = Path(original_tmpdir) / "output"
         wizardeye_db = Path(wizardeye_tmpdir) / "database"
         wizardeye_db.mkdir(parents=True)

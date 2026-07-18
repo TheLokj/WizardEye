@@ -188,7 +188,7 @@ def _request_tracks_from_args(
     log(f"Input alignment file to process: {input_bam}", "I")
     if bwa_params:
         log(
-            f"Associated BWA parameters: -n {bwa_params.missing_prob_err_rate}, -o {bwa_params.max_gap_opens}, -l {bwa_params.seed_length}, -t {bwa_params.threads}",
+            f"Associated BWA command: bwa aln -n {bwa_params.missing_prob_err_rate} -o {bwa_params.max_gap_opens} -l {bwa_params.seed_length} -R {bwa_params.r_best_hits}{(' -N' if bwa_params.all_aln else '')} && bwa samse -n {bwa_params.samse_n}",
             "I",
         )
     log(

@@ -516,9 +516,7 @@ def create_mappability_track(
                 "-N": bwa_params.all_aln,
                 "-t": bwa_params.threads,
                 "-R": bwa_params.r_best_hits,
-            },
-            "bwa_samse_parameters": {
-                "-n": bwa_params.samse_n,
+                "-sn": bwa_params.samse_n,
             },
             "chunk_parameters": {
                 "-j": n_threads,

@@ -264,9 +264,10 @@ def write_seq_sizes_from_fasta(reference_fasta: Path, output_sizes: Path) -> Pat
     if not fai_path.exists():
         raise RuntimeError(f"samtools faidx did not produce index: {fai_path}")
 
-    with fai_path.open("r", encoding="utf-8") as fai, output_sizes.open(
-        "w", encoding="utf-8"
-    ) as out:
+    with (
+        fai_path.open("r", encoding="utf-8") as fai,
+        output_sizes.open("w", encoding="utf-8") as out,
+    ):
         for raw_line in fai:
             line = raw_line.strip()
             if not line:
@@ -639,9 +640,10 @@ def write_seq_sizes_from_bam(bam_file: Path, out_path: Path) -> Path:
             "pysam is required to export BigWig files. Install it with: pip install pysam"
         )
 
-    with pysam.AlignmentFile(str(bam_file), "rb") as bam, out_path.open(
-        "w", encoding="utf-8"
-    ) as handle:
+    with (
+        pysam.AlignmentFile(str(bam_file), "rb") as bam,
+        out_path.open("w", encoding="utf-8") as handle,
+    ):
         for chrom, length in sorted(
             zip(bam.references, bam.lengths), key=lambda x: x[0]
         ):
