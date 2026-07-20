@@ -2396,7 +2396,7 @@ def test_consistency_align_parallel_same_db():
 # -- Protection against misuse --
 
 
-def test_paired_end_vs_single_end():
+def test_filter_paired_end_vs_single_end():
     """Test that WizardEye correctly handles different read types.
 
     Verifies two behaviors:
@@ -2527,4 +2527,138 @@ def test_paired_end_vs_single_end():
         print(f"Stderr: {result_single.stderr}\nStdout: {result_single.stdout}")
         assert result_single.returncode == 0, (
             "WizardEye should succeed with single-end reads, but failed.\n"
+        )
+
+
+def test_count_paired_end_vs_single_end():
+    """Test that WizardEye count command correctly handles different read types.
+
+    Verifies two behaviors:
+    1. Rejects BAM files with paired-end reads (flag 0x1) with an appropriate error.
+    2. Accepts and successfully processes BAM files with single-end reads.
+    """
+    sequences = get_all_fasta_sequence_info(HG19_FA)
+    sq_headers = "".join(
+        [f"@SQ\tSN:{name}\tLN:{length}\n" for name, length in sequences]
+    )
+
+    sam_header = (
+        f"@HD\tVN:1.6\tSO:coordinate\n"
+        f"{sq_headers}"
+        f"@PG\tID:bwa\tPN:bwa\tCL:bwa aln -n 0.01 -o 2 -l 16500 ref.fa reads.fq\n"
+    )
+
+    ref_seq_name = sequences[0][0]
+
+    sam_content_paired = sam_header + (
+        f"read1\t99\t{ref_seq_name}\t100\t60\t50M\t=\t200\t150\tACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTAC\tIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\tAS:i:50\n"
+        f"read1\t147\t{ref_seq_name}\t200\t60\t50M\t=\t100\t-150\tACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTAC\tIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\tAS:i:50\n"
+    )
+
+    sam_content_single = sam_header + (
+        f"read3_se\t0\t{ref_seq_name}\t300\t60\t50M\t*\t0\t0\tTGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATG\tIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\tAS:i:50\n"
+        f"read4_se\t0\t{ref_seq_name}\t400\t60\t50M\t*\t0\t0\tTGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATG\tIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\tAS:i:50\n"
+    )
+
+    with tempfile.TemporaryDirectory(prefix="wizardeye_reads_test_") as tmpdir:
+        tmp_path = Path(tmpdir)
+
+        wizardeye_db = tmp_path / "database"
+        generate_standard_database(
+            db_root=tmp_path,
+            reference_fasta=HG19_FA,
+            kmer_length=STANDARD_KMER_LENGTH,
+            offset_step=STANDARD_OFFSET_STEP,
+            bwa_missing_prob_err_rate=STANDARD_BWA_MISSING_PROB_ERR_RATE,
+            bwa_max_gap_opens=STANDARD_BWA_MAX_GAP_OPENINGS,
+            bwa_seed_length=STANDARD_BWA_SEED_LENGTH,
+            chunk_size=STANDARD_CHUNK_SIZE,
+            n_threads=STANDARD_N_THREADS,
+        )
+
+        query_stems = [
+            SUS_SCROFA_FA.stem,
+            CANIS_LUPUS_FA.stem,
+            RATTUS_NORVEGICUS_FA.stem,
+        ]
+        exclude_tracks_str = ",".join(query_stems)
+        hg19_stem = HG19_FA.stem
+
+        base_cmd = [
+            "python3",
+            "-m",
+            "wizardeye",
+            "count",
+            "-r",
+            str(hg19_stem),
+            "-k",
+            str(STANDARD_KMER_LENGTH),
+            "-w",
+            str(STANDARD_OFFSET_STEP),
+            "-bn",
+            str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+            "-bo",
+            str(STANDARD_BWA_MAX_GAP_OPENINGS),
+            "-bl",
+            str(STANDARD_BWA_SEED_LENGTH),
+            "-m",
+            "mean",
+            "--exclude-tracks",
+            exclude_tracks_str,
+            "-d",
+            str(wizardeye_db),
+        ]
+
+        # Paired-end
+        sam_paired = tmp_path / "paired_end.sam"
+        bam_paired = tmp_path / "paired_end.bam"
+        sam_paired.write_text(sam_content_paired)
+        subprocess.run(
+            ["samtools", "view", "-b", str(sam_paired), "-o", str(bam_paired)],
+            check=True,
+        )
+
+        cmd_paired = base_cmd[:4] + ["-i", str(bam_paired)] + base_cmd[4:]
+
+        result_paired = subprocess.run(
+            cmd_paired,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+        )
+
+        assert result_paired.returncode != 0, (
+            "WizardEye count should have failed with paired-end reads."
+        )
+        error_output = result_paired.stderr + result_paired.stdout
+        print(error_output)
+        assert "paired" in error_output.lower(), (
+            f"Expected error about paired-end reads, got: {error_output[:500]}"
+        )
+
+        # Single-end
+        sam_single = tmp_path / "single_end.sam"
+        bam_single = tmp_path / "single_end.bam"
+        sam_single.write_text(sam_content_single)
+        subprocess.run(
+            ["samtools", "view", "-b", str(sam_single), "-o", str(bam_single)],
+            check=True,
+        )
+
+        cmd_single = base_cmd[:4] + ["-i", str(bam_single)] + base_cmd[4:]
+
+        result_single = subprocess.run(
+            cmd_single,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+        )
+
+        print(f"Stderr: {result_single.stderr}\nStdout: {result_single.stdout}")
+        assert result_single.returncode == 0, (
+            "WizardEye count should succeed with single-end reads, but failed.\n"
         )

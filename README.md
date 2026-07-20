@@ -46,6 +46,8 @@ Since WizardEye relies only on alignment and prior knowledge, it is recommended 
 
 Note that WizardEye only identifies ambiguous regions **that can align**. It **cannot** filter sequences that are very distant from the target. Therefore, it is highly recommended as a complementary step to traditional large-scale filtering. Finally, note that WizardEye filtering can be very strict, leading to the loss of substantial information, as it prioritizes risk avoidance over the statistical power of post-hoc analyses.
 
+Additionally, WizardEye currently only supports single-end reads or merged pairs. Paired-end reads are not supported and will cause the tool to exit with an error.
+
 ## Installation
 
 The latest WizardEye version can be installed using conda:

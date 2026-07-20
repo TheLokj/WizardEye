@@ -871,6 +871,12 @@ def _generate_count_only_report(
 
             with pysam.AlignmentFile(str(input_bam), "rb") as bam:
                 for read in bam.fetch(until_eof=True):
+                    if not read.is_unmapped and read.is_paired:
+                        log(
+                            "WizardEye only supports single-end reads or merged pairs. Paired reads would corrupt the final BAM file.",
+                            "E",
+                        )
+                        sys.exit(1)
                     n_total_records += 1
 
                     read_id = read.query_name or ""
