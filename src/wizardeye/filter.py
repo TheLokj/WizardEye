@@ -13,6 +13,7 @@ import hashlib
 import pyBigWig
 import shutil
 import subprocess
+import sys
 import tempfile
 import numpy as np
 
@@ -373,9 +374,10 @@ def compute_stringency_on_bedGraph(
 
     awk_script = f'OFS="\\t" {{ if (($4 + 0) >= {threshold:.12f}) print $1, $2, $3; }}'
 
-    with input_bg.open("r", encoding="utf-8") as bg_in, output_bed.open(
-        "w", encoding="utf-8"
-    ) as out:
+    with (
+        input_bg.open("r", encoding="utf-8") as bg_in,
+        output_bed.open("w", encoding="utf-8") as out,
+    ):
         log(f"{awk} '{awk_script}' {input_bg} | {bedtools} merge -i stdin", "C")
         p1 = subprocess.Popen(
             [awk, awk_script], stdin=bg_in, stdout=subprocess.PIPE, text=True
@@ -518,9 +520,9 @@ def filter_bam(
         opened_bws.append(pyBigWig.open(str(bw_path)))
 
     try:
-        read_tracks: Dict[str, Set[str]] = {}
-        read_tags: Dict[str, Set[str]] = {}
-        excluded_read_ids: Set[str] = set()
+        read_tracks: Dict[Tuple[str, str, int, int], Set[str]] = {}
+        read_tags: Dict[Tuple[str, str, int, int], Set[str]] = {}
+        excluded_reads: Set[Tuple[str, str, int, int]] = set()
         n_total_records = 0
         n_mapped_records = 0
 
@@ -528,12 +530,19 @@ def filter_bam(
 
         with pysam.AlignmentFile(str(input_bam_path), "rb") as bam:
             for read in bam.fetch(until_eof=True):
+                if not read.is_unmapped and read.is_paired:
+                    log(
+                        "WizardEye only supports single-end reads or merged pairs. Paired reads would corrupt the final BAM file.",
+                        "E",
+                    )
+                    sys.exit(1)
                 n_total_records += 1
                 read_id = read.query_name or ""
 
                 if not read_id or read.is_unmapped or read.reference_name is None:
-                    read_tracks[read_id] = set()
-                    read_tags[read_id] = set()
+                    read_key = (read_id, "", -1, -1)
+                    read_tracks[read_key] = set()
+                    read_tags[read_key] = set()
                     continue
 
                 n_mapped_records += 1
@@ -542,12 +551,14 @@ def filter_bam(
                 end = read.reference_end
 
                 if start is None or end is None or end <= start:
-                    read_tracks[read_id] = set()
-                    read_tags[read_id] = set()
+                    read_key = (read_id, chrom or "", start or -1, end or -1)
+                    read_tracks[read_key] = set()
+                    read_tags[read_key] = set()
                     continue
 
-                read_tracks[read_id] = set()
-                read_tags[read_id] = set()
+                read_key = (read_id, chrom, start, end)
+                read_tracks[read_key] = set()
+                read_tags[read_key] = set()
                 overlapping_tracks = {}
                 # Check each track for overlap exceeding threshold (per bp, using max)
                 for idx, bw in enumerate(opened_bws):
@@ -561,16 +572,19 @@ def filter_bam(
                         )
 
                         if kmer_max >= threshold:
-                            excluded_read_ids.add(read_id)
+                            excluded_reads.add((chrom, read_id, start, end))
                             track_name = track.identity.query_species
-                            read_tracks[read_id].add(track_name)
-                            read_tags[read_id].update(
+                            read_tracks[read_key].add(track_name)
+                            read_tags[read_key].update(
                                 track_to_tags.get(track_name, set())
                             )
                     else:
-                        overlapping_tracks[idx] = np.array(
-                            [kmer >= threshold for kmer in bw.values(chrom, start, end)]
-                        )
+                        vals = np.array(bw.values(chrom, start, end), dtype=float)
+                        if np.any(np.isnan(vals)):
+                            raise ValueError(
+                                f"Unexpected NaN values in BigWig for track {selected_tracks[idx].track_name} at {chrom}:{start}-{end}"
+                            )
+                        overlapping_tracks[idx] = vals >= threshold
 
                 if min_freq is not None:
                     sum_overlapping = np.sum(
@@ -586,22 +600,22 @@ def filter_bam(
                     max_freq = np.max(sum_overlapping)
                     if max_freq >= min_freq:
                         print("+1")
-                        excluded_read_ids.add(read_id)
+                        excluded_reads.add((chrom, read_id, start, end))
                         max_idx = np.argmax(sum_overlapping)
                         for track in overlapping_tracks.keys():
                             if overlapping_tracks[track][max_idx]:
                                 track_name = selected_tracks[
                                     int(track)
                                 ].identity.query_species
-                                read_tracks[read_id].add(track_name)
-                                read_tags[read_id].update(
+                                read_tracks[read_key].add(track_name)
+                                read_tags[read_key].update(
                                     track_to_tags.get(track_name, set())
                                 )
 
         report_path = write_filtration_report(
             output_report_tsv=report_tsv, read_tracks=read_tracks
         )
-        n_filtered = max(0, n_mapped_records - len(excluded_read_ids))
+        n_filtered = max(0, n_mapped_records - len(excluded_reads))
 
         filtered_bam: Optional[Path] = None
         excluded_bam: Optional[Path] = None
@@ -620,7 +634,7 @@ def filter_bam(
             log("Filtering BAM from excluded read IDs...", "I")
             filter_bam_from_reads_id(
                 input_bam=input_bam_path,
-                excluded_read_ids=excluded_read_ids,
+                excluded_reads=excluded_reads,
                 output_filtered_bam=filtered_bam,
                 output_excluded_bam=excluded_bam,
             )
@@ -638,7 +652,7 @@ def filter_bam(
             "report_tsv": report_path,
             "n_total": n_mapped_records,
             "n_filtered": n_filtered,
-            "n_excluded": len(excluded_read_ids),
+            "n_excluded": len(excluded_reads),
             "n_total_records": n_total_records,
         }
 
@@ -649,15 +663,15 @@ def filter_bam(
 
 def filter_bam_from_reads_id(
     input_bam: Path,
-    excluded_read_ids: Set[str],
+    excluded_reads: Set[Tuple[str, str, int, int]],
     output_filtered_bam: Path,
     output_excluded_bam: Path,
 ) -> Tuple[int, int, int]:
-    """Split BAM in one pysam pass using excluded read IDs.
+    """Split BAM in one pysam pass using excluded read IDs with position info.
 
     Args:
             input_bam: Path to input BAM file.
-            excluded_read_ids: Set of read IDs to exclude.
+            excluded_reads: Set of tuples (chrom, read_id, start, stop) to exclude.
             output_filtered_bam: Path to output BAM file with filtered reads.
             output_excluded_bam: Path to output BAM file with excluded reads.
 
@@ -685,7 +699,16 @@ def filter_bam_from_reads_id(
                 for read in bam.fetch(until_eof=True):
                     n_total_records += 1
                     read_id = read.query_name
-                    if read_id and read_id in excluded_read_ids:
+                    chrom = read.reference_name
+                    start = read.reference_start
+                    end = read.reference_end
+                    if (
+                        read_id
+                        and chrom
+                        and start is not None
+                        and end is not None
+                        and (chrom, read_id, start, end) in excluded_reads
+                    ):
                         excluded_handle.write(read)
                         n_excluded_records += 1
                     else:
@@ -843,11 +866,17 @@ def _generate_count_only_report(
 
     try:
         with output_report_tsv.open("w", encoding="utf-8") as out_tsv:
-            header = ["read_id"] + track_names
+            header = ["read_key"] + track_names
             out_tsv.write("\t".join(header) + "\n")
 
             with pysam.AlignmentFile(str(input_bam), "rb") as bam:
                 for read in bam.fetch(until_eof=True):
+                    if not read.is_unmapped and read.is_paired:
+                        log(
+                            "WizardEye only supports single-end reads or merged pairs. Paired reads would corrupt the final BAM file.",
+                            "E",
+                        )
+                        sys.exit(1)
                     n_total_records += 1
 
                     read_id = read.query_name or ""
@@ -862,7 +891,8 @@ def _generate_count_only_report(
                         continue
 
                     n_mapped_records += 1
-                    row_values = [read_id]
+                    read_key = f"{read_id}:{chrom}:{start + 1}:{end}"
+                    row_values = [read_key]
 
                     for bw in opened_bws:
                         stat_res = bw.stats(
@@ -905,23 +935,52 @@ def _default_output_count_table(input_bam: Path) -> Path:
 
 
 def write_filtration_report(
-    output_report_tsv: Path, read_tracks: Dict[str, Set[str]]
+    output_report_tsv: Path, read_tracks: Dict[Tuple[str, str, int, int], Set[str]]
 ) -> Path:
-    """Write one line per read_id with exclusion flag, overlapping tracks and tags.
+    """Write one line per read with exclusion flag, overlapping tracks and tags.
 
     Args:
             output_report_tsv (Path): Path to the output TSV file.
-            read_tracks (Dict[str, Set[str]]): Dictionary mapping read IDs to sets of overlapping tracks.
-            read_tags (Dict[str, Set[str]]): Dictionary mapping read IDs to sets of tags.
+            read_tracks (Dict[Tuple[str, str, int, int], Set[str]]): Dictionary mapping
+                (read_id, chrom, start, end) tuples to sets of overlapping tracks.
 
     Returns:
             Path: The path to the generated report."""
     output_report_tsv.parent.mkdir(parents=True, exist_ok=True)
+
+    # Check for duplicate read IDs (same read_id with different positions)
+    read_id_to_positions: Dict[str, Set[Tuple[str, int, int]]] = {}
+    for read_key in read_tracks.keys():
+        if isinstance(read_key, tuple) and len(read_key) >= 4:
+            rid, chrom, start, end = read_key
+            if rid not in read_id_to_positions:
+                read_id_to_positions[rid] = set()
+            read_id_to_positions[rid].add((chrom, start, end))
+
+    # Log warning if duplicates exist
+    duplicate_read_ids = [
+        rid for rid, positions in read_id_to_positions.items() if len(positions) > 1
+    ]
+    if duplicate_read_ids:
+        log(
+            f"Found {len(duplicate_read_ids)} duplicated read IDs: {duplicate_read_ids}. "
+            f"Using ID:chrom:start:end format in report for all reads.",
+            "W",
+        )
+
     with output_report_tsv.open("w", encoding="utf-8") as handle:
-        handle.write("read_id\tfiltered_out\tassociated_tracks\n")
-        for read_id, track_set in read_tracks.items():
+        handle.write("read_key\tfiltered_out\tassociated_tracks\n")
+        for read_key, track_set in read_tracks.items():
             tracks = sorted(track_set)
             excluded = "true" if tracks else "false"
-            overlapped = ",".join(tracks)
-            handle.write(f"{read_id}\t{excluded}\t{overlapped}\n")
+            overlapped = ",".join(tracks) if tracks else ""
+            if isinstance(read_key, tuple) and len(read_key) >= 4:
+                rid, chrom, start, end = read_key
+                # Use read_id:chrom:start:end format for all reads (1-based positions)
+                display_id = f"{rid}:{chrom}:{start + 1}:{end}"
+            else:
+                display_id = str(read_key)
+            # Build line with exactly 3 tab-separated columns
+            line_parts = [display_id, excluded, overlapped]
+            handle.write("\t".join(line_parts) + "\n")
     return output_report_tsv

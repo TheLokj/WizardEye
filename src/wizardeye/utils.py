@@ -12,6 +12,7 @@ import hashlib
 import shutil
 import shlex
 import sys
+import os
 
 from typing import Dict, Iterable, List, Optional, Tuple
 from dataclasses import dataclass
@@ -263,9 +264,10 @@ def write_seq_sizes_from_fasta(reference_fasta: Path, output_sizes: Path) -> Pat
     if not fai_path.exists():
         raise RuntimeError(f"samtools faidx did not produce index: {fai_path}")
 
-    with fai_path.open("r", encoding="utf-8") as fai, output_sizes.open(
-        "w", encoding="utf-8"
-    ) as out:
+    with (
+        fai_path.open("r", encoding="utf-8") as fai,
+        output_sizes.open("w", encoding="utf-8") as out,
+    ):
         for raw_line in fai:
             line = raw_line.strip()
             if not line:
@@ -638,15 +640,51 @@ def write_seq_sizes_from_bam(bam_file: Path, out_path: Path) -> Path:
             "pysam is required to export BigWig files. Install it with: pip install pysam"
         )
 
-    with pysam.AlignmentFile(str(bam_file), "rb") as bam, out_path.open(
-        "w", encoding="utf-8"
-    ) as handle:
+    with (
+        pysam.AlignmentFile(str(bam_file), "rb") as bam,
+        out_path.open("w", encoding="utf-8") as handle,
+    ):
         for chrom, length in sorted(
             zip(bam.references, bam.lengths), key=lambda x: x[0]
         ):
             handle.write(f"{chrom}\t{length}\n")
 
     return out_path
+
+
+def merge_and_sort_bams(
+    input_bams: List[Path],
+    output_bam: Path,
+    n_threads: int = 1,
+) -> None:
+    """Merge multiple BAM files and sort the result using samtools cat + sort pipeline.
+
+    Runs samtools cat to concatenate BAMs, then pipes through samtools sort.
+
+    Args:
+            input_bams (List[Path]): List of BAM files to merge.
+            output_bam (Path): Path to write the sorted merged BAM to.
+            n_threads (int): Number of threads for samtools sort. Default is 1.
+
+    Raises:
+            subprocess.CalledProcessError: If samtools cat or sort fails.
+    """
+    samtools_cat = subprocess.Popen(
+        ["samtools", "cat"] + [str(path) for path in input_bams],
+        stdout=subprocess.PIPE,
+    )
+    try:
+        run(
+            ["samtools", "sort", "-@", str(n_threads), "-o", str(output_bam), "-"],
+            check=True,
+            stdin=samtools_cat.stdout,
+        )
+    finally:
+        if samtools_cat.stdout is not None:
+            samtools_cat.stdout.close()
+        return_code = samtools_cat.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, samtools_cat.args)
 
 
 # --- BED and genomic interval utilities ---
@@ -671,44 +709,161 @@ def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path
 
     bedtools = shutil.which("bedtools")
     if bedtools is None:
-        raise RuntimeError(
-            "bedtools is required but was not found on PATH. "
-            "Install it with: conda install -c bioconda bedtools"
-        )
+        raise RuntimeError("bedtools is required but was not found on PATH. ")
 
     track_names = [name.split("_k")[0] for name, _ in bed_files]
     bed_paths = [str(p) for _, p in bed_files]
 
-    cmd = [bedtools, "multiinter", "-i"] + bed_paths + ["-names"] + track_names
-    log(" ".join(cmd), "C")
+    if len(bed_files) == 1:
+        log("Only one track requested.", "W")
+        raw_name, bed_path = bed_files[0]
+        track_name = raw_name.split("_k")[0]
 
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=True,
-    )
+        cmd = [bedtools, "merge", "-i", str(bed_path)]
+        log(" ".join(cmd), "C")
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
 
-    # multiinter output columns:
-    #   0: chrom  1: start  2: end  3: num_intersecting  4: track_names (comma-sep)
-    with output_bed.open("w", encoding="utf-8") as out_fh:
-        for line in result.stdout.splitlines():
-            if not line:
-                continue
-            parts = line.split("\t")
-            if len(parts) < 5:
-                continue
-            chrom, start, end, tracks = parts[0], parts[1], parts[2], parts[4]
-            seen: set[str] = set()
-            deduped = []
-            for t in tracks.split(","):
-                if t not in seen:
-                    seen.add(t)
-                    deduped.append(t)
-            out_fh.write(f"{chrom}\t{start}\t{end}\t{','.join(deduped)}\n")
+        with output_bed.open("w", encoding="utf-8") as out_fh:
+            for line in result.stdout.splitlines():
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 3:
+                    chrom, start, end = parts[0], parts[1], parts[2]
+                    out_fh.write(f"{chrom}\t{start}\t{end}\t{track_name}\n")
+
+    else:
+        cmd = [bedtools, "multiinter", "-i"] + bed_paths + ["-names"] + track_names
+        log(" ".join(cmd), "C")
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+
+        # multiinter output columns:
+        #   0: chrom  1: start  2: end  3: num_intersecting  4: track_names (comma-sep)
+        with output_bed.open("w", encoding="utf-8") as out_fh:
+            for line in result.stdout.splitlines():
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 5:
+                    continue
+                chrom, start, end, tracks = parts[0], parts[1], parts[2], parts[4]
+                seen: set[str] = set()
+                deduped = []
+                for t in tracks.split(","):
+                    if t not in seen:
+                        seen.add(t)
+                        deduped.append(t)
+                out_fh.write(f"{chrom}\t{start}\t{end}\t{','.join(deduped)}\n")
 
     return output_bed
+
+
+def sort_bed_file(
+    input_path: Path,
+    output_path: Optional[Path] = None,
+    n_threads: int = 1,
+    tmp_dir: Optional[Path] = None,
+) -> Path:
+    """Sort a BED file by chromosome and position.
+
+    Args:
+            input_path (Path): The path to the input BED file to sort.
+            output_path (Optional[Path]): The path to write the sorted output to. Defaults to input_path (in-place).
+            n_threads (int): Number of threads for parallel sort. Default is 1.
+            tmp_dir (Optional[Path]): Temporary directory for sort. Defaults to output_path parent.
+
+    Returns:
+            Path: The path to the sorted output file.
+    """
+    output_path = output_path or input_path
+    tmp_dir = tmp_dir or output_path.parent
+    run(
+        [
+            "sort",
+            "-k1,1",
+            "-k2,2n",
+            f"--parallel={n_threads}",
+            "-T",
+            str(tmp_dir),
+            str(input_path),
+            "-o",
+            str(output_path),
+        ],
+        check=True,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    return output_path
+
+
+def compute_sorted_genome_coverage(
+    input_bed: Path,
+    seq_sizes: Path,
+    output_bg: Path,
+    n_threads: int = 1,
+    tmp_dir: Optional[Path] = None,
+) -> None:
+    """Compute genome coverage from BED and write sorted bedGraph output.
+
+    Runs bedtools genomecov with -bga flag and pipes through sort to produce
+    a position-sorted bedGraph file.
+
+    Args:
+            input_bed (Path): The path to the input BED file.
+            seq_sizes (Path): The path to the chrom.sizes file.
+            output_bg (Path): The path to write the sorted bedGraph output to.
+            n_threads (int): Number of threads for parallel sort. Default is 1.
+            tmp_dir (Optional[Path]): Temporary directory for sort. Defaults to output_bg parent.
+
+    Raises:
+            subprocess.CalledProcessError: If bedtools genomecov or sort fails.
+    """
+    tmp_dir = tmp_dir or output_bg.parent
+    genomecov_cmd = subprocess.Popen(
+        [
+            "bedtools",
+            "genomecov",
+            "-i",
+            str(input_bed),
+            "-g",
+            str(seq_sizes),
+            "-bga",
+        ],
+        stdout=subprocess.PIPE,
+    )
+    sort_cmd = subprocess.Popen(
+        [
+            "sort",
+            "-k1,1",
+            "-k2,2n",
+            f"--parallel={n_threads}",
+            "-T",
+            str(tmp_dir),
+        ],
+        stdin=genomecov_cmd.stdout,
+        stdout=open(output_bg, "w"),
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    genomecov_cmd.stdout.close()
+    return_code = sort_cmd.wait()
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, sort_cmd.args)
+    if genomecov_cmd.wait() != 0:
+        raise subprocess.CalledProcessError(
+            genomecov_cmd.returncode, genomecov_cmd.args
+        )
 
 
 def convert_bedgraph_to_bigwig(

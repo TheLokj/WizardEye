@@ -10,8 +10,8 @@ import subprocess
 import sys
 from typing import Optional
 
-DISPLAY_VERSION = "0.1.3"
-PACKAGE_VERSION = "0.1.3"
+DISPLAY_VERSION = "0.1.4"
+PACKAGE_VERSION = "0.1.4"
 
 
 def _get_git_commit_hash() -> Optional[str]:

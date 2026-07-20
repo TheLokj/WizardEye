@@ -38,14 +38,118 @@ from .utils import (
     write_seq_sizes_from_fasta,
     iterate_mapping_intervals,
     iterate_unique_mapping_intervals,
+    sort_bed_file,
+    compute_sorted_genome_coverage,
+    merge_and_sort_bams,
     BWAParameters,
     get_bwa_params_hash,
 )
 
-# -- WizardEye mappability utilities --
+# --- WizardEye mappability pipeline blocks ---
 
 
-def from_alignment_to_bigWig(
+def _split_fasta_into_kmers(
+    input_fasta: Path,
+    kmer_length: int,
+    offset_step: int,
+    chunk_size: int,
+    output_dir: Path,
+    n_threads: int = 1,
+) -> List[Path]:
+    """Split FASTA into k-mers, deduplicate, and chunk using seqkit pipeline.
+
+    Runs a 3-stage pipeline via PIPE specific to the mappability workflow:
+    1. seqkit sliding: generate k-mers with sliding window
+    2. seqkit rmdup: deduplicate sequences
+    3. seqkit split2: split into chunks of specified size
+
+    Args:
+            input_fasta (Path): Path to the input FASTA file.
+            kmer_length (int): Length of k-mers to generate (-W).
+            offset_step (int): Step size for sliding window (-s).
+            chunk_size (int): Number of sequences per chunk for split2 (-s).
+            output_dir (Path): Directory where chunk FASTA files will be written.
+            n_threads (int): Number of threads for parallel operations. Default is 1.
+
+    Returns:
+            List[Path]: Sorted list of generated chunk FASTA files.
+
+    Raises:
+            RuntimeError: If no chunk FASTA files are produced.
+            subprocess.CalledProcessError: If any stage of the pipeline fails.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    p1 = p2 = p3 = None
+    try:
+        # 1. Sliding window
+        p1 = subprocess.Popen(
+            [
+                "seqkit",
+                "sliding",
+                "-j",
+                str(n_threads),
+                "-W",
+                str(kmer_length),
+                "-s",
+                str(offset_step),
+                str(input_fasta),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=sys.stderr,
+        )
+
+        # 2. Deduplication
+        p2 = subprocess.Popen(
+            ["seqkit", "rmdup", "-j", str(n_threads), "-s"],
+            stdin=p1.stdout,
+            stdout=subprocess.PIPE,
+            stderr=sys.stderr,
+        )
+
+        # 3. Splitting
+        p3 = subprocess.Popen(
+            [
+                "seqkit",
+                "split2",
+                "-j",
+                str(n_threads),
+                "-s",
+                str(chunk_size),
+                "-O",
+                str(output_dir),
+                "--extension",
+                ".fasta",
+                "-",
+            ],
+            stdin=p2.stdout,
+            stderr=sys.stderr,
+        )
+
+        p1.stdout.close()
+        p2.stdout.close()
+
+        p1.wait()
+        p2.wait()
+        p3.wait()
+
+        for p in (p1, p2, p3):
+            if p.returncode != 0:
+                raise subprocess.CalledProcessError(p.returncode, p.args)
+
+    finally:
+        for p in (p1, p2, p3):
+            if p is not None and p.poll() is None:
+                p.kill()
+
+    chunk_fastas = sorted(output_dir.rglob("*.fasta"))
+    if not chunk_fastas:
+        raise RuntimeError("No chunk FASTA files were produced by seqkit split2")
+
+    return chunk_fastas
+
+
+def _from_alignment_to_bigWig(
     bam_file: Path,
     out_dir: Path,
     kmer_length: int,
@@ -92,89 +196,15 @@ def from_alignment_to_bigWig(
 
     # Sort BED files by chrom then position (required by bedtools genomecov)
     log("Sorting BED files by chromosome and position...", "I")
-    for bed_file in (n_map_bed, n_uniq_bed):
-        tmp_sorted = bed_file.with_suffix(".sorted")
-        run(
-            [
-                "sort",
-                "-k1,1",
-                "-k2,2n",
-                "--parallel=" + str(n_threads),
-                "-T",
-                str(tmp_dir),
-                str(bed_file),
-                "-o",
-                str(tmp_sorted),
-            ],
-            check=True,
-            env={**os.environ, "LC_ALL": "C"},
-        )
-        tmp_sorted.replace(bed_file)
+    sort_bed_file(n_map_bed, n_map_bed, n_threads, tmp_dir)
+    sort_bed_file(n_uniq_bed, n_uniq_bed, n_threads, tmp_dir)
 
     # Use bedtools genomecov to compute coverage
     write_seq_sizes_from_bam(bam_file, seq_sizes)
-
-    with open(cov_map_bg, "w") as f_map:
-        genomecov_map = subprocess.Popen(
-            [
-                "bedtools",
-                "genomecov",
-                "-i",
-                str(n_map_bed),
-                "-g",
-                str(seq_sizes),
-                "-bga",
-            ],
-            stdout=subprocess.PIPE,
-        )
-        sort_map = subprocess.Popen(
-            [
-                "sort",
-                "-k1,1",
-                "-k2,2n",
-                "--parallel=" + str(n_threads),
-                "-T",
-                str(tmp_dir),
-            ],
-            stdin=genomecov_map.stdout,
-            stdout=f_map,
-            env={**os.environ, "LC_ALL": "C"},
-        )
-        genomecov_map.stdout.close()
-        return_code = sort_map.wait()
-        if return_code != 0:
-            raise subprocess.CalledProcessError(return_code, sort_map.args)
-
-    with open(cov_uniq_bg, "w") as f_uniq:
-        genomecov_uniq = subprocess.Popen(
-            [
-                "bedtools",
-                "genomecov",
-                "-i",
-                str(n_uniq_bed),
-                "-g",
-                str(seq_sizes),
-                "-bga",
-            ],
-            stdout=subprocess.PIPE,
-        )
-        sort_uniq = subprocess.Popen(
-            [
-                "sort",
-                "-k1,1",
-                "-k2,2n",
-                "--parallel=" + str(n_threads),
-                "-T",
-                str(tmp_dir),
-            ],
-            stdin=genomecov_uniq.stdout,
-            stdout=f_uniq,
-            env={**os.environ, "LC_ALL": "C"},
-        )
-        genomecov_uniq.stdout.close()
-        return_code = sort_uniq.wait()
-        if return_code != 0:
-            raise subprocess.CalledProcessError(return_code, sort_uniq.args)
+    compute_sorted_genome_coverage(n_map_bed, seq_sizes, cov_map_bg, n_threads, tmp_dir)
+    compute_sorted_genome_coverage(
+        n_uniq_bed, seq_sizes, cov_uniq_bg, n_threads, tmp_dir
+    )
 
     # Count covered bases from bedGraph files
     def count_bp_from_bedgraph(bg_path: Path) -> int:
@@ -203,10 +233,7 @@ def from_alignment_to_bigWig(
     return cov_map_bw, cov_uniq_bw, covered_bp
 
 
-# --- WizardEye mappability pipeline blocks ---
-
-
-def align_with_bwa_aln(
+def _align_with_bwa_aln(
     input_fasta: Path,
     reference: Path,
     bwa_params: BWAParameters = BWAParameters(),
@@ -290,6 +317,9 @@ def align_with_bwa_aln(
             tmp_file.unlink()
 
     return bam_file
+
+
+# --- WizardEye mappability main function ---
 
 
 def create_mappability_track(
@@ -409,74 +439,14 @@ def create_mappability_track(
             "I",
         )
         chunk_dir = tmp_dir / f"{input_name}_chunks"
-        chunk_dir.mkdir(parents=True, exist_ok=True)
-
-        p1 = p2 = p3 = None
-
-        try:
-            # 1. Sliding window
-            p1 = subprocess.Popen(
-                [
-                    "seqkit",
-                    "sliding",
-                    "-j",
-                    str(n_threads),
-                    "-W",
-                    str(kmer_length),
-                    "-s",
-                    str(offset_step),
-                    str(input_fasta),
-                ],
-                stdout=subprocess.PIPE,
-                stderr=sys.stderr,
-            )
-
-            # 2. Deduplication
-            p2 = subprocess.Popen(
-                ["seqkit", "rmdup", "-j", str(n_threads), "-s"],
-                stdin=p1.stdout,
-                stdout=subprocess.PIPE,
-                stderr=sys.stderr,
-            )
-
-            # 3. Splitting
-            p3 = subprocess.Popen(
-                [
-                    "seqkit",
-                    "split2",
-                    "-j",
-                    str(n_threads),
-                    "-s",
-                    str(chunk_size),
-                    "-O",
-                    str(chunk_dir),
-                    "--extension",
-                    ".fasta",
-                    "-",
-                ],
-                stdin=p2.stdout,
-                stderr=sys.stderr,
-            )
-
-            p1.stdout.close()
-            p2.stdout.close()
-
-            p1.wait()
-            p2.wait()
-            p3.wait()
-
-            for p in (p1, p2, p3):
-                if p.returncode != 0:
-                    raise subprocess.CalledProcessError(p.returncode, p.args)
-
-        finally:
-            for p in (p1, p2, p3):
-                if p is not None and p.poll() is None:
-                    p.kill()
-
-        chunk_fastas = sorted(chunk_dir.rglob("*.fasta"))
-        if not chunk_fastas:
-            raise RuntimeError("No chunk FASTA files were produced by seqkit split2")
+        chunk_fastas = _split_fasta_into_kmers(
+            input_fasta=input_fasta,
+            kmer_length=kmer_length,
+            offset_step=offset_step,
+            chunk_size=chunk_size,
+            output_dir=chunk_dir,
+            n_threads=n_threads,
+        )
 
         workers = max(1, n_threads)
         if n_threads > 1:
@@ -489,7 +459,7 @@ def create_mappability_track(
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [
                 executor.submit(
-                    align_with_bwa_aln,
+                    _align_with_bwa_aln,
                     chunk_fasta,
                     input_target,
                     bwa_params,
@@ -507,23 +477,7 @@ def create_mappability_track(
 
         log(f"Merging {len(chunk_bams)} chunk BAM files into one unique BAM...", "I")
         log(f"samtools cat {' '.join(str(path) for path in chunk_bams)}", "C")
-        samtools_cat = subprocess.Popen(
-            ["samtools", "cat", *[str(path) for path in chunk_bams]],
-            stdout=subprocess.PIPE,
-        )
-        try:
-            run(
-                ["samtools", "sort", "-@", str(workers), "-o", str(bam_file), "-"],
-                check=True,
-                stdin=samtools_cat.stdout,
-            )
-        finally:
-            if samtools_cat.stdout is not None:
-                samtools_cat.stdout.close()
-
-        return_code = samtools_cat.wait()
-        if return_code != 0:
-            raise subprocess.CalledProcessError(return_code, samtools_cat.args)
+        merge_and_sort_bams(chunk_bams, bam_file, workers)
 
         for tmp_bam in chunk_bams:
             if tmp_bam.exists():
@@ -531,7 +485,7 @@ def create_mappability_track(
 
         # Export only final BigWig depth tracks.
         log("Exporting mappability BigWig tracks from temporary BAM...", "I")
-        cov_map_bw, cov_uniq_bw, covered_bp = from_alignment_to_bigWig(
+        cov_map_bw, cov_uniq_bw, covered_bp = _from_alignment_to_bigWig(
             bam_file=bam_file,
             out_dir=out_dir,
             kmer_length=kmer_length,
@@ -562,9 +516,7 @@ def create_mappability_track(
                 "-N": bwa_params.all_aln,
                 "-t": bwa_params.threads,
                 "-R": bwa_params.r_best_hits,
-            },
-            "bwa_samse_parameters": {
-                "-n": bwa_params.samse_n,
+                "-sn": bwa_params.samse_n,
             },
             "chunk_parameters": {
                 "-j": n_threads,

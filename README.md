@@ -1,7 +1,7 @@
 # WizardEye
 
-![Python](https://img.shields.io/badge/Python->=3.8-green.svg)
-[![Version](https://img.shields.io/badge/version-0.1.3-yellow.svg)](https://github.com/TheLokj/WizardEye/releases)
+![Python](https://img.shields.io/badge/Python->=3.9-green.svg)
+[![Version](https://img.shields.io/badge/version-0.1.4-yellow.svg)](https://github.com/TheLokj/WizardEye/releases)
 ![Beta](https://img.shields.io/badge/beta-orange.svg)
 [![Install WizardEye using bioconda](https://img.shields.io/badge/Install%20WizardEye%20using-bioconda-brightblue.svg?style=flat)](https://anaconda.org/channels/bioconda/packages/wizardeye/overview)
 [![Python CI](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml/badge.svg)](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml)
@@ -45,6 +45,8 @@ You can then use these cross-mappability tracks to filter your alignment. For ex
 Since WizardEye relies only on alignment and prior knowledge, it is recommended for use when you have an idea of the potential contamination types in your sample. The more exhaustive the database, the more effective (and restrictive) the filtering.
 
 Note that WizardEye only identifies ambiguous regions **that can align**. It **cannot** filter sequences that are very distant from the target. Therefore, it is highly recommended as a complementary step to traditional large-scale filtering. Finally, note that WizardEye filtering can be very strict, leading to the loss of substantial information, as it prioritizes risk avoidance over the statistical power of post-hoc analyses.
+
+Additionally, WizardEye currently only supports single-end reads or merged pairs. Paired-end reads are not supported and will cause the tool to exit with an error.
 
 ## Installation
 
@@ -245,14 +247,14 @@ Note that the `-mf` parameter is also available in the `export` command to gener
 
 WizardEye produces a tabulation-separated report containing, for each read, the decision and overlapping tracks, as follows:
 
-| read_id | filtered_out | associated_tracks |
+| read_key | filtered_out | associated_tracks |
 |---|---|---|
-| read_1 | true | sus_scrofa,bos_taurus |
-| read_2 | false |  |
-| read_3 | true | felis_catus |
-| read_4 | true | bos_taurus |
-| read_5 | true | bos_taurus,ovis_aries |
-| read_6 | false |  |
+| read_1:chrom1:1:35 | true | sus_scrofa,bos_taurus |
+| read_2:chrom1:36:70 | false |  |
+| read_3:chrom1:71:105 | true | felis_catus |
+| read_4:chrom1:106:140 | true | bos_taurus |
+| read_5:chrom1:232:256 | true | bos_taurus,ovis_aries |
+| read_5:chrom2:2:36 | false |  |
 
 With `--export-bam`, WizardEye produces two additional files:
 
@@ -275,14 +277,14 @@ In this example, tracks not reported by `filter` with `-r=0.01` have a `0` in th
 
 WizardEye produces a tabulation-separated report containing, for each read, the requested statistics:
 
-| read_id | max_sus_scrofa | max_bos_taurus | max_ovis_aries |
+| read_key | max_sus_scrofa | max_bos_taurus | max_ovis_aries |
 |---|---|---|---|
-| read_1 | 0 | 4524 | 0 |
-| read_2 | 422 | 0 | 0 |
-| read_3 | 151 | 1254 | 1515 |
-| read_4 | 0 | 0 | 0 |
-| read_5 | 0 | 0 | 311 |
-| read_6 | 122 | 0 | 111 |
+| r1:chr1:2:36 | 0 | 4524 | 0 |
+| r2:chr1:37:71 | 422 | 0 | 0 |
+| r3:chr1:75:109 | 151 | 1254 | 1515 |
+| r4:chr1:106:140 | 0 | 0 | 0 |
+| r5:chr1:232:256 | 0 | 0 | 311 |
+| r5:chr2:3:37 | 122 | 0 | 111 |
 
 ### Export a mask
 
@@ -312,4 +314,4 @@ This command creates the target/track directory, copies the two BigWig files as 
 
 It is recommended to complement your filtering with an evolutionarily-aware method such as Kraken2. This combination is useful for removing both reads from completely different organisms and reads that may be ambiguous between closely related organisms.
 
-*Last documentation update: 0.1.3.*
+*Last documentation update: 0.1.4.*
