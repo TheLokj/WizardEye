@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """Filter alignment BAM utilities for WizardEye.
 
 This Python module provides functions to generate mask using previously generated
@@ -9,29 +7,28 @@ to generate the final filtration report.
 """
 
 from __future__ import annotations
+
 import hashlib
-import pyBigWig
 import shutil
 import subprocess
 import sys
 import tempfile
-import numpy as np
-
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
 
-from .db import get_tracks, Track
+import numpy as np
+import pyBigWig
 import pysam
-from .utils import (
-    log,
-    from_charlist_to_list,
-    validate_bam_compatibility,
-    merge_bed_files,
-    convert_bigwig_to_bedGraph,
-    BWAParameters,
-)
 
+from .db import Track, get_tracks
+from .utils import (
+    BWAParameters,
+    convert_bigwig_to_bedGraph,
+    from_charlist_to_list,
+    log,
+    merge_bed_files,
+    validate_bam_compatibility,
+)
 
 # -- Mask creation related functions --
 
@@ -72,7 +69,7 @@ def _build_mask_from_track(
     cross_stringency: float,
     consider_all: bool = False,
     no_cache: bool = False,
-) -> Tuple[str, Path]:
+) -> tuple[str, Path]:
     """Compute one track mask.
 
     Args:
@@ -137,17 +134,17 @@ def _build_mask_from_track(
 
 def generate_global_mask(
     ref_species: str,
-    inputs: List[str],
+    inputs: list[str],
     kmer_length: int,
     offset_step: int,
     cross_stringency: float,
     consider_all: bool = False,
-    output_file: Optional[str] = None,
-    bwa_params: Optional[BWAParameters] = None,
+    output_file: str | None = None,
+    bwa_params: BWAParameters | None = None,
     db_root: str = "database",
     no_cache: bool = False,
     n_threads: int = 1,
-    min_freq: Optional[int] = None,
+    min_freq: int | None = None,
 ) -> Path:
     """Generate a mask based on requested tracks and parameters.
 
@@ -277,7 +274,7 @@ def generate_global_mask(
     if no_cache:
         merged_mask_bed.parent.mkdir(parents=True, exist_ok=True)
 
-    per_track_beds: List[Tuple[str, Path]] = []
+    per_track_beds: list[tuple[str, Path]] = []
 
     if n_threads > 1 and len(selected_tracks) > 1:
         max_workers = min(n_threads, len(selected_tracks))
@@ -403,18 +400,18 @@ def filter_bam(
     input_bam: str,
     ref: str,
     db_root: str,
-    exclude_tracks: List[str],
+    exclude_tracks: list[str],
     kmer_length: int,
     offset_step: int,
-    bwa_params: Optional[BWAParameters] = None,
+    bwa_params: BWAParameters | None = None,
     stringency: float = 0.99,
-    min_freq: Optional[int] = None,
+    min_freq: int | None = None,
     consider_all: bool = False,
-    output_report_tsv: Optional[str] = None,
+    output_report_tsv: str | None = None,
     export_bam: bool = False,
-    output_filtered_bam: Optional[str] = None,
-    output_excluded_bam: Optional[str] = None,
-) -> Dict[str, object]:
+    output_filtered_bam: str | None = None,
+    output_excluded_bam: str | None = None,
+) -> dict[str, object]:
     """Alternative BAM filtering function using pyBigWig directly instead of bedtools mask intersection.
 
     Inspired by _generate_count_only_report, this function filters reads by checking if the sum of
@@ -480,7 +477,7 @@ def filter_bam(
         bwa_params=bwa_params,
     )
     normalized_requested_tracks = set(sorted_tracks)
-    track_to_tags: Dict[str, Set[str]] = {}
+    track_to_tags: dict[str, set[str]] = {}
     for track in tracks_for_params:
         if track.track_name not in normalized_requested_tracks:
             continue
@@ -520,9 +517,9 @@ def filter_bam(
         opened_bws.append(pyBigWig.open(str(bw_path)))
 
     try:
-        read_tracks: Dict[Tuple[str, str, int, int], Set[str]] = {}
-        read_tags: Dict[Tuple[str, str, int, int], Set[str]] = {}
-        excluded_reads: Set[Tuple[str, str, int, int]] = set()
+        read_tracks: dict[tuple[str, str, int, int], set[str]] = {}
+        read_tags: dict[tuple[str, str, int, int], set[str]] = {}
+        excluded_reads: set[tuple[str, str, int, int]] = set()
         n_total_records = 0
         n_mapped_records = 0
 
@@ -602,7 +599,7 @@ def filter_bam(
                         print("+1")
                         excluded_reads.add((chrom, read_id, start, end))
                         max_idx = np.argmax(sum_overlapping)
-                        for track in overlapping_tracks.keys():
+                        for track in overlapping_tracks:
                             if overlapping_tracks[track][max_idx]:
                                 track_name = selected_tracks[
                                     int(track)
@@ -617,8 +614,8 @@ def filter_bam(
         )
         n_filtered = max(0, n_mapped_records - len(excluded_reads))
 
-        filtered_bam: Optional[Path] = None
-        excluded_bam: Optional[Path] = None
+        filtered_bam: Path | None = None
+        excluded_bam: Path | None = None
 
         if export_bam:
             filtered_bam = (
@@ -642,8 +639,11 @@ def filter_bam(
             for bam_path in (filtered_bam, excluded_bam):
                 try:
                     pysam.index(str(bam_path))
-                except Exception:
-                    log(f"Could not index BAM (possibly unsorted): {bam_path}", "W")
+                except (OSError, RuntimeError) as e:
+                    log(
+                        f"Could not index BAM (possibly unsorted): {bam_path} - {e}",
+                        "W",
+                    )
 
         return {
             "mask": None,
@@ -663,10 +663,10 @@ def filter_bam(
 
 def filter_bam_from_reads_id(
     input_bam: Path,
-    excluded_reads: Set[Tuple[str, str, int, int]],
+    excluded_reads: set[tuple[str, str, int, int]],
     output_filtered_bam: Path,
     output_excluded_bam: Path,
-) -> Tuple[int, int, int]:
+) -> tuple[int, int, int]:
     """Split BAM in one pysam pass using excluded read IDs with position info.
 
     Args:
@@ -689,30 +689,32 @@ def filter_bam_from_reads_id(
     n_total_records = 0
     n_excluded_records = 0
 
-    with pysam.AlignmentFile(str(input_bam), "rb") as bam:
-        with pysam.AlignmentFile(
+    with (
+        pysam.AlignmentFile(str(input_bam), "rb") as bam,
+        pysam.AlignmentFile(
             str(output_filtered_bam), "wb", template=bam
-        ) as filtered_handle:
-            with pysam.AlignmentFile(
-                str(output_excluded_bam), "wb", template=bam
-            ) as excluded_handle:
-                for read in bam.fetch(until_eof=True):
-                    n_total_records += 1
-                    read_id = read.query_name
-                    chrom = read.reference_name
-                    start = read.reference_start
-                    end = read.reference_end
-                    if (
-                        read_id
-                        and chrom
-                        and start is not None
-                        and end is not None
-                        and (chrom, read_id, start, end) in excluded_reads
-                    ):
-                        excluded_handle.write(read)
-                        n_excluded_records += 1
-                    else:
-                        filtered_handle.write(read)
+        ) as filtered_handle,
+        pysam.AlignmentFile(
+            str(output_excluded_bam), "wb", template=bam
+        ) as excluded_handle,
+    ):
+        for read in bam.fetch(until_eof=True):
+            n_total_records += 1
+            read_id = read.query_name
+            chrom = read.reference_name
+            start = read.reference_start
+            end = read.reference_end
+            if (
+                read_id
+                and chrom
+                and start is not None
+                and end is not None
+                and (chrom, read_id, start, end) in excluded_reads
+            ):
+                excluded_handle.write(read)
+                n_excluded_records += 1
+            else:
+                filtered_handle.write(read)
 
     n_filtered_records = n_total_records - n_excluded_records
     return n_total_records, n_filtered_records, n_excluded_records
@@ -725,15 +727,15 @@ def count_k_mers_on_bam(
     input_bam: str,
     ref: str,
     db_root: str,
-    exclude_tracks: List[str],
+    exclude_tracks: list[str],
     kmer_length: int,
     offset_step: int,
     count_mode: str,
-    bwa_params: Optional[BWAParameters] = None,
+    bwa_params: BWAParameters | None = None,
     consider_all: bool = False,
-    output_report_tsv: Optional[str] = None,
+    output_report_tsv: str | None = None,
     n_threads: int = 1,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     """Main function to filter a BAM file using several tracks and generate requested outputs.
 
     Args:
@@ -787,7 +789,7 @@ def count_k_mers_on_bam(
         bwa_params=bwa_params,
     )
     normalized_requested_tracks = set(sorted_tracks)
-    track_to_tags: Dict[str, Set[str]] = {}
+    track_to_tags: dict[str, set[str]] = {}
     for track in tracks_for_params:
         if track.track_name not in normalized_requested_tracks:
             continue
@@ -831,11 +833,11 @@ def count_k_mers_on_bam(
 
 def _generate_count_only_report(
     input_bam: Path,
-    selected_tracks: List[Track],
+    selected_tracks: list[Track],
     count_mode: str,
     consider_all: bool,
     output_report_tsv: Path,
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """
     Generate a report summarizing statistics about selected tracks k-mers that can overlap reads found in a BAM file.
 
@@ -919,23 +921,23 @@ def _generate_count_only_report(
 def _default_output_bam(input_bam: Path, suffix: str) -> Path:
     if input_bam.suffix.lower() == ".bam":
         return input_bam.with_suffix(f".{suffix}.bam")
-    return Path(f"{str(input_bam)}.{suffix}.bam")
+    return Path(f"{input_bam!s}.{suffix}.bam")
 
 
 def _default_output_table(input_bam: Path) -> Path:
     if input_bam.suffix.lower() == ".bam":
         return input_bam.with_suffix(".wizardeye.report.tsv")
-    return Path(f"{str(input_bam)}.wizardeye.report.tsv")
+    return Path(f"{input_bam!s}.wizardeye.report.tsv")
 
 
 def _default_output_count_table(input_bam: Path) -> Path:
     if input_bam.suffix.lower() == ".bam":
         return input_bam.with_suffix(".wizardeye.counts.tsv")
-    return Path(f"{str(input_bam)}.wizardeye.counts.tsv")
+    return Path(f"{input_bam!s}.wizardeye.counts.tsv")
 
 
 def write_filtration_report(
-    output_report_tsv: Path, read_tracks: Dict[Tuple[str, str, int, int], Set[str]]
+    output_report_tsv: Path, read_tracks: dict[tuple[str, str, int, int], set[str]]
 ) -> Path:
     """Write one line per read with exclusion flag, overlapping tracks and tags.
 
@@ -949,8 +951,8 @@ def write_filtration_report(
     output_report_tsv.parent.mkdir(parents=True, exist_ok=True)
 
     # Check for duplicate read IDs (same read_id with different positions)
-    read_id_to_positions: Dict[str, Set[Tuple[str, int, int]]] = {}
-    for read_key in read_tracks.keys():
+    read_id_to_positions: dict[str, set[tuple[str, int, int]]] = {}
+    for read_key in read_tracks:
         if isinstance(read_key, tuple) and len(read_key) >= 4:
             rid, chrom, start, end = read_key
             if rid not in read_id_to_positions:

@@ -1,25 +1,25 @@
-# -*- coding: utf-8 -*-
-
 """Utility functions for WizardEye
 
 This modules contains various utility functions for WizardEye, including subprocess execution with logging,
 file hashing, sequence size handling, BAM metadata parsing, and BED file merging.
 """
 
-import subprocess
-import pysam
-import hashlib
-import shutil
-import shlex
-import sys
-import os
+from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Tuple
+import hashlib
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+import pysam
 
-def get_bwa_params_hash(bwa_params: "BWAParameters", hash_length: int = 8) -> str:
+
+def get_bwa_params_hash(bwa_params: BWAParameters, hash_length: int = 8) -> str:
     """Generate a short hash from BWA parameters for track naming.
 
     Args:
@@ -90,7 +90,7 @@ def log(message: str, type: str, colorful=True):
 
 
 def run(
-    command: List[str], log_output: bool = False, **kwargs
+    command: list[str], log_output: bool = False, **kwargs
 ) -> subprocess.CompletedProcess:
     """Execute a command with subprocess.run and log its output.
 
@@ -103,7 +103,7 @@ def run(
             subprocess.CompletedProcess: The subprocess.run return value.
     """
 
-    def _log_stream(content: Optional[object], prefix: str) -> None:
+    def _log_stream(content: object | None, prefix: str) -> None:
         if content is None:
             return
         text = str(content).rstrip()
@@ -128,7 +128,7 @@ def run(
             run_kwargs["text"] = True
 
     try:
-        result = subprocess.run(command, **run_kwargs)
+        result = subprocess.run(command, check=True, **run_kwargs)
     except subprocess.CalledProcessError as exc:
         if log_output:
             _log_stream(exc.stdout, "stdout")
@@ -162,8 +162,8 @@ def file_md5(file_path: Path, chunk_size: int = 1024 * 1024) -> str:
 
 
 def from_charlist_to_list(
-    values: Optional[List[str]], lowercase: bool = False
-) -> List[str]:
+    values: list[str] | None, lowercase: bool = False
+) -> list[str]:
     """Split comma-separated values, trim spaces, drop empties, and deduplicate preserving order.
 
     Args:
@@ -176,7 +176,7 @@ def from_charlist_to_list(
     if not values:
         return []
 
-    normalized: List[str] = []
+    normalized: list[str] = []
     seen = set()
     for raw_value in values:
         for token in str(raw_value).split(","):
@@ -190,7 +190,20 @@ def from_charlist_to_list(
     return normalized
 
 
-def get_name_from_param(param_content: Dict) -> str:
+def check_all_selector(values: list[str]) -> bool:
+    """Check if the list contains '*' or 'all' (case-insensitive).
+
+    Args:
+        values (List[str]): A list of strings to check.
+
+    Returns:
+        bool: True if '*' or 'all' is found in the list (case-insensitive).
+    """
+    normalized = [v.strip().lower() for v in values if v.strip()]
+    return any(v in ["*", "all"] for v in normalized)
+
+
+def get_name_from_param(param_content: dict) -> str:
     """Extract a name from parameter content, preferring 'input' then 'track_id'.
 
     Args:
@@ -211,7 +224,7 @@ def get_name_from_param(param_content: Dict) -> str:
 # --- Sequence utilities ---
 
 
-def get_seq_sizes(seq_sizes_path: Path) -> Dict[str, int]:
+def get_seq_sizes(seq_sizes_path: Path) -> dict[str, int]:
     """Get sequence sizes from a chrom.sizes-style file (chrom\\tlength).
 
     Args:
@@ -220,7 +233,7 @@ def get_seq_sizes(seq_sizes_path: Path) -> Dict[str, int]:
     Returns:
             Dict[str, int]: A dictionary mapping sequence names to their lengths.
     """
-    sizes: Dict[str, int] = {}
+    sizes: dict[str, int] = {}
     with seq_sizes_path.open("r", encoding="utf-8") as handle:
         for raw_line in handle:
             line = raw_line.strip()
@@ -259,7 +272,7 @@ def write_seq_sizes_from_fasta(reference_fasta: Path, output_sizes: Path) -> Pat
     output_sizes.parent.mkdir(parents=True, exist_ok=True)
     fai_path = Path(f"{reference_fasta}.fai")
 
-    run(["samtools", "faidx", str(reference_fasta)], check=True)
+    run(["samtools", "faidx", str(reference_fasta)])
 
     if not fai_path.exists():
         raise RuntimeError(f"samtools faidx did not produce index: {fai_path}")
@@ -283,7 +296,7 @@ def write_seq_sizes_from_fasta(reference_fasta: Path, output_sizes: Path) -> Pat
 # --- SAM/BAM utilities ---
 
 
-def parse_xa_tag(xa_value: str) -> List[Tuple[str, int, str]]:
+def parse_xa_tag(xa_value: str) -> list[tuple[str, int, str]]:
     """Parse XA:Z entries into (chrom, pos, cigar) tuples.
 
     Args:
@@ -292,7 +305,7 @@ def parse_xa_tag(xa_value: str) -> List[Tuple[str, int, str]]:
     Returns:
             List[Tuple[str, int, str]]: A list of (chrom, pos, cigar) tuples.
     """
-    hits: List[Tuple[str, int, str]] = []
+    hits: list[tuple[str, int, str]] = []
     if not xa_value:
         return hits
 
@@ -313,7 +326,7 @@ def parse_xa_tag(xa_value: str) -> List[Tuple[str, int, str]]:
     return hits
 
 
-def parse_bam_metadata(bam_path: Path) -> Dict[str, object]:
+def parse_bam_metadata(bam_path: Path) -> dict[str, object]:
     """Read BAM header metadata: @SQ lengths and latest bwa aln command/options.
 
     Args:
@@ -330,8 +343,8 @@ def parse_bam_metadata(bam_path: Path) -> Dict[str, object]:
         ["samtools", "view", "-H", str(bam_path)], text=True
     )
 
-    lengths: Dict[str, int] = {}
-    bwa_aln_cmds: List[str] = []
+    lengths: dict[str, int] = {}
+    bwa_aln_cmds: list[str] = []
 
     # Get sequence names and lengths
     for raw_line in header.splitlines():
@@ -385,7 +398,7 @@ def parse_bam_metadata(bam_path: Path) -> Dict[str, object]:
 
     # Get the latest bwa aln command and parse options of interest
     bwa_aln_cmd = bwa_aln_cmds[-1] if bwa_aln_cmds else None
-    bwa_aln_options: Dict[str, Optional[str]] = {"-n": None, "-o": None, "-l": None}
+    bwa_aln_options: dict[str, str | None] = {"-n": None, "-o": None, "-l": None}
 
     if bwa_aln_cmd:
         try:
@@ -419,7 +432,7 @@ def parse_bam_metadata(bam_path: Path) -> Dict[str, object]:
     }
 
 
-def reference_len_from_cigar(cigar: Optional[str], default_k: int) -> int:
+def reference_len_from_cigar(cigar: str | None, default_k: int) -> int:
     """Return reference-consuming length from a CIGAR string."""
     if not cigar:
         return default_k
@@ -442,7 +455,7 @@ def reference_len_from_cigar(cigar: Optional[str], default_k: int) -> int:
 
 def iterate_mapping_intervals(
     bam_file: Path, kmer_length: int
-) -> Iterable[Tuple[str, int, int]]:
+) -> Iterable[tuple[str, int, int]]:
     """Iterate mapping intervals from BAM, including primary and XA alternative mappings.
 
     Args:
@@ -475,7 +488,7 @@ def iterate_mapping_intervals(
 
 def iterate_unique_mapping_intervals(
     bam_file: Path, kmer_length: int
-) -> Iterable[Tuple[str, int, int]]:
+) -> Iterable[tuple[str, int, int]]:
     """Iterate intervals for mapped reads with MAPQ > 0 and no XA alternatives.
 
     Args:
@@ -508,7 +521,7 @@ def iterate_unique_mapping_intervals(
 def validate_bam_compatibility(
     bam_path: Path,
     reference_seq_sizes_path: Path,
-    bwa_params: Optional["BWAParameters"] = None,
+    bwa_params: BWAParameters | None = None,
 ) -> None:
     """Validate that BAM header @SQ SN/LN entries are compatible with reference sequence sizes, and optionally check for consistency with requested BWA aln parameters.
 
@@ -533,7 +546,7 @@ def validate_bam_compatibility(
     bwa_cmd = bam_metadata["bwa_aln_cmd"]
     observed = bam_metadata["bwa_aln_options"]
 
-    expected_bwa_params: Dict[str, Optional[object]] = {
+    expected_bwa_params: dict[str, object | None] = {
         "-n": bwa_params.missing_prob_err_rate if bwa_params else None,
         "-o": bwa_params.max_gap_opens if bwa_params else None,
         "-l": bwa_params.seed_length if bwa_params else None,
@@ -546,7 +559,7 @@ def validate_bam_compatibility(
                 "W",
             )
         else:
-            mismatches: List[str] = []
+            mismatches: list[str] = []
             for opt, expected_value in expected_bwa_params.items():
                 if expected_value is None:
                     continue
@@ -653,7 +666,7 @@ def write_seq_sizes_from_bam(bam_file: Path, out_path: Path) -> Path:
 
 
 def merge_and_sort_bams(
-    input_bams: List[Path],
+    input_bams: list[Path],
     output_bam: Path,
     n_threads: int = 1,
 ) -> None:
@@ -676,7 +689,6 @@ def merge_and_sort_bams(
     try:
         run(
             ["samtools", "sort", "-@", str(n_threads), "-o", str(output_bam), "-"],
-            check=True,
             stdin=samtools_cat.stdout,
         )
     finally:
@@ -690,7 +702,7 @@ def merge_and_sort_bams(
 # --- BED and genomic interval utilities ---
 
 
-def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path:
+def merge_bed_files(bed_files: list[tuple[str, Path]], output_bed: Path) -> Path:
     """Merge multiple BED files with track names into a single BED file with merged intervals
     and comma-separated track annotations, using bedtools multiinter.
 
@@ -723,8 +735,7 @@ def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path
         log(" ".join(cmd), "C")
         result = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             check=True,
         )
@@ -744,8 +755,7 @@ def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path
 
         result = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             check=True,
         )
@@ -773,9 +783,9 @@ def merge_bed_files(bed_files: List[Tuple[str, Path]], output_bed: Path) -> Path
 
 def sort_bed_file(
     input_path: Path,
-    output_path: Optional[Path] = None,
+    output_path: Path | None = None,
     n_threads: int = 1,
-    tmp_dir: Optional[Path] = None,
+    tmp_dir: Path | None = None,
 ) -> Path:
     """Sort a BED file by chromosome and position.
 
@@ -802,7 +812,6 @@ def sort_bed_file(
             "-o",
             str(output_path),
         ],
-        check=True,
         env={**os.environ, "LC_ALL": "C"},
     )
     return output_path
@@ -813,7 +822,7 @@ def compute_sorted_genome_coverage(
     seq_sizes: Path,
     output_bg: Path,
     n_threads: int = 1,
-    tmp_dir: Optional[Path] = None,
+    tmp_dir: Path | None = None,
 ) -> None:
     """Compute genome coverage from BED and write sorted bedGraph output.
 
@@ -843,27 +852,31 @@ def compute_sorted_genome_coverage(
         ],
         stdout=subprocess.PIPE,
     )
-    sort_cmd = subprocess.Popen(
-        [
-            "sort",
-            "-k1,1",
-            "-k2,2n",
-            f"--parallel={n_threads}",
-            "-T",
-            str(tmp_dir),
-        ],
-        stdin=genomecov_cmd.stdout,
-        stdout=open(output_bg, "w"),
-        env={**os.environ, "LC_ALL": "C"},
-    )
-    genomecov_cmd.stdout.close()
-    return_code = sort_cmd.wait()
-    if return_code != 0:
-        raise subprocess.CalledProcessError(return_code, sort_cmd.args)
-    if genomecov_cmd.wait() != 0:
-        raise subprocess.CalledProcessError(
-            genomecov_cmd.returncode, genomecov_cmd.args
+    with open(output_bg, "w") as out_file:
+        sort_cmd = subprocess.Popen(
+            [
+                "sort",
+                "-k1,1",
+                "-k2,2n",
+                f"--parallel={n_threads}",
+                "-T",
+                str(tmp_dir),
+            ],
+            stdin=genomecov_cmd.stdout,
+            stdout=out_file,
+            env={**os.environ, "LC_ALL": "C"},
         )
+
+        genomecov_cmd.stdout.close()
+
+        return_code = sort_cmd.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, sort_cmd.args)
+
+        if genomecov_cmd.wait() != 0:
+            raise subprocess.CalledProcessError(
+                genomecov_cmd.returncode, genomecov_cmd.args
+            )
 
 
 def convert_bedgraph_to_bigwig(
@@ -885,7 +898,6 @@ def convert_bedgraph_to_bigwig(
 
     run(
         ["bedGraphToBigWig", str(bedgraph_path), str(seq_sizes_path), str(bigwig_path)],
-        check=True,
     )
 
     return bigwig_path
@@ -905,7 +917,7 @@ def convert_bigwig_to_bedGraph(bigwig_path: Path, bedgraph_path: Path) -> Path:
             "bigWigToBedGraph not found in PATH, cannot produce .bg outputs"
         )
 
-    run(["bigWigToBedGraph", str(bigwig_path), str(bedgraph_path)], check=True)
+    run(["bigWigToBedGraph", str(bigwig_path), str(bedgraph_path)])
 
     return bedgraph_path
 
@@ -927,13 +939,13 @@ class BWAParameters:
     - samse_n: -n parameter for bwa samse (default: 2000000000, None means filter by any value)
     """
 
-    missing_prob_err_rate: Optional[float] = None
-    max_gap_opens: Optional[int] = None
-    seed_length: Optional[int] = None
-    all_aln: Optional[bool] = None
-    threads: Optional[int] = None
-    r_best_hits: Optional[int] = None
-    samse_n: Optional[int] = None
+    missing_prob_err_rate: float | None = None
+    max_gap_opens: int | None = None
+    seed_length: int | None = None
+    all_aln: bool | None = None
+    threads: int | None = None
+    r_best_hits: int | None = None
+    samse_n: int | None = None
 
     def __post_init__(self) -> None:
         # Apply defaults if None - only for mutable dataclass

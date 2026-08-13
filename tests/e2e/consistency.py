@@ -13,11 +13,12 @@ ursus_1000000.uniq.L35MQ25.bam was made using gargammel, a Ursus genome, a Brigg
 and aligning on hg19_chr1_25_1kb.fa.
 """
 
+from __future__ import annotations
+
+import shutil
 import subprocess
 import tempfile
-import shutil
 from pathlib import Path
-from typing import List, Optional
 
 # Constants for test fixtures
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -47,7 +48,7 @@ STANDARD_CROSS_STRINGENCY = 0.99
 def generate_standard_database(
     db_root: Path,
     reference_fasta: Path = HG19_FA,
-    query_fastas: Optional[List[Path]] = None,
+    query_fastas: list[Path] | None = None,
     kmer_length: int = STANDARD_KMER_LENGTH,
     offset_step: int = STANDARD_OFFSET_STEP,
     bwa_missing_prob_err_rate: float = STANDARD_BWA_MISSING_PROB_ERR_RATE,
@@ -55,7 +56,7 @@ def generate_standard_database(
     bwa_seed_length: int = STANDARD_BWA_SEED_LENGTH,
     chunk_size: int = STANDARD_CHUNK_SIZE,
     n_threads: int = STANDARD_N_THREADS,
-    env: Optional[dict] = None,
+    env: dict | None = None,
 ) -> Path:
     """Generate a standard WizardEye database with tracks for the given query species.
 
@@ -128,20 +129,15 @@ def generate_standard_database(
             str(db_path),
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
+            check=True,
             env=env,
         )
-        if result.returncode != 0:
-            print(f"wizardeye align stderr: {result.stderr}")
-            print(f"wizardeye align stdout: {result.stdout}")
-            raise RuntimeError(
-                f"wizardeye align execution failed with return code {result.returncode}"
-            )
 
         # Verify track directory was created
         ref_stem = Path(reference_fasta).stem
@@ -256,16 +252,14 @@ def test_align_same_behavior_as_original_script():
                 f"-o={original_output}/",
             ]
 
-            result = subprocess.run(original_cmd, capture_output=True, text=True)
+            result = subprocess.run(
+                original_cmd, capture_output=True, text=True, check=True
+            )
             print(f"Original script stdout for {query_fa.name}: {result.stdout}")
             print(f"Original script stderr for {query_fa.name}: {result.stderr}")
             print(
                 f"Original script return code for {query_fa.name}: {result.returncode}"
             )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"Original script execution failed with return code {result.returncode}"
-                )
 
             # Verify original script created expected outputs in output/tracks/
             tracks_dir = original_output / "tracks"
@@ -333,18 +327,13 @@ def test_align_same_behavior_as_original_script():
                 str(wizardeye_db),
             ]
 
-            result = subprocess.run(
+            subprocess.run(
                 wizardeye_cmd,
                 capture_output=True,
                 text=True,
+                check=True,
                 env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
             )
-            if result.returncode != 0:
-                print(f"wizardeye align stderr for {query_fa.name}: {result.stderr}")
-                print(f"wizardeye align stdout for {query_fa.name}: {result.stdout}")
-                raise RuntimeError(
-                    f"wizardeye align execution failed with return code {result.returncode}"
-                )
 
             # Locate WizardEye output - track dir name uses float :g format for bwa params
             hg19_stem = HG19_FA.stem
@@ -482,13 +471,10 @@ def test_export_same_behavior_as_original_script():
             text=True,
             encoding="utf-8",
             errors="replace",
+            check=True,
         )
         print(f"Original script stdout: {result.stdout}")
         print(f"Original script stderr: {result.stderr}")
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Original script execution failed with return code {result.returncode}"
-            )
 
         # Check that original script created the export mask with all 3 species
         bn_str = f"{float(STANDARD_CROSS_STRINGENCY):g}"
@@ -547,20 +533,15 @@ def test_export_same_behavior_as_original_script():
                 str(wizardeye_db),
             ]
 
-            result = subprocess.run(
+            subprocess.run(
                 wizardeye_cmd,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                check=True,
                 env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
             )
-            if result.returncode != 0:
-                print(f"wizardeye align stderr for {query_fa.name}: {result.stderr}")
-                print(f"wizardeye align stdout for {query_fa.name}: {result.stdout}")
-                raise RuntimeError(
-                    f"wizardeye align execution failed with return code {result.returncode}"
-                )
 
         # Run WizardEye export ONCE with ALL 3 species in exclude-tracks
         hg19_stem = HG19_FA.stem
@@ -598,20 +579,15 @@ def test_export_same_behavior_as_original_script():
             "--only-unique",
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             wizardeye_export_cmd,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-        if result.returncode != 0:
-            print(f"wizardeye export stderr: {result.stderr}")
-            print(f"wizardeye export stdout: {result.stdout}")
-            raise RuntimeError(
-                f"wizardeye export execution failed with return code {result.returncode}"
-            )
 
         assert wizardeye_mask.exists(), (
             f"wizardeye export did not create mask: {wizardeye_mask}"
@@ -622,12 +598,13 @@ def test_export_same_behavior_as_original_script():
         wizardeye_mask_merged = (
             wizardeye_db / "export" / "wizardeye_mask_all_species_merged.bed"
         )
-        subprocess.run(
-            ["bedtools", "merge", "-i", str(wizardeye_mask)],
-            stdout=open(wizardeye_mask_merged, "w"),
-            check=True,
-            text=True,
-        )
+        with open(wizardeye_mask_merged, "w") as out_file:
+            subprocess.run(
+                ["bedtools", "merge", "-i", str(wizardeye_mask)],
+                stdout=out_file,
+                check=True,
+                text=True,
+            )
 
         # Compare the two mask files (only first 3 columns - chrom, start, end)
         # The 4th column differs: script has empty, WizardEye has track names
@@ -752,24 +729,15 @@ def test_consistency_align_same_launch():
                         str(wizardeye_db),
                     ]
 
-                    result = subprocess.run(
+                    subprocess.run(
                         wizardeye_cmd,
                         capture_output=True,
                         text=True,
                         encoding="utf-8",
                         errors="replace",
+                        check=True,
                         env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
                     )
-                    if result.returncode != 0:
-                        print(
-                            f"wizardeye align stderr for {query_fa.name} rep {rep}: {result.stderr}"
-                        )
-                        print(
-                            f"wizardeye align stdout for {query_fa.name} rep {rep}: {result.stdout}"
-                        )
-                        raise RuntimeError(
-                            f"wizardeye align execution failed with return code {result.returncode}"
-                        )
 
                     # Locate WizardEye output
                     hg19_stem = HG19_FA.stem
@@ -935,24 +903,15 @@ def test_consistency_align_parallelisation():
                         str(wizardeye_db),
                     ]
 
-                    result = subprocess.run(
+                    subprocess.run(
                         wizardeye_cmd,
                         capture_output=True,
                         text=True,
                         encoding="utf-8",
                         errors="replace",
+                        check=True,
                         env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
                     )
-                    if result.returncode != 0:
-                        print(
-                            f"wizardeye align stderr for {query_fa.name} threads {n_threads}: {result.stderr}"
-                        )
-                        print(
-                            f"wizardeye align stdout for {query_fa.name} threads {n_threads}: {result.stdout}"
-                        )
-                        raise RuntimeError(
-                            f"wizardeye align execution failed with return code {result.returncode}"
-                        )
 
                     # Locate WizardEye output
                     hg19_stem = HG19_FA.stem
@@ -1117,20 +1076,15 @@ def test_consistency_count_same_launch():
                     str(wizardeye_db),
                 ]
 
-                result = subprocess.run(
+                subprocess.run(
                     wizardeye_cmd,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    check=True,
                     env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
                 )
-                if result.returncode != 0:
-                    print(f"wizardeye count stderr rep {rep}: {result.stderr}")
-                    print(f"wizardeye count stdout rep {rep}: {result.stdout}")
-                    raise RuntimeError(
-                        f"wizardeye count execution failed with return code {result.returncode}"
-                    )
 
                 assert report_path.exists(), (
                     f"wizardeye count did not create report: {report_path}"
@@ -1248,24 +1202,15 @@ def test_consistency_count_parallelisation():
                     str(wizardeye_db),
                 ]
 
-                result = subprocess.run(
+                subprocess.run(
                     wizardeye_cmd,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    check=True,
                     env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
                 )
-                if result.returncode != 0:
-                    print(
-                        f"wizardeye count stderr threads {n_threads}: {result.stderr}"
-                    )
-                    print(
-                        f"wizardeye count stdout threads {n_threads}: {result.stdout}"
-                    )
-                    raise RuntimeError(
-                        f"wizardeye count execution failed with return code {result.returncode}"
-                    )
 
                 assert report_path.exists(), (
                     f"wizardeye count did not create report: {report_path}"
@@ -1380,20 +1325,15 @@ def test_consistency_filter_same_launch():
                     str(wizardeye_db),
                 ]
 
-                result = subprocess.run(
+                subprocess.run(
                     wizardeye_cmd,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    check=True,
                     env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
                 )
-                if result.returncode != 0:
-                    print(f"wizardeye filter stderr rep {rep}: {result.stderr}")
-                    print(f"wizardeye filter stdout rep {rep}: {result.stdout}")
-                    raise RuntimeError(
-                        f"wizardeye filter execution failed with return code {result.returncode}"
-                    )
 
                 assert report_path.exists(), (
                     f"wizardeye filter did not create report: {report_path}"
@@ -1514,24 +1454,15 @@ def test_consistency_filter_parallelisation():
                     str(wizardeye_db),
                 ]
 
-                result = subprocess.run(
+                subprocess.run(
                     wizardeye_cmd,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    check=True,
                     env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
                 )
-                if result.returncode != 0:
-                    print(
-                        f"wizardeye filter stderr threads {n_threads}: {result.stderr}"
-                    )
-                    print(
-                        f"wizardeye filter stdout threads {n_threads}: {result.stdout}"
-                    )
-                    raise RuntimeError(
-                        f"wizardeye filter execution failed with return code {result.returncode}"
-                    )
 
                 assert report_path.exists(), (
                     f"wizardeye filter did not create report: {report_path}"
@@ -1648,20 +1579,15 @@ def test_export_and_filter_same_results():
                 str(wizardeye_db),
             ]
 
-            result = subprocess.run(
+            subprocess.run(
                 filter_cmd,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                check=True,
                 env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
             )
-            if result.returncode != 0:
-                print(f"wizardeye filter stderr: {result.stderr}")
-                print(f"wizardeye filter stdout: {result.stdout}")
-                raise RuntimeError(
-                    f"wizardeye filter execution failed with return code {result.returncode}"
-                )
 
             assert filter_report_path.exists(), (
                 f"wizardeye filter did not create report: {filter_report_path}"
@@ -1705,20 +1631,15 @@ def test_export_and_filter_same_results():
                 str(wizardeye_db),
             ]
 
-            result = subprocess.run(
+            subprocess.run(
                 export_cmd,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                check=True,
                 env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
             )
-            if result.returncode != 0:
-                print(f"wizardeye export stderr: {result.stderr}")
-                print(f"wizardeye export stdout: {result.stdout}")
-                raise RuntimeError(
-                    f"wizardeye export execution failed with return code {result.returncode}"
-                )
 
             assert export_mask_path.exists(), (
                 f"wizardeye export did not create mask: {export_mask_path}"
@@ -1750,20 +1671,21 @@ def test_export_and_filter_same_results():
 
             # Run bedtools intersect to find reads overlapping the mask
             # -abam keeps BAM output format, -wa writes all records from A (the BAM)
-            result = subprocess.run(
-                [
-                    "bedtools",
-                    "intersect",
-                    "-abam",
-                    str(sorted_input_bam),
-                    "-b",
-                    str(export_mask_path),
-                    "-wa",
-                ],
-                stdout=open(str(intersect_bam_path), "w"),
-                check=True,
-                text=True,
-            )
+            with open(str(intersect_bam_path), "w") as out_file:
+                subprocess.run(
+                    [
+                        "bedtools",
+                        "intersect",
+                        "-abam",
+                        str(sorted_input_bam),
+                        "-b",
+                        str(export_mask_path),
+                        "-wa",
+                    ],
+                    stdout=out_file,
+                    check=True,
+                    text=True,
+                )
 
             # Sort the intersect BAM for comparison
             subprocess.run(
@@ -1917,20 +1839,15 @@ def test_export_and_filter_same_results_with_mf():
                     str(wizardeye_db),
                 ]
 
-                result = subprocess.run(
+                subprocess.run(
                     filter_cmd,
                     capture_output=False,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    check=True,
                     env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
                 )
-                if result.returncode != 0:
-                    print(f"wizardeye filter stderr: {result.stderr}")
-                    print(f"wizardeye filter stdout: {result.stdout}")
-                    raise RuntimeError(
-                        f"wizardeye filter execution failed with return code {result.returncode}"
-                    )
 
                 assert filter_report_path.exists(), (
                     f"wizardeye filter did not create report: {filter_report_path}"
@@ -1976,20 +1893,15 @@ def test_export_and_filter_same_results_with_mf():
                     str(wizardeye_db),
                 ]
 
-                result = subprocess.run(
+                subprocess.run(
                     export_cmd,
                     capture_output=False,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    check=True,
                     env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
                 )
-                if result.returncode != 0:
-                    print(f"wizardeye export stderr: {result.stderr}")
-                    print(f"wizardeye export stdout: {result.stdout}")
-                    raise RuntimeError(
-                        f"wizardeye export execution failed with return code {result.returncode}"
-                    )
 
                 assert export_mask_path.exists(), (
                     f"wizardeye export did not create mask: {export_mask_path}"
@@ -2023,20 +1935,21 @@ def test_export_and_filter_same_results_with_mf():
 
                 # Run bedtools intersect to find reads overlapping the mask
                 # -abam keeps BAM output format, -wa writes all records from A (the BAM)
-                result = subprocess.run(
-                    [
-                        "bedtools",
-                        "intersect",
-                        "-abam",
-                        str(sorted_input_bam),
-                        "-b",
-                        str(export_mask_path),
-                        "-wa",
-                    ],
-                    stdout=open(str(intersect_bam_path), "w"),
-                    check=True,
-                    text=True,
-                )
+                with open(str(intersect_bam_path), "w") as out_file:
+                    subprocess.run(
+                        [
+                            "bedtools",
+                            "intersect",
+                            "-abam",
+                            str(sorted_input_bam),
+                            "-b",
+                            str(export_mask_path),
+                            "-wa",
+                        ],
+                        stdout=out_file,
+                        check=True,
+                        text=True,
+                    )
 
                 # Sort the intersect BAM for comparison
                 subprocess.run(
@@ -2155,7 +2068,7 @@ def test_consistency_align_parallel_same_db():
 
         def run_align(query_fasta):
             """Run a single align command and return the output paths."""
-            result = subprocess.run(
+            subprocess.run(
                 [
                     "python3",
                     "-m",
@@ -2186,14 +2099,9 @@ def test_consistency_align_parallel_same_db():
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                check=True,
                 env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
             )
-            if result.returncode != 0:
-                print(f"wizardeye align stderr for {query_fasta.name}: {result.stderr}")
-                print(f"wizardeye align stdout for {query_fasta.name}: {result.stdout}")
-                raise RuntimeError(
-                    f"wizardeye align execution failed with return code {result.returncode}"
-                )
 
             # Return the track directory path for this query
             hg19_stem = HG19_FA.stem
@@ -2229,7 +2137,12 @@ def test_consistency_align_parallel_same_db():
                 try:
                     result = future.result()
                     parallel_results[query_fa] = result
-                except Exception as e:
+                except (
+                    RuntimeError,
+                    subprocess.CalledProcessError,
+                    ValueError,
+                    OSError,
+                ) as e:
                     raise RuntimeError(
                         f"Parallel alignment failed for {query_fa.name}: {e}"
                     )
@@ -2305,18 +2218,9 @@ def test_consistency_align_parallel_same_db():
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    check=True,
                     env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
                 )
-                if result.returncode != 0:
-                    print(
-                        f"Sequential align stderr for {query_fa.name}: {result.stderr}"
-                    )
-                    print(
-                        f"Sequential align stdout for {query_fa.name}: {result.stdout}"
-                    )
-                    raise RuntimeError(
-                        f"Sequential align execution failed with return code {result.returncode}"
-                    )
 
                 # Locate output
                 hg19_stem = HG19_FA.stem
@@ -2492,6 +2396,7 @@ def test_filter_paired_end_vs_single_end():
             text=True,
             encoding="utf-8",
             errors="replace",
+            check=False,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
 
@@ -2521,13 +2426,11 @@ def test_filter_paired_end_vs_single_end():
             text=True,
             encoding="utf-8",
             errors="replace",
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
 
         print(f"Stderr: {result_single.stderr}\nStdout: {result_single.stdout}")
-        assert result_single.returncode == 0, (
-            "WizardEye should succeed with single-end reads, but failed.\n"
-        )
 
 
 def test_count_paired_end_vs_single_end():
@@ -2626,6 +2529,7 @@ def test_count_paired_end_vs_single_end():
             text=True,
             encoding="utf-8",
             errors="replace",
+            check=False,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
 
@@ -2655,10 +2559,8 @@ def test_count_paired_end_vs_single_end():
             text=True,
             encoding="utf-8",
             errors="replace",
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
 
         print(f"Stderr: {result_single.stderr}\nStdout: {result_single.stdout}")
-        assert result_single.returncode == 0, (
-            "WizardEye count should succeed with single-end reads, but failed.\n"
-        )

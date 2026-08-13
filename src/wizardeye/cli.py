@@ -1,34 +1,40 @@
-# -*- coding: utf-8 -*-
-
 """Command line interface for WizardEye."""
+
+from __future__ import annotations
 
 import os
 import subprocess
-import time
-import typer
 import sys
+import time
 from importlib import metadata
 from pathlib import Path
-from typing import List, Optional
 
-from .mappability import create_mappability_track
-from .filter import generate_global_mask, count_k_mers_on_bam, filter_bam
-from .utils import from_charlist_to_list, log, BWAParameters, get_bwa_params_hash
-from .version import DISPLAY_VERSION, PACKAGE_VERSION, print_version_message
+import typer
+
 from .db import (
-    import_track,
-    init_db,
-    clean_db,
-    print_full_catalogue,
-    update_track_tags,
-    valid_database,
     check_track_exists,
+    clean_db,
     from_tags_get_tracks,
     get_refs,
     get_tracks,
-    resolve_requested_track_names,
+    import_track,
+    init_db,
     migrate_database,
+    print_full_catalogue,
+    resolve_requested_track_names,
+    update_track_tags,
+    valid_database,
 )
+from .filter import count_k_mers_on_bam, filter_bam, generate_global_mask
+from .mappability import create_mappability_track
+from .utils import (
+    BWAParameters,
+    check_all_selector,
+    from_charlist_to_list,
+    get_bwa_params_hash,
+    log,
+)
+from .version import DISPLAY_VERSION, PACKAGE_VERSION, print_version_message
 
 app = typer.Typer(
     help="WizardEye: A Python tool to create, manage, and filter by cross-mappability tracks.",
@@ -77,58 +83,6 @@ def _version_callback(value: bool) -> None:
 # -- Helper functions --
 
 
-def _get_valid_tracks_from_exclude_tracks(
-    exclude_tracks: Optional[List[str]],
-    ref: str,
-    kmer_length: Optional[int],
-    offset_step: Optional[int],
-    db_root: str,
-    bwa_params: Optional[BWAParameters] = None,
-    context: str = "filtering",
-) -> List[str]:
-    """Get valid tracks from exclude_tracks parameter."""
-    if exclude_tracks is None:
-        return []
-
-    requested_tracks = from_charlist_to_list(exclude_tracks)
-    available_tracks = get_tracks(
-        ref_species=ref,
-        kmer_length=kmer_length,
-        offset_step=offset_step,
-        db_root=db_root,
-        bwa_params=bwa_params,
-    )
-    return resolve_requested_track_names(
-        requested_tracks=requested_tracks,
-        available_tracks=available_tracks,
-        ref=ref,
-        context=context,
-    )
-
-
-def _get_valid_tracks_from_exclude_tags(
-    exclude_tags: Optional[List[str]],
-    ref: str,
-    kmer_length: Optional[int],
-    offset_step: Optional[int],
-    db_root: str,
-    bwa_params: Optional[BWAParameters] = None,
-) -> List[str]:
-    """Get valid tracks from exclude_tags parameter."""
-    if exclude_tags is None:
-        return []
-
-    requested_tags = from_charlist_to_list(exclude_tags)
-    return from_tags_get_tracks(
-        ref_species=ref,
-        tags=requested_tags,
-        kmer_length=kmer_length,
-        offset_step=offset_step,
-        db_root=db_root,
-        bwa_params=bwa_params,
-    )
-
-
 def _request_tracks_from_args(
     ref: str,
     input_bam: str,
@@ -141,8 +95,8 @@ def _request_tracks_from_args(
     no_cache: bool,
     cross_stringency: float,
     min_freq: int,
-    bwa_params: Optional[BWAParameters] = None,
-) -> List[str]:
+    bwa_params: BWAParameters | None = None,
+) -> list[str]:
     """Validate CLI arguments and get corresponding tracks from database."""
 
     # Control input
@@ -166,7 +120,7 @@ def _request_tracks_from_args(
         raise typer.Exit(code=1)
 
     if exclude_tracks or exclude_tags:
-        missing_params: List[str] = []
+        missing_params: list[str] = []
         if kmer_length is None:
             missing_params.append("-k")
         if offset_step is None:
@@ -206,27 +160,47 @@ def _request_tracks_from_args(
     if cross_stringency:
         log(f"Requested mask stringency threshold: {cross_stringency}", "I")
 
-    if exclude_tracks:
-        valid_tracks = _get_valid_tracks_from_exclude_tracks(
-            exclude_tracks=exclude_tracks,
-            ref=ref,
-            kmer_length=kmer_length,
-            offset_step=offset_step,
-            db_root=db_root,
-            bwa_params=bwa_params,
-            context="filtering",
+    if exclude_tracks or exclude_tags:
+        use_tags = exclude_tags is not None
+        requested = from_charlist_to_list(
+            exclude_tracks if exclude_tracks else exclude_tags
         )
 
-    if exclude_tags:
-        requested_tags = from_charlist_to_list(exclude_tags)
-        valid_tracks = _get_valid_tracks_from_exclude_tags(
-            exclude_tags=exclude_tags,
-            ref=ref,
-            kmer_length=kmer_length,
-            offset_step=offset_step,
-            db_root=db_root,
-            bwa_params=bwa_params,
-        )
+        if check_all_selector(requested):
+            log("All available tracks selected for exclusion (via '*' or 'all').", "I")
+            valid_tracks = [
+                t.track_name
+                for t in get_tracks(
+                    ref_species=ref,
+                    kmer_length=kmer_length,
+                    offset_step=offset_step,
+                    db_root=db_root,
+                    bwa_params=bwa_params,
+                )
+            ]
+        elif use_tags:
+            log(f"Requested tags to filter out: {', '.join(requested)}", "I")
+            valid_tracks = from_tags_get_tracks(
+                ref_species=ref,
+                tags=requested,
+                kmer_length=kmer_length,
+                offset_step=offset_step,
+                db_root=db_root,
+                bwa_params=bwa_params,
+            )
+        else:
+            available_tracks = get_tracks(
+                ref_species=ref,
+                kmer_length=kmer_length,
+                offset_step=offset_step,
+                db_root=db_root,
+                bwa_params=bwa_params,
+            )
+            valid_tracks = resolve_requested_track_names(
+                requested_tracks=requested,
+                available_tracks=available_tracks,
+                ref=ref,
+            )
 
     if min_freq is not None:
         if min_freq < 1 or min_freq > len(valid_tracks):
@@ -237,9 +211,6 @@ def _request_tracks_from_args(
             raise typer.Exit(code=1)
         else:
             log(f"Requested minimum frequency threshold: {min_freq}", "I")
-
-    if exclude_tags:
-        log(f"Requested tags to filter out: {', '.join(requested_tags)}", "I")
 
     if not valid_tracks:
         log(
@@ -261,7 +232,7 @@ def _request_tracks_from_args(
 
 @app.callback(invoke_without_command=True)
 def common_options(
-    version: Optional[bool] = typer.Option(
+    version: bool | None = typer.Option(
         None,
         "--version",
         help="Show WizardEye version and exit.",
@@ -420,47 +391,47 @@ def track_tags(
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
     ),
-    ref: Optional[str] = typer.Option(
+    ref: str | None = typer.Option(
         None, "-r", "--ref", help="Reference identifier of the track to update."
     ),
-    track: Optional[str] = typer.Option(
+    track: str | None = typer.Option(
         None, "-q", "--track", help="Track query identifier to update."
     ),
-    kmer_length: Optional[int] = typer.Option(
+    kmer_length: int | None = typer.Option(
         None, "-k", "--kmer-length", help="Track k-mer length."
     ),
-    offset_step: Optional[int] = typer.Option(
+    offset_step: int | None = typer.Option(
         None, "-w", "--offset-step", help="Track sliding window/offset step."
     ),
     # BWA aln parameters
-    bwa_missing_prob_err_rate: Optional[float] = typer.Option(
+    bwa_missing_prob_err_rate: float | None = typer.Option(
         None, "-bn", help="bwa aln -n. Max diff. or missing prob. under 0.02 err rate."
     ),
-    bwa_max_gap_opens: Optional[int] = typer.Option(
+    bwa_max_gap_opens: int | None = typer.Option(
         None, "-bo", help="bwa aln -o. Maximum number or fraction of gap opens."
     ),
-    bwa_seed_length: Optional[int] = typer.Option(
+    bwa_seed_length: int | None = typer.Option(
         None, "-bl", help="bwa aln -l. Seed length."
     ),
-    bwa_all_aln: Optional[bool] = typer.Option(
+    bwa_all_aln: bool | None = typer.Option(
         None,
         "-bN",
         help="bwa aln -N. Non-iterative mode: search for all n-difference hits.",
     ),
-    bwa_threads: Optional[int] = typer.Option(
+    bwa_threads: int | None = typer.Option(
         None, "-bj", "--bwa-threads", help="bwa aln -j. Number of threads for bwa aln."
     ),
-    bwa_r_best_hits: Optional[int] = typer.Option(
+    bwa_r_best_hits: int | None = typer.Option(
         None,
         "-bR",
         help="bwa aln -R. When n_best_hits>=-bR, bwa aln do not explore suboptimal hits.",
     ),
-    bwa_samse_n: Optional[int] = typer.Option(
+    bwa_samse_n: int | None = typer.Option(
         None,
         "-bsn",
         help="bwa samse -n. If n_kept_hits>-n, kept hits will NOT be saved in the track.",
     ),
-    new_tags: Optional[List[str]] = typer.Option(
+    new_tags: list[str] | None = typer.Option(
         None,
         "-t",
         "--tag",
@@ -565,7 +536,7 @@ def align(
         "--db-root",
         help="Path to the database root directory where to save the track.",
     ),
-    input_fasta: Optional[List[str]] = typer.Option(
+    input_fasta: list[str] | None = typer.Option(
         None,
         "-i",
         help="Path to FASTA file to align on the target (query).",
@@ -573,13 +544,13 @@ def align(
     input_target: str = typer.Option(
         None, "-r", help="Path to the reference target FASTA."
     ),
-    track_id: Optional[str] = typer.Option(
+    track_id: str | None = typer.Option(
         None,
         "--track_ID",
         "--track-id",
         help="Manual identifier to store in track metadata.",
     ),
-    tag: Optional[List[str]] = typer.Option(
+    tag: list[str] | None = typer.Option(
         None,
         "--tag",
         "-t",
@@ -633,7 +604,7 @@ def align(
         "--chunk-size",
         help="Number of k-mers to align per bwa instances.",
     ),
-    tmp_dir: Optional[str] = typer.Option(
+    tmp_dir: str | None = typer.Option(
         None,
         "--tmp-dir",
         help="Custom temporary directory path. If provided, overrides the default TMPDIR=/tmp location for WizardEye temporary files.",
@@ -690,10 +661,10 @@ def align(
                     "E",
                 )
                 raise typer.Exit(code=1)
-        except Exception as e:
+        except (OSError, AttributeError) as e:
             log(f"Could not determine CPU count: {e}", "W")
 
-        manual_track_id: Optional[str] = None
+        manual_track_id: str | None = None
         if track_id is not None:
             manual_track_id = track_id.strip()
             if not manual_track_id:
@@ -784,17 +755,17 @@ def filter(
     input_bam=typer.Option(
         None, "-i", "--input", help="Path to the BAM file to filter."
     ),
-    ref: Optional[str] = typer.Option(None, "-r", help="Reference used for alignment."),
-    bwa_missing_prob_err_rate: Optional[float] = typer.Option(
+    ref: str | None = typer.Option(None, "-r", help="Reference used for alignment."),
+    bwa_missing_prob_err_rate: float | None = typer.Option(
         None, "-bn", help="bwa aln -n used for alignment."
     ),
-    bwa_max_gap_opens: Optional[int] = typer.Option(
+    bwa_max_gap_opens: int | None = typer.Option(
         None, "-bo", help="bwa aln -o used for alignment."
     ),
-    bwa_seed_length: Optional[int] = typer.Option(
+    bwa_seed_length: int | None = typer.Option(
         None, "-bl", help="bwa aln -l used for alignment."
     ),
-    bwa_all_aln: Optional[bool] = typer.Option(
+    bwa_all_aln: bool | None = typer.Option(
         None,
         "-bN",
         help="bwa aln -N used for alignment (compute every alternative mapping).",
@@ -809,12 +780,12 @@ def filter(
         ..., "-d", "--db-root", help="Path to the database root directory."
     ),
     # Filtration parameters
-    exclude_tags: Optional[List[str]] = typer.Option(
+    exclude_tags: list[str] | None = typer.Option(
         None,
         "--exclude-tags",
         help="Tag(s) to filter out. Comma-separated (e.g. tag1,tag2).",
     ),
-    exclude_tracks: Optional[List[str]] = typer.Option(
+    exclude_tracks: list[str] | None = typer.Option(
         None,
         "--exclude-tracks",
         help="Track identifier(s) to filter out. Comma-separated (e.g. genius_species1, genius_species2).",
@@ -827,7 +798,7 @@ def filter(
         "--cross-stringency",
         help="Stringency threshold in [0.0, 1.0].",
     ),
-    min_freq: Optional[int] = typer.Option(
+    min_freq: int | None = typer.Option(
         None,
         "-mf",
         "--min-frequency",
@@ -839,18 +810,18 @@ def filter(
         "--only_unique",
         help="Consider only unique k-mers (no XA tag & MAPQ>0) area.",
     ),
-    output_filtered_bam: Optional[str] = typer.Option(
+    output_filtered_bam: str | None = typer.Option(
         None,
         "-o",
         "--output",
         help="Output BAM for reads kept after filtering (non-overlapping mask).",
     ),
-    output_excluded_bam: Optional[str] = typer.Option(
+    output_excluded_bam: str | None = typer.Option(
         None,
         "--excluded-output",
         help="Output BAM for reads excluded by the generated mask.",
     ),
-    output_report_tsv: Optional[str] = typer.Option(
+    output_report_tsv: str | None = typer.Option(
         None,
         "--report-output",
         help="Output TSV report with columns: read_id, excluded, overlapped, tags.",
@@ -860,12 +831,12 @@ def filter(
         "--export-bam",
         help="Write filtered/excluded BAM outputs. By default, only the TSV report is generated.",
     ),
-    kmer_length: Optional[int] = typer.Option(
+    kmer_length: int | None = typer.Option(
         None,
         "-k",
         help="K-mer length to filter on. Must match track generation parameter.",
     ),
-    offset_step: Optional[int] = typer.Option(
+    offset_step: int | None = typer.Option(
         None,
         "-w",
         "--offset-step",
@@ -972,36 +943,36 @@ def filter(
 def export(
     ref: str = typer.Option(..., "-r", "--ref", help="Reference species name."),
     # Same selector interface as `filter`.
-    exclude_tags: Optional[List[str]] = typer.Option(
+    exclude_tags: list[str] | None = typer.Option(
         None,
         "--exclude-tags",
         "--exclude_tags",
         help="Tag(s) to export from. Comma-separated (e.g. tag1,tag2).",
     ),
-    exclude_tracks: Optional[List[str]] = typer.Option(
+    exclude_tracks: list[str] | None = typer.Option(
         None,
         "--exclude-tracks",
         "--exclude_tracks",
         help="Track identifier(s) to export from. Comma-separated (e.g. genius_species1, genius_species2).",
     ),
-    kmer_length: Optional[int] = typer.Option(None, "-k", help="K-mer size to target."),
-    offset_step: Optional[int] = typer.Option(
+    kmer_length: int | None = typer.Option(None, "-k", help="K-mer size to target."),
+    offset_step: int | None = typer.Option(
         None,
         "-w",
         "--offset-step",
         "--sliding-window",
         help="Offset/sliding window to target.",
     ),
-    bwa_missing_prob_err_rate: Optional[float] = typer.Option(
+    bwa_missing_prob_err_rate: float | None = typer.Option(
         None, "-bn", help="bwa aln -n used to generate selected tracks."
     ),
-    bwa_max_gap_opens: Optional[int] = typer.Option(
+    bwa_max_gap_opens: int | None = typer.Option(
         None, "-bo", help="bwa aln -o used to generate selected tracks."
     ),
-    bwa_seed_length: Optional[int] = typer.Option(
+    bwa_seed_length: int | None = typer.Option(
         None, "-bl", help="bwa aln -l used to generate selected tracks."
     ),
-    bwa_all_aln: Optional[bool] = typer.Option(
+    bwa_all_aln: bool | None = typer.Option(
         None,
         "-bN",
         help="bwa aln -N used to generate selected tracks (compute every alternative mapping).",
@@ -1020,7 +991,7 @@ def export(
         "--cross-stringency",
         help="Stringency threshold in [0.0, 1.0].",
     ),
-    min_freq: Optional[int] = typer.Option(
+    min_freq: int | None = typer.Option(
         None,
         "-mf",
         "--min-frequency",
@@ -1035,7 +1006,7 @@ def export(
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
     ),
-    output_bed: Optional[str] = typer.Option(
+    output_bed: str | None = typer.Option(
         None,
         "-o",
         "--output",
@@ -1130,17 +1101,17 @@ def import_tracks(
     map_uniq_bw: str = typer.Option(
         ..., "-mu", "--map-uniq-bw", help="Path to map_uniq.bw generated externally."
     ),
-    input_fasta: Optional[str] = typer.Option(
+    input_fasta: str | None = typer.Option(
         None,
         "--input-fasta",
         help="Original input FASTA path used to generate the imported track.",
     ),
-    reference_fasta: Optional[str] = typer.Option(
+    reference_fasta: str | None = typer.Option(
         None,
         "--reference-fasta",
         help="Original reference FASTA path used to generate the imported track.",
     ),
-    reference_fasta_md5: Optional[str] = typer.Option(
+    reference_fasta_md5: str | None = typer.Option(
         None,
         "--reference-fasta-md5",
         help="Reference FASTA MD5 used during generation (validated if --reference-fasta is provided).",
@@ -1165,7 +1136,7 @@ def import_tracks(
         "-bl",
         help="bwa aln -l used for alignment.",
     ),
-    bwa_all_aln: Optional[bool] = typer.Option(
+    bwa_all_aln: bool | None = typer.Option(
         None,
         "-bN",
         help="bwa aln -N used for alignment.",
@@ -1188,7 +1159,7 @@ def import_tracks(
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
     ),
-    tag: Optional[List[str]] = typer.Option(
+    tag: list[str] | None = typer.Option(
         None,
         "--tag",
         "-t",
@@ -1260,20 +1231,20 @@ def count(
     input_bam=typer.Option(
         None, "-i", "--input", help="Path to the BAM file to filter."
     ),
-    ref: Optional[str] = typer.Option(None, "-r", help="Reference used for alignment."),
-    count_mode: Optional[str] = typer.Option(
+    ref: str | None = typer.Option(None, "-r", help="Reference used for alignment."),
+    count_mode: str | None = typer.Option(
         "mean", "-m", "--mode", help="Count mode (mean, std, max, min, cov or sum)"
     ),
-    bwa_missing_prob_err_rate: Optional[float] = typer.Option(
+    bwa_missing_prob_err_rate: float | None = typer.Option(
         None, "-bn", help="bwa aln -n used for alignment."
     ),
-    bwa_max_gap_opens: Optional[int] = typer.Option(
+    bwa_max_gap_opens: int | None = typer.Option(
         None, "-bo", help="bwa aln -o used for alignment."
     ),
-    bwa_seed_length: Optional[int] = typer.Option(
+    bwa_seed_length: int | None = typer.Option(
         None, "-bl", help="bwa aln -l used for alignment."
     ),
-    bwa_all_aln: Optional[bool] = typer.Option(
+    bwa_all_aln: bool | None = typer.Option(
         None,
         "-bN",
         help="bwa aln -N used for alignment (compute every alternative mapping).",
@@ -1288,12 +1259,12 @@ def count(
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
     ),
-    kmer_length: Optional[int] = typer.Option(
+    kmer_length: int | None = typer.Option(
         None,
         "-k",
         help="K-mer length to filter on. Must match track generation parameter.",
     ),
-    offset_step: Optional[int] = typer.Option(
+    offset_step: int | None = typer.Option(
         None,
         "-w",
         "--offset-step",
@@ -1301,12 +1272,12 @@ def count(
         help="Offset/sliding window to filter on. Must match track generation parameter.",
     ),
     # Filtration parameters
-    exclude_tags: Optional[List[str]] = typer.Option(
+    exclude_tags: list[str] | None = typer.Option(
         None,
         "--exclude-tags",
         help="Tag(s) to filter out. Comma-separated (e.g. tag1,tag2).",
     ),
-    exclude_tracks: Optional[List[str]] = typer.Option(
+    exclude_tracks: list[str] | None = typer.Option(
         None,
         "--exclude-tracks",
         help="Track identifier(s) to filter out. Comma-separated (e.g. genius_species1, genius_species2).",
@@ -1322,7 +1293,7 @@ def count(
         "--no-cache",
         help="Disable mask caching: recompute track masks and avoid writing cache files.",
     ),
-    output_report_tsv: Optional[str] = typer.Option(
+    output_report_tsv: str | None = typer.Option(
         None,
         "--report-output",
         help="Output TSV report with columns: read_id, excluded, overlapped, tags.",

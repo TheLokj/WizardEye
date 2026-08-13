@@ -147,16 +147,13 @@ def test_coverage_repetitive_sequence_with_bN():
             str(db_path),
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             align_cmd,
             capture_output=False,
             text=True,
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-
-        if result.returncode != 0:
-            print(f"wizardeye align failed: {result.stderr}")
-            raise RuntimeError(f"Alignment failed with return code {result.returncode}")
 
         # Find the track directory
         track_pattern = f"query_k{kmer_length}_w{kmer_length}_bwa{STANDARD_BWA_HASH}"
@@ -199,7 +196,7 @@ def test_coverage_repetitive_sequence_with_bN():
 
         total_depth = 0
         for line in lines:
-            if line.startswith("#") or line.startswith("track"):
+            if line.startswith(("#", "track")):
                 continue
             parts = line.strip().split("\t")
             if len(parts) >= 4:
@@ -328,18 +325,13 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
                 str(db_path),
             ]
 
-            result = subprocess.run(
+            subprocess.run(
                 align_cmd,
                 capture_output=False,
                 text=True,
+                check=True,
                 env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
             )
-
-            if result.returncode != 0:
-                print(f"wizardeye align failed: {result.stderr}")
-                raise RuntimeError(
-                    f"Alignment failed with return code {result.returncode}"
-                )
 
             # Find the track directory
             track_pattern = (
@@ -386,7 +378,7 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
 
             total_depth = 0
             for line in lines:
-                if line.startswith("#") or line.startswith("track"):
+                if line.startswith(("#", "track")):
                     continue
                 parts = line.strip().split("\t")
                 if len(parts) >= 4:
@@ -575,16 +567,13 @@ def test_filter_duplicate_read_ids():
             str(db_path),
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             align_cmd,
             capture_output=True,
             text=True,
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-
-        if result.returncode != 0:
-            print(f"WizardEye align failed: {result.stderr}")
-            raise RuntimeError(f"Alignment failed with return code {result.returncode}")
 
         # Find the track directory
         track_pattern = f"query_k{kmer_length}_w{1}_bwa{STANDARD_BWA_HASH}"
@@ -645,18 +634,13 @@ def test_filter_duplicate_read_ids():
             "query",
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             filter_cmd,
             capture_output=True,
             text=True,
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-
-        if result.returncode != 0:
-            print("WizardEye filter failed:")
-            print(f"stdout: {result.stdout}")
-            print(f"stderr: {result.stderr}")
-            raise RuntimeError(f"Filter failed with return code {result.returncode}")
 
         # Count reads in filtered BAM
         result = subprocess.run(
@@ -681,21 +665,19 @@ def test_filter_duplicate_read_ids():
         assert excluded_bam.exists(), f"Excluded BAM not found: {excluded_bam}"
 
         # Verify BAM outputs are valid BAM files
-        result = subprocess.run(
+        subprocess.run(
             ["samtools", "quickcheck", str(filtered_bam)],
             capture_output=True,
             text=True,
             check=True,
         )
-        assert result.returncode == 0, f"Filtered BAM is corrupted: {result.stderr}"
 
-        result = subprocess.run(
+        subprocess.run(
             ["samtools", "quickcheck", str(excluded_bam)],
             capture_output=True,
             text=True,
             check=True,
         )
-        assert result.returncode == 0, f"Excluded BAM is corrupted: {result.stderr}"
 
         # Total reads should be 11:
         # - 2x read1 (10, 55)
@@ -1064,16 +1046,13 @@ def test_count_duplicate_read_ids():
             str(db_path),
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             align_cmd,
             capture_output=True,
             text=True,
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-
-        if result.returncode != 0:
-            print(f"WizardEye align failed: {result.stderr}")
-            raise RuntimeError(f"Alignment failed with return code {result.returncode}")
 
         # Find the track directory
         track_pattern = f"query_k{kmer_length}_w{1}_bwa{STANDARD_BWA_HASH}"
@@ -1127,18 +1106,13 @@ def test_count_duplicate_read_ids():
             str(count_report_tsv),
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             count_cmd,
             capture_output=True,
             text=True,
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-
-        if result.returncode != 0:
-            print("WizardEye count failed:")
-            print(f"stdout: {result.stdout}")
-            print(f"stderr: {result.stderr}")
-            raise RuntimeError(f"Count failed with return code {result.returncode}")
 
         # Verify report file exists
         assert count_report_tsv.exists(), (

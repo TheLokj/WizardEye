@@ -7,7 +7,7 @@ name = "WizardEye"
 dynamic = ["version"]
 description = "A Python tool to create, manage, and filter by cross-mappability tracks."
 readme = "./README.md"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.9,<3.14"
 dependencies = [
   "typer>=0.9",
   "PyYAML>=6.0",
@@ -30,3 +30,6 @@ where = ["src"]
 
 [tool.setuptools.dynamic]
 version = {attr = "wizardeye.version.PACKAGE_VERSION"}
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Argument", "typer.Option"]
