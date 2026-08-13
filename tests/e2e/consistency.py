@@ -15,10 +15,13 @@ and aligning on hg19_chr1_25_1kb.fa.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+
+import pytest
 
 # Constants for test fixtures
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -43,6 +46,67 @@ STANDARD_BWA_HASH = "2b5d0c37"  # MD5 hash of "0.01:2:16500:False:1:30:200000000
 STANDARD_N_THREADS = 1
 STANDARD_CHUNK_SIZE = 100000
 STANDARD_CROSS_STRINGENCY = 0.99
+
+
+def get_available_cpus() -> int:
+    """Get the number of available CPUs on the system."""
+    try:
+        # Try to get the number of CPUs available to the current process
+        cpu_count = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpu_count = os.cpu_count() or 1
+    return cpu_count
+
+
+def adjust_thread_counts_for_test(
+    desired_thread_counts: list[int], min_threads_for_test: int = 2
+) -> tuple[list[int], bool, str]:
+    """Adjust thread counts based on available CPUs.
+
+    Args:
+        desired_thread_counts: List of thread counts to test (e.g., [1, 2, 4, 8, 16])
+        min_threads_for_test: Minimum number of threads needed to run the test
+        (default: 2, as testing with only 1 thread doesn't test parallelization)
+
+    Returns:
+        Tuple of (adjusted_thread_counts, should_skip, warning_message)
+        - adjusted_thread_counts: Filtered list of thread counts that are <= available CPUs
+        - should_skip: True if test should be skipped entirely
+        - warning_message: Warning message to display (empty if no adjustment needed)
+    """
+    available_cpus = get_available_cpus()
+
+    # Filter to only include thread counts that are <= available CPUs
+    adjusted = [t for t in desired_thread_counts if t <= available_cpus]
+
+    warning_message = ""
+    should_skip = False
+
+    if not adjusted:
+        # No thread counts are feasible
+        should_skip = True
+        warning_message = (
+            f"Skipping parallelization test: desired thread counts {desired_thread_counts} "
+            f"all exceed available CPUs ({available_cpus})"
+        )
+    elif adjusted != desired_thread_counts:
+        # Some thread counts were filtered out
+        removed = [t for t in desired_thread_counts if t not in adjusted]
+        warning_message = (
+            f"Reducing thread counts for parallelization test. "
+            f"Available CPUs: {available_cpus}. "
+            f"Testing with: {adjusted}. "
+            f"Skipped: {removed}"
+        )
+        # Check if we still have enough threads to make the test meaningful
+        if max(adjusted) < min_threads_for_test:
+            should_skip = True
+            warning_message += (
+                f" Skipping test entirely as max available threads ({max(adjusted)}) "
+                f"is less than minimum required ({min_threads_for_test})"
+            )
+
+    return adjusted, should_skip, warning_message
 
 
 def generate_standard_database(
@@ -834,7 +898,13 @@ def test_consistency_align_parallelisation():
     chunk_size = 5000
 
     # Different thread counts to test
-    thread_counts = [1, 2, 4, 8, 16]
+    desired_thread_counts = [1, 2, 4, 8, 16]
+    thread_counts, should_skip, warning_msg = adjust_thread_counts_for_test(
+        desired_thread_counts, min_threads_for_test=2
+    )
+
+    if should_skip:
+        pytest.skip(warning_msg)
 
     # List of query FASTAs to test against HG19_FA as target - use single species for speed
     query_fastas = [SUS_SCROFA_FA, CANIS_LUPUS_FA, RATTUS_NORVEGICUS_FA]
@@ -1130,7 +1200,13 @@ def test_consistency_count_parallelisation():
     chunk_size = 5000
 
     # Different thread counts to test for count parallelisation
-    thread_counts = [1, 2, 4, 8, 16]
+    desired_thread_counts = [1, 2, 4, 8, 16]
+    thread_counts, should_skip, warning_msg = adjust_thread_counts_for_test(
+        desired_thread_counts, min_threads_for_test=2
+    )
+
+    if should_skip:
+        pytest.skip(warning_msg)
 
     # Use a single persistent temp directory for all thread counts
     with tempfile.TemporaryDirectory(
@@ -1382,7 +1458,13 @@ def test_consistency_filter_parallelisation():
     chunk_size = 5000
 
     # Different thread counts to test for filter parallelisation
-    thread_counts = [1, 2, 4, 8, 16]
+    desired_thread_counts = [1, 2, 4, 8, 16]
+    thread_counts, should_skip, warning_msg = adjust_thread_counts_for_test(
+        desired_thread_counts, min_threads_for_test=2
+    )
+
+    if should_skip:
+        pytest.skip(warning_msg)
 
     # Use a single persistent temp directory for all thread counts
     with tempfile.TemporaryDirectory(
