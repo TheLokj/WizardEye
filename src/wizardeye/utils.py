@@ -89,59 +89,6 @@ def log(message: str, type: str, colorful=True):
         print(f"[{type}] {message}")
 
 
-def run(
-    command: list[str], log_output: bool = False, **kwargs
-) -> subprocess.CompletedProcess:
-    """Execute a command with subprocess.run and log its output.
-
-    Args:
-            command (List[str]): Command and arguments.
-            log_output (bool): Capture and relay stdout/stderr with log() when possible.
-            **kwargs: Forwarded as-is to subprocess.run (e.g. check=True, text=True).
-
-    Returns:
-            subprocess.CompletedProcess: The subprocess.run return value.
-    """
-
-    def _log_stream(content: object | None, prefix: str) -> None:
-        if content is None:
-            return
-        text = str(content).rstrip()
-        if not text:
-            return
-        for line in text.splitlines():
-            log(f"[{prefix}] {line}", "SC")
-
-    log(" ".join(shlex.quote(str(arg)) for arg in command), "C")
-    run_kwargs = dict(kwargs)
-
-    if log_output:
-        # If caller did not specify stream behavior, capture outputs so they can be logged.
-        if (
-            not run_kwargs.get("capture_output")
-            and "stdout" not in run_kwargs
-            and "stderr" not in run_kwargs
-        ):
-            run_kwargs["capture_output"] = True
-        # Prefer text output in logs unless caller already requested bytes behavior.
-        if "text" not in run_kwargs and "encoding" not in run_kwargs:
-            run_kwargs["text"] = True
-
-    try:
-        result = subprocess.run(command, check=True, **run_kwargs)
-    except subprocess.CalledProcessError as exc:
-        if log_output:
-            _log_stream(exc.stdout, "stdout")
-            _log_stream(exc.stderr, "stderr")
-        raise
-
-    if log_output:
-        _log_stream(result.stdout, "stdout")
-        _log_stream(result.stderr, "stderr")
-
-    return result
-
-
 # --- File, data and string utilities ---
 
 
@@ -272,7 +219,9 @@ def write_seq_sizes_from_fasta(reference_fasta: Path, output_sizes: Path) -> Pat
     output_sizes.parent.mkdir(parents=True, exist_ok=True)
     fai_path = Path(f"{reference_fasta}.fai")
 
-    run(["samtools", "faidx", str(reference_fasta)])
+    cmd = ["samtools", "faidx", str(reference_fasta)]
+    log(" ".join(shlex.quote(str(arg)) for arg in cmd), "C")
+    subprocess.run(cmd, check=True)
 
     if not fai_path.exists():
         raise RuntimeError(f"samtools faidx did not produce index: {fai_path}")
@@ -687,9 +636,12 @@ def merge_and_sort_bams(
         stdout=subprocess.PIPE,
     )
     try:
-        run(
-            ["samtools", "sort", "-@", str(n_threads), "-o", str(output_bam), "-"],
+        cmd = ["samtools", "sort", "-@", str(n_threads), "-o", str(output_bam), "-"]
+        log(" ".join(shlex.quote(str(arg)) for arg in cmd), "C")
+        subprocess.run(
+            cmd,
             stdin=samtools_cat.stdout,
+            check=True,
         )
     finally:
         if samtools_cat.stdout is not None:
@@ -800,19 +752,22 @@ def sort_bed_file(
     """
     output_path = output_path or input_path
     tmp_dir = tmp_dir or output_path.parent
-    run(
-        [
-            "sort",
-            "-k1,1",
-            "-k2,2n",
-            f"--parallel={n_threads}",
-            "-T",
-            str(tmp_dir),
-            str(input_path),
-            "-o",
-            str(output_path),
-        ],
+    cmd = [
+        "sort",
+        "-k1,1",
+        "-k2,2n",
+        f"--parallel={n_threads}",
+        "-T",
+        str(tmp_dir),
+        str(input_path),
+        "-o",
+        str(output_path),
+    ]
+    log(" ".join(shlex.quote(str(arg)) for arg in cmd), "C")
+    subprocess.run(
+        cmd,
         env={**os.environ, "LC_ALL": "C"},
+        check=True,
     )
     return output_path
 
@@ -896,9 +851,14 @@ def convert_bedgraph_to_bigwig(
             "bedGraphToBigWig not found in PATH, cannot produce .bw outputs"
         )
 
-    run(
-        ["bedGraphToBigWig", str(bedgraph_path), str(seq_sizes_path), str(bigwig_path)],
-    )
+    cmd = [
+        "bedGraphToBigWig",
+        str(bedgraph_path),
+        str(seq_sizes_path),
+        str(bigwig_path),
+    ]
+    log(" ".join(shlex.quote(str(arg)) for arg in cmd), "C")
+    subprocess.run(cmd, check=True)
 
     return bigwig_path
 
@@ -917,7 +877,9 @@ def convert_bigwig_to_bedGraph(bigwig_path: Path, bedgraph_path: Path) -> Path:
             "bigWigToBedGraph not found in PATH, cannot produce .bg outputs"
         )
 
-    run(["bigWigToBedGraph", str(bigwig_path), str(bedgraph_path)])
+    cmd = ["bigWigToBedGraph", str(bigwig_path), str(bedgraph_path)]
+    log(" ".join(shlex.quote(str(arg)) for arg in cmd), "C")
+    subprocess.run(cmd, check=True)
 
     return bedgraph_path
 

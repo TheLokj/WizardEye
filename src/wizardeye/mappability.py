@@ -16,6 +16,7 @@ It includes utilities for handling temporary files, validating inputs, and savin
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -37,7 +38,6 @@ from .utils import (
     iterate_unique_mapping_intervals,
     log,
     merge_and_sort_bams,
-    run,
     sort_bed_file,
     write_seq_sizes_from_bam,
     write_seq_sizes_from_fasta,
@@ -279,7 +279,8 @@ def _align_with_bwa_aln(
     )
 
     with sai_file.open("w", encoding="utf-8") as sai_out:
-        run(bwa_cmd, stdout=sai_out)
+        log(" ".join(shlex.quote(str(arg)) for arg in bwa_cmd), "C")
+        subprocess.run(bwa_cmd, stdout=sai_out, check=True)
 
     with bam_file.open("wb") as bam_out:
         log(
@@ -299,10 +300,13 @@ def _align_with_bwa_aln(
             stdout=subprocess.PIPE,
         )
         try:
-            run(
-                ["samtools", "view", "-b", "-F", "4", "-"],
+            cmd = ["samtools", "view", "-b", "-F", "4", "-"]
+            log(" ".join(shlex.quote(str(arg)) for arg in cmd), "C")
+            subprocess.run(
+                cmd,
                 stdin=bwa_samse.stdout,
                 stdout=bam_out,
+                check=True,
             )
         finally:
             if bwa_samse.stdout is not None:
@@ -432,7 +436,9 @@ def create_mappability_track(
         bwt_file = input_target.with_suffix(input_target.suffix + ".bwt")
         if not bwt_file.exists():
             log(f"BWA index not found for {input_target}, running bwa index...", "I")
-            run(["bwa", "index", str(input_target)])
+            cmd = ["bwa", "index", str(input_target)]
+            log(" ".join(shlex.quote(str(arg)) for arg in cmd), "C")
+            subprocess.run(cmd, check=True)
         else:
             log(f"BWA index found for {input_target}, skipping index.", "I")
 
