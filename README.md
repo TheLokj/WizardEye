@@ -9,7 +9,7 @@
 
 WizardEye is a Python tool that filters aligned reads based on the risk of ambiguous alignment to a reference genome.
 
-<img src="wizardeye.png" alt="WizardEye" width="700" />
+<img src="docs/wizardeye.png" alt="WizardEye" width="800" />
 
 **WizardEye is currently in beta and under active development. Future updates will bring new features, improve stability, and ensure robustness through comprehensive unit testing.**
 
@@ -39,6 +39,10 @@ This tool is directly adapted from the script [generate_cross_mappability_filter
 WizardEye first splits the potential contaminant source into `-k`-mers with a sliding window of `-w`. It then aligns each produced unique k-mer using `bwa aln` with your parameters on the target reference to highlight ambiguous regions of that sequence. As this step can be computationally intensive for a complete genome, it stores the computed cross-mappability track in a database.
 
 You can then use these cross-mappability tracks to filter your alignment. For example, if you are studying the evolution of *Hominidae* and align your reads to the human genome, you can use WizardEye to remove reads that could also come from other mammalian sources, such as hyena or deer, using several cross-mappability tracks generated from non-Hominidae mammalian genomes.
+
+Below is a hypothetical example illustrating how WizardEye generates a mask to prevent goat DNA from contaminating your analyses:
+
+<img src="docs/how_it_works.png" alt="WizardEye - How it works?" width="800" />
 
 ## WizardEye limits
 
@@ -314,4 +318,4 @@ This command creates the target/track directory, copies the two BigWig files as 
 
 It is recommended to complement your filtering with an evolutionarily-aware method such as Kraken2. This combination is useful for removing both reads from completely different organisms and reads that may be ambiguous between closely related organisms.
 
-*Last documentation update: 0.1.4.*
+*Last documentation update: 0.1.5.*
