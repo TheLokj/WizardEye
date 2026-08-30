@@ -1,7 +1,7 @@
 # WizardEye
 
 ![Python](https://img.shields.io/badge/Python->=3.9-green.svg)
-[![Version](https://img.shields.io/badge/version-0.1.4-yellow.svg)](https://github.com/TheLokj/WizardEye/releases)
+[![Version](https://img.shields.io/badge/version-0.1.5-yellow.svg)](https://github.com/TheLokj/WizardEye/releases)
 ![Beta](https://img.shields.io/badge/beta-orange.svg)
 [![Install WizardEye using bioconda](https://img.shields.io/badge/Install%20WizardEye%20using-bioconda-brightblue.svg?style=flat)](https://anaconda.org/channels/bioconda/packages/wizardeye/overview)
 [![Python CI](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml/badge.svg)](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml)
@@ -11,7 +11,7 @@ WizardEye is a Python tool that filters aligned reads based on the risk of ambig
 
 <img src="docs/wizardeye.png" alt="WizardEye" width="800" />
 
-**WizardEye is currently in beta and under active development. Future updates will bring new features, improve stability, and ensure robustness through comprehensive unit testing.**
+**WizardEye is currently in beta and under active development. Please open a GitHub issue if you come across a bug or would like to suggest improvements.**
 
 To achieve this, WizardEye first identifies all positions in your reference genome that could be targeted by reads from known ambiguous sources using your alignment parameters. For example, it can filter out reads that map to regions conserved between your reference genome and potentially contaminating organisms.
 
@@ -221,8 +221,6 @@ If sequence naming differs between BAM and tracks (e.g., `chr1` vs `1`), filteri
 
 #### Adjust the filter hardness
 
-<img src="docs/stringency_and_frequency.png" alt="WizardEye - Filter parameters" width="800" />
-
 ##### Stringency
 
 To balance sensitivity and specificity, you can specify a stringency value during filtering. This criterion is defined as follows.
@@ -248,6 +246,8 @@ wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus
 ```
 
 Note that the `-mf` parameter is also available in the `export` command to generate masks with frequency filtering applied. This will remove lines with less than `-mf` from the final bed file.
+
+<img src="docs/stringency_and_frequency.png" alt="WizardEye - Stringency and Frequency" width="800" />
 
 #### Output
 
