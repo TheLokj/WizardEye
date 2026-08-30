@@ -221,11 +221,13 @@ If sequence naming differs between BAM and tracks (e.g., `chr1` vs `1`), filteri
 
 #### Adjust the filter hardness
 
+<img src="docs/stringency_and_frequency.png" alt="WizardEye - Filter parameters" width="800" />
+
 ##### Stringency
 
 To balance sensitivity and specificity, you can specify a stringency value during filtering. This criterion is defined as follows.
 
-For a position P in the target, there are exactly -k/-w different possible k-mers overlapping this position perfectly. After mapping, n k-mers can overlap the position (maximum -k/-w if no mismatches are allowed, otherwise more). The position is then highlighted as ambiguous if n/(-k/-w) >= -rc; i.e., if the proportion of overlapping k-mers relative to the total possible k-mers exceeds the stringency.
+For a position P in the target, there are exactly `-k`/`-w` different possible k-mers overlapping this position perfectly. After mapping, n k-mers can overlap the position (maximum `-k`/`-w` if no mismatches are allowed, otherwise more). The position is then highlighted as ambiguous if n/(`-k`/`-w`) >= `-rc`; i.e., if the proportion of overlapping k-mers relative to the total possible k-mers exceeds the stringency.
 
 If `--only-unique` is used, the same behavior and formula apply, but only uniquely aligned k-mers are considered (i.e., k-mers without BWA's `XA` tag and with `MAPQ>0`). For example, with one mismatch allowed, `-k=40`, and `-rc=0.25`, if a position is overlapped by 10 exact k-mers and 10 k-mers with one mismatch, the position is retained only if 10 of these k-mers are unique, regardless of exactness. With `-rc=0.50`, the region is highlighted only if all 20 k-mers map uniquely to it.
 
