@@ -513,6 +513,9 @@ def track_tags(
     except FileNotFoundError as e:
         log(str(e), "E")
         raise typer.Exit(code=1)
+    except ValueError as e:
+        log(str(e), "E")
+        raise typer.Exit(code=1)
 
     old_tags_str = ", ".join(old_tags) if old_tags else "-"
     new_tags_str = ", ".join(updated_tags) if updated_tags else "-"

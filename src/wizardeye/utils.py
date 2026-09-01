@@ -150,6 +150,39 @@ def check_all_selector(values: list[str]) -> bool:
     return any(v in ["*", "all"] for v in normalized)
 
 
+RESERVED_SELECTORS = {"*", "all"}
+
+
+def validate_not_reserved(values: list[str] | str | None) -> None:
+    """Raise ValueError if any value is a reserved global selector ('*' or 'all').
+
+    These selectors are reserved for filter/export/count to select all tracks,
+    so they cannot be used as a track identifier or tag at creation/update time.
+
+    Args:
+        values: A single value or a list of (possibly comma-separated) values.
+
+    Raises:
+        ValueError: If any normalized value equals '*' or 'all' (case-insensitive).
+    """
+    if values is None:
+        return
+    if isinstance(values, str):
+        values = [values]
+    offenders: set[str] = set()
+    for raw in values:
+        for token in str(raw).split(","):
+            clean = token.strip().lower()
+            if clean in RESERVED_SELECTORS:
+                offenders.add(clean)
+    if offenders:
+        raise ValueError(
+            f"Value(s) cannot be '*' or 'all': these are reserved "
+            f"global selectors used by filter/export/count to select all tracks. "
+            f"Offending value(s): {', '.join(sorted(offenders))}."
+        )
+
+
 def get_name_from_param(param_content: dict) -> str:
     """Extract a name from parameter content, preferring 'input' then 'track_id'.
 

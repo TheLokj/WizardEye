@@ -39,6 +39,7 @@ from .utils import (
     log,
     merge_and_sort_bams,
     sort_bed_file,
+    validate_not_reserved,
     write_seq_sizes_from_bam,
     write_seq_sizes_from_fasta,
 )
@@ -372,6 +373,8 @@ def create_mappability_track(
     query_track_id = track_id.strip() if track_id else input_name
     if not query_track_id:
         raise ValueError("track_id cannot be empty")
+    validate_not_reserved(query_track_id)
+    validate_not_reserved(tags)
 
     input_md5 = file_md5(input_fasta)
     bwa_hash = get_bwa_params_hash(bwa_params)

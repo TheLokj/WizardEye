@@ -73,26 +73,30 @@ python -m pip install -e .
 
 #### External tools
 
-The following command-line tools must be installed and available in your `PATH`:
+The following command-line tools (included in the conda package) must be installed and available in your `PATH` when installing manually:
 
-- `bwa` — for read alignment and reference indexing
-- `samtools` — for SAM/BAM file manipulation (conversion, sorting, indexing, concatenation)
-- `seqkit` — for k-mer generation, deduplication, and FASTA chunking
-- `bedtools` — for interval operations (genomecov, merge)
-- `bedGraphToBigWig` — UCSC tool for bedGraph to BigWig conversion (package: `ucsc-bedgraphtobigwig`)
-- `bigWigToBedGraph` — UCSC tool for BigWig to bedGraph conversion (package: `ucsc-bigwigtobedgraph`)
-- `parallel` — GNU parallel for parallel job execution
-- `awk`, `cat`, `sort` — standard Unix utilities
+| Tool | Description |
+|------|-------------|
+| `bwa` | for read alignment and reference indexing |
+| `samtools` | for SAM/BAM file manipulation (conversion, sorting, indexing, concatenation) |
+| `seqkit` | for k-mer generation, deduplication, and FASTA chunking |
+| `bedtools` | for interval operations (genomecov, merge) |
+| `bedGraphToBigWig` | UCSC tool for bedGraph to BigWig conversion (conda package: `ucsc-bedgraphtobigwig`) |
+| `bigWigToBedGraph` | UCSC tool for BigWig to bedGraph conversion (conda package: `ucsc-bigwigtobedgraph`) |
+| `parallel` | GNU parallel for parallel job execution |
+| `awk`, `cat`, `sort` | standard Unix utilities |
 
 #### Python packages
 
-The following Python packages are automatically installed via pip or conda:
+The following Python packages will be automatically installed using pip: 
 
-- `typer>=0.9` — for building the command-line interface
-- `PyYAML>=6.0` — for YAML configuration file handling
-- `pysam>=0.22` — for BAM file parsing and interval extraction
-- `pyBigWig>=0.3.25` — for BigWig file parsing and k-mer overlap computation
-- `numpy` — for numerical operations
+| Package | Version | Description |
+|---------|---------|-------------|
+| `typer` | >=0.9 | for building the command-line interface |
+| `PyYAML` | >=6.0 | for YAML configuration file handling |
+| `pysam` | >=0.22 | for BAM file parsing and interval extraction |
+| `pyBigWig` | >=0.3.25 | for BigWig file parsing and k-mer overlap computation |
+| `numpy` | - | for numerical operations |
 
 ## Usage
 

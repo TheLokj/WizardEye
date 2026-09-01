@@ -23,6 +23,7 @@ from .utils import (
     get_bwa_params_hash,
     get_name_from_param,
     log,
+    validate_not_reserved,
 )
 from .version import PACKAGE_VERSION
 
@@ -315,6 +316,7 @@ class Track:
     def update_tags(self, tags: list[str] | None) -> tuple[Path, list[str], list[str]]:
         content = self.load_info()
 
+        validate_not_reserved(tags)
         new_tags = from_charlist_to_list(tags, lowercase=True)
         existing_tags = content.get("tags", [])
         if not isinstance(existing_tags, list):
@@ -403,6 +405,9 @@ def import_track(
         raise FileNotFoundError(f"map_all.bw source file not found: {all_bw_src}")
     if not uniq_bw_src.exists() or not uniq_bw_src.is_file():
         raise FileNotFoundError(f"map_uniq.bw source file not found: {uniq_bw_src}")
+
+    validate_not_reserved(query_species)
+    validate_not_reserved(tags)
 
     track = Track.from_param(
         db_root=db_root,
