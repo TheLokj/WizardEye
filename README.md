@@ -234,7 +234,7 @@ For a position P in the target, there are exactly `-k`/`-w` different possible k
 If `--only-unique` is used, the same behavior and formula apply, but only uniquely aligned k-mers are considered (i.e., k-mers without BWA's `XA` tag and with `MAPQ>0`). For example, with one mismatch allowed, `-k=40`, and `-rc=0.25`, if a position is overlapped by 10 exact k-mers and 10 k-mers with one mismatch, the position is retained only if 10 of these k-mers are unique, regardless of exactness. With `-rc=0.50`, the region is highlighted only if all 20 k-mers map uniquely to it.
 
 ```
-wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -p 0.25 -d /path/to/database --only-unique
+wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -rc 0.25 -d /path/to/database --only-unique
 ```
 
 Note that the ratio is not weighted by depth or mismatches. In another case with a repetitive region, if a position is overlapped by 3000 k-mers, the ratio remains the same.
@@ -281,8 +281,6 @@ This command accepts the same parameters as `filter`, plus a `--mode` parameter 
 wizardeye count -i alignment.bam -r hg19 --exclude-tags Farm -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -m max
 ```
 
-In this example, tracks not reported by `filter` with `-r=0.01` have a `0` in their column, meaning the maximum number of overlapping k-mers in the interval is 0.
-
 #### Output
 
 WizardEye produces a tabulation-separated report containing, for each read, the requested statistics:
@@ -295,6 +293,8 @@ WizardEye produces a tabulation-separated report containing, for each read, the 
 | r4:chr1:106:140 | 0 | 0 | 0 |
 | r5:chr1:232:256 | 0 | 0 | 311 |
 | r5:chr2:3:37 | 122 | 0 | 111 |
+
+If the `filter` command with `-rc=0.01` was used instead of `count`, reads having a `0` here would be considered safe from this track, meaning their maximum number of overlapping k-mers is `0`.
 
 ### Export a mask
 
