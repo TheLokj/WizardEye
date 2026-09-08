@@ -137,6 +137,9 @@ def from_charlist_to_list(
     return normalized
 
 
+RESERVED_SELECTORS = {"*", "all"}
+
+
 def check_all_selector(values: list[str]) -> bool:
     """Check if the list contains '*' or 'all' (case-insensitive).
 
@@ -147,10 +150,7 @@ def check_all_selector(values: list[str]) -> bool:
         bool: True if '*' or 'all' is found in the list (case-insensitive).
     """
     normalized = [v.strip().lower() for v in values if v.strip()]
-    return any(v in ["*", "all"] for v in normalized)
-
-
-RESERVED_SELECTORS = {"*", "all"}
+    return any(v in RESERVED_SELECTORS for v in normalized)
 
 
 def validate_not_reserved(values: list[str] | str | None) -> None:

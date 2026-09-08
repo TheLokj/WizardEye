@@ -53,15 +53,12 @@ def init_db(base_dir: str | Path = ".") -> Path:
         return db_yaml_path
 
     try:
-        cross_tool_version = metadata.version("cross_tool")
+        wizardeye_version = metadata.version("wizardeye")
     except metadata.PackageNotFoundError:
-        try:
-            cross_tool_version = metadata.version("wizardeye")
-        except metadata.PackageNotFoundError:
-            cross_tool_version = PACKAGE_VERSION
+        wizardeye_version = PACKAGE_VERSION
 
     db_content = {
-        "cross_tool_version": cross_tool_version,
+        "wizardeye_version": wizardeye_version,
         "created_date": created_date,
         "last_updated": now,
     }
@@ -83,7 +80,9 @@ def valid_database(db_root: str | Path) -> bool:
     try:
         with db_yaml_path.open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle)
-        if not isinstance(data, dict) or "cross_tool_version" not in data:
+        if not isinstance(data, dict) or (
+            "wizardeye_version" not in data and "cross_tool_version" not in data
+        ):
             log(f"Invalid database info.yaml format at {db_yaml_path}", "E")
             return False
     except (yaml.YAMLError, OSError, ValueError) as e:
