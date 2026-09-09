@@ -57,7 +57,7 @@ Additionally, WizardEye currently only supports single-end reads or merged pairs
 The latest WizardEye version can be installed using conda:
 
 ```
-conda install -c bioconda wizardeye
+conda install -c conda-forge -c bioconda wizardeye
 ```
 
 You can also install WizardEye by cloning this repository and running the following commands from the main folder:
