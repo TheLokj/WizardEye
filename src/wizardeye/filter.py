@@ -595,21 +595,22 @@ def filter_bam(
                         axis=0,
                     )
                     max_freq = np.max(sum_overlapping)
+                    for idx, arr in overlapping_tracks.items():
+                        if np.any(arr):
+                            track_name = selected_tracks[
+                                int(idx)
+                            ].identity.query_species
+                            read_tracks[read_key].add(track_name)
+                            read_tags[read_key].update(
+                                track_to_tags.get(track_name, set())
+                            )
                     if max_freq >= min_freq:
                         excluded_reads.add((chrom, read_id, start, end))
-                        max_idx = np.argmax(sum_overlapping)
-                        for track in overlapping_tracks:
-                            if overlapping_tracks[track][max_idx]:
-                                track_name = selected_tracks[
-                                    int(track)
-                                ].identity.query_species
-                                read_tracks[read_key].add(track_name)
-                                read_tags[read_key].update(
-                                    track_to_tags.get(track_name, set())
-                                )
 
         report_path = write_filtration_report(
-            output_report_tsv=report_tsv, read_tracks=read_tracks
+            output_report_tsv=report_tsv,
+            read_tracks=read_tracks,
+            excluded_reads=excluded_reads,
         )
         n_filtered = max(0, n_mapped_records - len(excluded_reads))
 
@@ -936,7 +937,9 @@ def _default_output_count_table(input_bam: Path) -> Path:
 
 
 def write_filtration_report(
-    output_report_tsv: Path, read_tracks: dict[tuple[str, str, int, int], set[str]]
+    output_report_tsv: Path,
+    read_tracks: dict[tuple[str, str, int, int], set[str]],
+    excluded_reads: set[tuple[str, str, int, int]] | None = None,
 ) -> Path:
     """Write one line per read with exclusion flag, overlapping tracks and tags.
 
@@ -944,6 +947,11 @@ def write_filtration_report(
             output_report_tsv (Path): Path to the output TSV file.
             read_tracks (Dict[Tuple[str, str, int, int], Set[str]]): Dictionary mapping
                 (read_id, chrom, start, end) tuples to sets of overlapping tracks.
+            excluded_reads (Optional[Set[Tuple[str, str, int, int]]]): Set of
+                (chrom, read_id, start, end) tuples marking excluded reads. When
+                provided, filtered_out is derived from membership in this set so
+                that reads with overlapping tracks that are kept (e.g. below
+                min_freq) still report their tracks without being marked as excluded.
 
     Returns:
             Path: The path to the generated report."""
@@ -973,7 +981,6 @@ def write_filtration_report(
         handle.write("read_key\tfiltered_out\tassociated_tracks\n")
         for read_key, track_set in read_tracks.items():
             tracks = sorted(track_set)
-            excluded = "true" if tracks else "false"
             overlapped = ",".join(tracks) if tracks else ""
             if isinstance(read_key, tuple) and len(read_key) >= 4:
                 rid, chrom, start, end = read_key
@@ -981,7 +988,13 @@ def write_filtration_report(
                 display_id = f"{rid}:{chrom}:{start + 1}:{end}"
             else:
                 display_id = str(read_key)
-            # Build line with exactly 3 tab-separated columns
+                rid, chrom, start, end = "", "", -1, -1
+            if excluded_reads is not None:
+                excluded = (
+                    "true" if (chrom, rid, start, end) in excluded_reads else "false"
+                )
+            else:
+                excluded = "true" if tracks else "false"
             line_parts = [display_id, excluded, overlapped]
             handle.write("\t".join(line_parts) + "\n")
     return output_report_tsv

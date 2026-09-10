@@ -2099,6 +2099,45 @@ def test_export_and_filter_same_results_with_mf():
                         f"  Filtered out using the exported mask: {len(only_in_intersect)} reads (e.g., {list(only_in_intersect)[:5]})"
                     )
 
+                # Verify report consistency under -mf
+                report_true_ids = set()
+                report_false_with_tracks_ids = set()
+                with open(str(filter_report_path), "r", encoding="utf-8") as rep:
+                    rep.readline()
+                    for line in rep:
+                        parts = line.rstrip("\n").split("\t")
+                        if len(parts) < 3:
+                            continue
+                        read_key, filtered_out, associated_tracks = (
+                            parts[0],
+                            parts[1],
+                            parts[2],
+                        )
+                        # read_key format: read_id:chrom:start:end
+                        read_id = read_key.split(":")[0]
+                        if filtered_out == "true":
+                            assert associated_tracks, (
+                                f"Excluded read {read_key} has no associated tracks "
+                                f"(stringency={cross_stringency}, mf={mf})"
+                            )
+                            report_true_ids.add(read_id)
+                        elif filtered_out == "false" and associated_tracks:
+                            report_false_with_tracks_ids.add(read_id)
+
+                assert report_true_ids == filter_read_ids, (
+                    f"Report filtered_out=true reads do not match excluded BAM "
+                    f"(stringency={cross_stringency}, mf={mf}):\n"
+                    f"  Only in report: {sorted(report_true_ids - filter_read_ids)[:5]}\n"
+                    f"  Only in BAM:   {sorted(filter_read_ids - report_true_ids)[:5]}"
+                )
+
+                # Reads kept but with associated tracks must not be in excluded BAM.
+                overlap = report_false_with_tracks_ids & filter_read_ids
+                assert not overlap, (
+                    f"Reads marked filtered_out=false with tracks found in excluded BAM "
+                    f"(stringency={cross_stringency}, mf={mf}): {sorted(overlap)[:5]}"
+                )
+
                 # Clean up temp directories
                 filter_tmpdir.cleanup()
                 export_tmpdir.cleanup()
