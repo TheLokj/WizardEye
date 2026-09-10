@@ -48,6 +48,31 @@ STANDARD_CHUNK_SIZE = 100000
 STANDARD_CROSS_STRINGENCY = 0.99
 
 
+@pytest.fixture(scope="module")
+def standard_database(tmp_path_factory):
+    """Build a WizardEye database with standard tracks once per module.
+
+    Generates mappability tracks for SUS_SCROFA_FA, CANIS_LUPUS_FA, and
+    RATTUS_NORVEGICUS_FA against HG19_FA using standard alignment parameters.
+    The database is built only once and shared across all tests that need it.
+
+    Returns:
+        Path to the database directory (db_root / "database").
+    """
+    db_root = tmp_path_factory.mktemp("wizardeye_standard_db")
+    return generate_standard_database(
+        db_root=db_root,
+        reference_fasta=HG19_FA,
+        kmer_length=STANDARD_KMER_LENGTH,
+        offset_step=STANDARD_OFFSET_STEP,
+        bwa_missing_prob_err_rate=STANDARD_BWA_MISSING_PROB_ERR_RATE,
+        bwa_max_gap_opens=STANDARD_BWA_MAX_GAP_OPENINGS,
+        bwa_seed_length=STANDARD_BWA_SEED_LENGTH,
+        chunk_size=STANDARD_CHUNK_SIZE,
+        n_threads=STANDARD_N_THREADS,
+    )
+
+
 def get_available_cpus() -> int:
     """Get the number of available CPUs on the system."""
     try:
@@ -64,15 +89,15 @@ def adjust_thread_counts_for_test(
     """Adjust thread counts based on available CPUs.
 
     Args:
-        desired_thread_counts: List of thread counts to test (e.g., [1, 2, 4, 8, 16])
+        desired_thread_counts: List of thread counts to test (e.g., [1, 2, 4, 8, 16]).
         min_threads_for_test: Minimum number of threads needed to run the test
-        (default: 2, as testing with only 1 thread doesn't test parallelization)
+            (default: 2, as testing with only 1 thread doesn't test parallelization).
 
     Returns:
-        Tuple of (adjusted_thread_counts, should_skip, warning_message)
-        - adjusted_thread_counts: Filtered list of thread counts that are <= available CPUs
-        - should_skip: True if test should be skipped entirely
-        - warning_message: Warning message to display (empty if no adjustment needed)
+        Tuple of (adjusted_thread_counts, should_skip, warning_message):
+        - adjusted_thread_counts: Filtered list of thread counts that are <= available CPUs.
+        - should_skip: True if test should be skipped entirely.
+        - warning_message: Warning message to display (empty if no adjustment needed).
     """
     available_cpus = get_available_cpus()
 
@@ -221,6 +246,17 @@ def generate_standard_database(
 
 
 def compare_bedgraph_files(file1, file2, label):
+    """Compare two bedGraph files line by line and report the first difference.
+
+    Args:
+        file1: Path to the first bedGraph file.
+        file2: Path to the second bedGraph file.
+        label: Label used in diagnostic messages to identify the comparison.
+
+    Returns:
+        True if the files have the same number of lines and identical content,
+        False otherwise.
+    """
     with open(file1, "r") as f1, open(file2, "r") as f2:
         lines1 = f1.readlines()
         lines2 = f2.readlines()
@@ -239,7 +275,14 @@ def compare_bedgraph_files(file1, file2, label):
 
 
 def get_all_fasta_sequence_info(fasta_path):
-    """Get all sequence names and lengths from a FASTA file."""
+    """Get all sequence names and lengths from a FASTA file.
+
+    Args:
+        fasta_path: Path to the FASTA file to parse.
+
+    Returns:
+        List of (sequence_name, sequence_length) tuples, one per sequence.
+    """
     sequences = []
     seq_name = None
     seq_len = 0
@@ -258,6 +301,58 @@ def get_all_fasta_sequence_info(fasta_path):
         if seq_name is not None:
             sequences.append((seq_name, seq_len))
     return sequences
+
+
+def extract_mapped_read_keys(bam_path):
+    """Extract read keys from mapped reads in a BAM file.
+
+    The key format matches the ``read_key`` column produced by
+    write_filtration_report: ``query_name:reference_name:start+1:end``.
+
+    Args:
+        bam_path: Path to the BAM file to read.
+
+    Returns:
+        Set of read key strings for all mapped reads.
+    """
+    import pysam
+
+    keys = set()
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        for read in bam.fetch(until_eof=True):
+            if read.is_unmapped or read.reference_name is None:
+                continue
+            start = read.reference_start
+            end = read.reference_end
+            if start is None or end is None or end <= start:
+                continue
+            keys.add(f"{read.query_name}:{read.reference_name}:{start + 1}:{end}")
+    return keys
+
+
+def parse_filter_report(report_path):
+    """Parse a filter report TSV into a dictionary keyed by read key.
+
+    Args:
+        report_path: Path to the filter report TSV file (with a header line).
+
+    Returns:
+        Dictionary mapping each read key to a
+        (filtered_out, tuple_of_tracks) tuple, where filtered_out is the
+        string ``"true"`` or ``"false"`` and tuple_of_tracks lists the
+        associated track names.
+    """
+    rows = {}
+    with open(report_path, "r", encoding="utf-8") as handle:
+        handle.readline()  # header
+        for line in handle:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 3:
+                continue
+            read_key, filtered_out, tracks_str = parts[0], parts[1], parts[2]
+            tracks = tuple(t for t in tracks_str.split(",") if t) if tracks_str else ()
+            rows[read_key] = (filtered_out, tracks)
+    return rows
 
 
 # -- Consistency with the script --
@@ -1072,7 +1167,7 @@ def test_consistency_align_parallelisation():
                     )
 
 
-def test_consistency_count_same_launch():
+def test_consistency_count_same_launch(standard_database):
     """Test if the results are the same across 10 count rounds with the same parameters."""
 
     # Number of repetitions
@@ -1087,19 +1182,8 @@ def test_consistency_count_same_launch():
         # Dictionary to store report paths per repetition
         report_files = {}
 
-        # Create the database with standard tracks using the helper
-        wizardeye_db = base_path / "database"
-        generate_standard_database(
-            db_root=base_path,
-            reference_fasta=HG19_FA,
-            kmer_length=STANDARD_KMER_LENGTH,
-            offset_step=STANDARD_OFFSET_STEP,
-            bwa_missing_prob_err_rate=STANDARD_BWA_MISSING_PROB_ERR_RATE,
-            bwa_max_gap_opens=STANDARD_BWA_MAX_GAP_OPENINGS,
-            bwa_seed_length=STANDARD_BWA_SEED_LENGTH,
-            chunk_size=STANDARD_CHUNK_SIZE,
-            n_threads=STANDARD_N_THREADS,
-        )
+        # Use the shared module-scoped database
+        wizardeye_db = standard_database
 
         # Get track names for exclude-tracks parameter
         query_stems = [
@@ -1194,10 +1278,8 @@ def test_consistency_count_same_launch():
                     )
 
 
-def test_consistency_count_parallelisation():
+def test_consistency_count_parallelisation(standard_database):
     """Test if the results are the same with different numbers of cores (1, 2, 4, 8, 16)."""
-
-    chunk_size = 5000
 
     # Different thread counts to test for count parallelisation
     desired_thread_counts = [1, 2, 4, 8, 16]
@@ -1217,19 +1299,8 @@ def test_consistency_count_parallelisation():
         # Dictionary to store report paths per thread count
         report_files = {}
 
-        # Create the database with standard tracks using the helper
-        wizardeye_db = base_path / "database"
-        generate_standard_database(
-            db_root=base_path,
-            reference_fasta=HG19_FA,
-            kmer_length=STANDARD_KMER_LENGTH,
-            offset_step=STANDARD_OFFSET_STEP,
-            bwa_missing_prob_err_rate=STANDARD_BWA_MISSING_PROB_ERR_RATE,
-            bwa_max_gap_opens=STANDARD_BWA_MAX_GAP_OPENINGS,
-            bwa_seed_length=STANDARD_BWA_SEED_LENGTH,
-            chunk_size=chunk_size,
-            n_threads=STANDARD_N_THREADS,
-        )
+        # Use the shared module-scoped database
+        wizardeye_db = standard_database
 
         # Get track names for exclude-tracks parameter
         query_stems = [
@@ -1327,7 +1398,7 @@ def test_consistency_count_parallelisation():
                     )
 
 
-def test_consistency_filter_same_launch():
+def test_consistency_filter_same_launch(standard_database):
     """Test if the results are the same across 10 filter rounds with the same parameters."""
 
     # Number of repetitions
@@ -1342,19 +1413,8 @@ def test_consistency_filter_same_launch():
         # Dictionary to store report paths per repetition
         report_files = {}
 
-        # Create the database with standard tracks using the helper
-        wizardeye_db = base_path / "database"
-        generate_standard_database(
-            db_root=base_path,
-            reference_fasta=HG19_FA,
-            kmer_length=STANDARD_KMER_LENGTH,
-            offset_step=STANDARD_OFFSET_STEP,
-            bwa_missing_prob_err_rate=STANDARD_BWA_MISSING_PROB_ERR_RATE,
-            bwa_max_gap_opens=STANDARD_BWA_MAX_GAP_OPENINGS,
-            bwa_seed_length=STANDARD_BWA_SEED_LENGTH,
-            chunk_size=STANDARD_CHUNK_SIZE,
-            n_threads=STANDARD_N_THREADS,
-        )
+        # Use the shared module-scoped database
+        wizardeye_db = standard_database
 
         # Get track names for exclude-tracks parameter
         query_stems = [
@@ -1449,13 +1509,11 @@ def test_consistency_filter_same_launch():
                     )
 
 
-def test_consistency_filter_parallelisation():
+def test_consistency_filter_parallelisation(standard_database):
     """Test if the results are the same with different numbers of cores (1, 2, 4, 8, 16).
 
     It uses a smaller chunk size to allow the use of different numbers of threads.
     """
-
-    chunk_size = 5000
 
     # Different thread counts to test for filter parallelisation
     desired_thread_counts = [1, 2, 4, 8, 16]
@@ -1475,19 +1533,8 @@ def test_consistency_filter_parallelisation():
         # Dictionary to store report paths per thread count
         report_files = {}
 
-        # Create the database with standard tracks using the merged helper
-        wizardeye_db = base_path / "database"
-        generate_standard_database(
-            db_root=base_path,
-            reference_fasta=HG19_FA,
-            kmer_length=STANDARD_KMER_LENGTH,
-            offset_step=STANDARD_OFFSET_STEP,
-            bwa_missing_prob_err_rate=STANDARD_BWA_MISSING_PROB_ERR_RATE,
-            bwa_max_gap_opens=STANDARD_BWA_MAX_GAP_OPENINGS,
-            bwa_seed_length=STANDARD_BWA_SEED_LENGTH,
-            chunk_size=chunk_size,
-            n_threads=STANDARD_N_THREADS,
-        )
+        # Use the shared module-scoped database
+        wizardeye_db = standard_database
 
         # Get track names for exclude-tracks parameter
         query_stems = [
@@ -1585,7 +1632,7 @@ def test_consistency_filter_parallelisation():
                     )
 
 
-def test_export_and_filter_same_results():
+def test_export_and_filter_same_results(standard_database):
     """Test if filter and export+bed_intersect produce the same final results.
 
     It also indirectly tests the consistency between the new pyBigWig implementation
@@ -1600,26 +1647,13 @@ def test_export_and_filter_same_results():
     exclude_tracks_str = ",".join(query_stems)
     hg19_stem = HG19_FA.stem
 
+    # Use the shared module-scoped database
+    wizardeye_db = standard_database
+
     for cross_stringency in stringency_values:
         with tempfile.TemporaryDirectory(
             prefix=f"wizardeye_export_filter_compare_s{cross_stringency}_"
         ) as base_tmpdir:
-            base_path = Path(base_tmpdir)
-
-            # Create the database with standard tracks using the helper
-            wizardeye_db = base_path / "database"
-            generate_standard_database(
-                db_root=base_path,
-                reference_fasta=HG19_FA,
-                kmer_length=STANDARD_KMER_LENGTH,
-                offset_step=STANDARD_OFFSET_STEP,
-                bwa_missing_prob_err_rate=STANDARD_BWA_MISSING_PROB_ERR_RATE,
-                bwa_max_gap_opens=STANDARD_BWA_MAX_GAP_OPENINGS,
-                bwa_seed_length=STANDARD_BWA_SEED_LENGTH,
-                chunk_size=STANDARD_CHUNK_SIZE,
-                n_threads=STANDARD_N_THREADS,
-            )
-
             # Run WizardEye filter to get TSV report with excluded reads
             filter_tmpdir = tempfile.TemporaryDirectory(
                 prefix="filter_", dir=base_tmpdir
@@ -1734,7 +1768,6 @@ def test_export_and_filter_same_results():
             intersect_output_dir = Path(intersect_tmpdir.name) / "output"
             intersect_output_dir.mkdir(parents=True)
             intersect_bam_path = intersect_output_dir / "intersect.bam"
-            intersect_sorted_bam_path = intersect_output_dir / "intersect_sorted.bam"
 
             # Sort the input BAM first for bedtools intersect
             sorted_input_bam = intersect_output_dir / "input_sorted.bam"
@@ -1769,66 +1802,12 @@ def test_export_and_filter_same_results():
                     text=True,
                 )
 
-            # Sort the intersect BAM for comparison
-            subprocess.run(
-                [
-                    "samtools",
-                    "sort",
-                    str(intersect_bam_path),
-                    "-o",
-                    str(intersect_sorted_bam_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            filter_read_keys = extract_mapped_read_keys(filter_excluded_bam)
+            intersect_read_keys = extract_mapped_read_keys(intersect_bam_path)
 
-            # Sort the filter excluded BAM for comparison
-            filter_excluded_sorted = filter_output_dir / "excluded_sorted.bam"
-            subprocess.run(
-                [
-                    "samtools",
-                    "sort",
-                    str(filter_excluded_bam),
-                    "-o",
-                    str(filter_excluded_sorted),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-
-            # Compare the read IDs from both approaches
-            # Extract read IDs from filter excluded BAM
-            filter_read_ids = set()
-            result = subprocess.run(
-                ["samtools", "view", str(filter_excluded_sorted)],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            for line in result.stdout.strip().split("\n"):
-                if line:
-                    parts = line.split("\t")
-                    filter_read_ids.add(parts[0])
-
-            # Extract read IDs from intersect BAM
-            intersect_read_ids = set()
-            result = subprocess.run(
-                ["samtools", "view", str(intersect_sorted_bam_path)],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            for line in result.stdout.strip().split("\n"):
-                if line:
-                    parts = line.split("\t")
-                    intersect_read_ids.add(parts[0])
-
-            # Compare the read sets
-            if filter_read_ids != intersect_read_ids:
-                only_in_filter = filter_read_ids - intersect_read_ids
-                only_in_intersect = intersect_read_ids - filter_read_ids
+            if filter_read_keys != intersect_read_keys:
+                only_in_filter = filter_read_keys - intersect_read_keys
+                only_in_intersect = intersect_read_keys - filter_read_keys
                 raise AssertionError(
                     f"Read sets differ for stringency {cross_stringency}:\n"
                     f"  Filtered out using filter: {len(only_in_filter)} reads (e.g., {list(only_in_filter)[:5]})\n"
@@ -1841,8 +1820,8 @@ def test_export_and_filter_same_results():
             intersect_tmpdir.cleanup()
 
 
-def test_export_and_filter_same_results_with_mf():
-    """Test if filter and export+bed_intersect produce the same final results with a minimum frequency.
+def test_export_and_filter_same_results_with_mf(standard_database):
+    """Test filter and export+bed_intersect give the same results with -mf.
 
     It also indirectly tests the consistency between the new pyBigWig implementation
     and the original filtering based on bedtools for different stringency values.
@@ -1857,27 +1836,14 @@ def test_export_and_filter_same_results_with_mf():
     exclude_tracks_str = ",".join(query_stems)
     hg19_stem = HG19_FA.stem
 
+    # Use the shared module-scoped database
+    wizardeye_db = standard_database
+
     for mf in min_frequencies:
         for cross_stringency in stringency_values:
             with tempfile.TemporaryDirectory(
                 prefix=f"wizardeye_export_filter_compare_s{cross_stringency}_"
             ) as base_tmpdir:
-                base_path = Path(base_tmpdir)
-
-                # Create the database with standard tracks using the helper
-                wizardeye_db = base_path / "database"
-                generate_standard_database(
-                    db_root=base_path,
-                    reference_fasta=HG19_FA,
-                    kmer_length=STANDARD_KMER_LENGTH,
-                    offset_step=STANDARD_OFFSET_STEP,
-                    bwa_missing_prob_err_rate=STANDARD_BWA_MISSING_PROB_ERR_RATE,
-                    bwa_max_gap_opens=STANDARD_BWA_MAX_GAP_OPENINGS,
-                    bwa_seed_length=STANDARD_BWA_SEED_LENGTH,
-                    chunk_size=STANDARD_CHUNK_SIZE,
-                    n_threads=STANDARD_N_THREADS,
-                )
-
                 # Run WizardEye filter to get TSV report with excluded reads
                 filter_tmpdir = tempfile.TemporaryDirectory(
                     prefix="filter_", dir=base_tmpdir
@@ -1996,9 +1962,6 @@ def test_export_and_filter_same_results_with_mf():
                 intersect_output_dir = Path(intersect_tmpdir.name) / "output"
                 intersect_output_dir.mkdir(parents=True)
                 intersect_bam_path = intersect_output_dir / "intersect.bam"
-                intersect_sorted_bam_path = (
-                    intersect_output_dir / "intersect_sorted.bam"
-                )
 
                 # Sort the input BAM first for bedtools intersect
                 sorted_input_bam = intersect_output_dir / "input_sorted.bam"
@@ -2033,115 +1996,232 @@ def test_export_and_filter_same_results_with_mf():
                         text=True,
                     )
 
-                # Sort the intersect BAM for comparison
-                subprocess.run(
-                    [
-                        "samtools",
-                        "sort",
-                        str(intersect_bam_path),
-                        "-o",
-                        str(intersect_sorted_bam_path),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
+                filter_read_keys = extract_mapped_read_keys(filter_excluded_bam)
+                intersect_read_keys = extract_mapped_read_keys(intersect_bam_path)
 
-                # Sort the filter excluded BAM for comparison
-                filter_excluded_sorted = filter_output_dir / "excluded_sorted.bam"
-                subprocess.run(
-                    [
-                        "samtools",
-                        "sort",
-                        str(filter_excluded_bam),
-                        "-o",
-                        str(filter_excluded_sorted),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-
-                # Compare the read IDs from both approaches
-                # Extract read IDs from filter excluded BAM
-                filter_read_ids = set()
-                result = subprocess.run(
-                    ["samtools", "view", str(filter_excluded_sorted)],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                for line in result.stdout.strip().split("\n"):
-                    if line:
-                        parts = line.split("\t")
-                        filter_read_ids.add(parts[0])
-
-                # Extract read IDs from intersect BAM
-                intersect_read_ids = set()
-                result = subprocess.run(
-                    ["samtools", "view", str(intersect_sorted_bam_path)],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                for line in result.stdout.strip().split("\n"):
-                    if line:
-                        parts = line.split("\t")
-                        intersect_read_ids.add(parts[0])
-
-                # Compare the read sets
-                if filter_read_ids != intersect_read_ids:
-                    only_in_filter = filter_read_ids - intersect_read_ids
-                    only_in_intersect = intersect_read_ids - filter_read_ids
+                if filter_read_keys != intersect_read_keys:
+                    only_in_filter = filter_read_keys - intersect_read_keys
+                    only_in_intersect = intersect_read_keys - filter_read_keys
                     raise AssertionError(
                         f"Read sets differ for stringency {cross_stringency} and minimum frequency {mf}:\n"
                         f"  Filtered out using filter: {len(only_in_filter)} reads (e.g., {list(only_in_filter)[:5]})\n"
                         f"  Filtered out using the exported mask: {len(only_in_intersect)} reads (e.g., {list(only_in_intersect)[:5]})"
                     )
 
-                # Verify report consistency under -mf
-                report_true_ids = set()
-                report_false_with_tracks_ids = set()
-                with open(str(filter_report_path), "r", encoding="utf-8") as rep:
-                    rep.readline()
-                    for line in rep:
-                        parts = line.rstrip("\n").split("\t")
-                        if len(parts) < 3:
-                            continue
-                        read_key, filtered_out, associated_tracks = (
-                            parts[0],
-                            parts[1],
-                            parts[2],
-                        )
-                        # read_key format: read_id:chrom:start:end
-                        read_id = read_key.split(":")[0]
-                        if filtered_out == "true":
-                            assert associated_tracks, (
-                                f"Excluded read {read_key} has no associated tracks "
-                                f"(stringency={cross_stringency}, mf={mf})"
-                            )
-                            report_true_ids.add(read_id)
-                        elif filtered_out == "false" and associated_tracks:
-                            report_false_with_tracks_ids.add(read_id)
-
-                assert report_true_ids == filter_read_ids, (
-                    f"Report filtered_out=true reads do not match excluded BAM "
-                    f"(stringency={cross_stringency}, mf={mf}):\n"
-                    f"  Only in report: {sorted(report_true_ids - filter_read_ids)[:5]}\n"
-                    f"  Only in BAM:   {sorted(filter_read_ids - report_true_ids)[:5]}"
-                )
-
-                # Reads kept but with associated tracks must not be in excluded BAM.
-                overlap = report_false_with_tracks_ids & filter_read_ids
-                assert not overlap, (
-                    f"Reads marked filtered_out=false with tracks found in excluded BAM "
-                    f"(stringency={cross_stringency}, mf={mf}): {sorted(overlap)[:5]}"
-                )
-
                 # Clean up temp directories
                 filter_tmpdir.cleanup()
                 export_tmpdir.cleanup()
                 intersect_tmpdir.cleanup()
+
+
+def test_consistency_filter_report_bam_split_and_min_frequency(standard_database):
+    """Test filter report matches the excluded/filtered BAM split.
+
+    Also verifies that -mf only toggles exclusion while associated_tracks stays
+    fixed.
+
+    Verifies, for several stringency and -mf values:
+      1. A read flagged ``true`` (filtered_out) is in the excluded BAM and absent from the
+         filtered BAM; a read flagged ``false`` is in the filtered BAM and absent from the
+         excluded BAM.
+      2. ``associated_tracks`` is identical for every -mf value at a given stringency - only
+         the ``filtered_out`` flag varies with -mf.
+      3. When the number of associated tracks is strictly below -mf, the report marks the
+         read as ``false`` (not excluded).
+    """
+    stringency_values = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0]
+
+    min_frequencies: list[int | None] = [None, 1, 2, 3]
+
+    query_stems = [SUS_SCROFA_FA.stem, CANIS_LUPUS_FA.stem, RATTUS_NORVEGICUS_FA.stem]
+    exclude_tracks_str = ",".join(query_stems)
+    hg19_stem = HG19_FA.stem
+
+    with tempfile.TemporaryDirectory(
+        prefix="wizardeye_filter_report_mf_"
+    ) as base_tmpdir:
+        base_path = Path(base_tmpdir)
+
+        # Use the shared module-scoped database
+        wizardeye_db = standard_database
+
+        runs_dir = base_path / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+
+        input_mapped_keys = extract_mapped_read_keys(SIMULATED_URSUS_BAM)
+
+        for cross_stringency in stringency_values:
+            reports = {}  # mf -> {read_key: (flag, tracks)}
+            bam_keys = {}  # mf -> (filtered_keys, excluded_keys)
+
+            for mf in min_frequencies:
+                mf_label = "none" if mf is None else str(mf)
+                report_path = runs_dir / f"report_s{cross_stringency}_mf{mf_label}.tsv"
+                filtered_bam = (
+                    runs_dir / f"filtered_s{cross_stringency}_mf{mf_label}.bam"
+                )
+                excluded_bam = (
+                    runs_dir / f"excluded_s{cross_stringency}_mf{mf_label}.bam"
+                )
+
+                cmd = [
+                    "python3",
+                    "-m",
+                    "wizardeye",
+                    "filter",
+                    "-i",
+                    str(SIMULATED_URSUS_BAM),
+                    "-r",
+                    str(hg19_stem),
+                    "-k",
+                    str(STANDARD_KMER_LENGTH),
+                    "-w",
+                    str(STANDARD_OFFSET_STEP),
+                    "-bn",
+                    str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                    "-bo",
+                    str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                    "-bl",
+                    str(STANDARD_BWA_SEED_LENGTH),
+                    "-p",
+                    str(cross_stringency),
+                    "--exclude-tracks",
+                    exclude_tracks_str,
+                    "--report-output",
+                    str(report_path),
+                    "-o",
+                    str(filtered_bam),
+                    "--excluded-output",
+                    str(excluded_bam),
+                    "--export-bam",
+                    "-d",
+                    str(wizardeye_db),
+                ]
+                if mf is not None:
+                    cmd += ["-mf", str(mf)]
+
+                subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=True,
+                    env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+                )
+
+                assert report_path.exists(), (
+                    f"wizardeye filter did not create report: {report_path}"
+                )
+                assert filtered_bam.exists(), (
+                    f"wizardeye filter did not create filtered BAM: {filtered_bam}"
+                )
+                assert excluded_bam.exists(), (
+                    f"wizardeye filter did not create excluded BAM: {excluded_bam}"
+                )
+
+                reports[mf] = parse_filter_report(report_path)
+                bam_keys[mf] = (
+                    extract_mapped_read_keys(filtered_bam),
+                    extract_mapped_read_keys(excluded_bam),
+                )
+
+            # 1. Report flag must match the excluded/filtered BAM split.
+            for mf in min_frequencies:
+                filtered_keys, excluded_keys = bam_keys[mf]
+                rows = reports[mf]
+
+                assert not (filtered_keys & excluded_keys), (
+                    f"A mapped read is in both filtered and excluded BAM "
+                    f"(stringency={cross_stringency}, mf={mf})"
+                )
+                assert input_mapped_keys == (filtered_keys | excluded_keys), (
+                    f"Filtered + excluded BAM do not cover all mapped input reads "
+                    f"(stringency={cross_stringency}, mf={mf})"
+                )
+
+                for read_key, (flag, tracks) in rows.items():
+                    if read_key not in input_mapped_keys:
+                        assert flag == "false", (
+                            f"Non-mapped read should be flagged false: {read_key} "
+                            f"(stringency={cross_stringency}, mf={mf})"
+                        )
+                        continue
+                    if flag == "true":
+                        assert read_key in excluded_keys, (
+                            f"Read flagged true not in excluded BAM: {read_key} "
+                            f"(stringency={cross_stringency}, mf={mf})"
+                        )
+                        assert read_key not in filtered_keys, (
+                            f"Read flagged true also in filtered BAM: {read_key} "
+                            f"(stringency={cross_stringency}, mf={mf})"
+                        )
+                        assert tracks, (
+                            f"Read flagged true has no associated tracks: {read_key} "
+                            f"(stringency={cross_stringency}, mf={mf})"
+                        )
+                    else:
+                        assert read_key in filtered_keys, (
+                            f"Read flagged false not in filtered BAM: {read_key} "
+                            f"(stringency={cross_stringency}, mf={mf})"
+                        )
+                        assert read_key not in excluded_keys, (
+                            f"Read flagged false also in excluded BAM: {read_key} "
+                            f"(stringency={cross_stringency}, mf={mf})"
+                        )
+
+            # 2. associated_tracks must be identical across every -mf value; only the
+            #    filtered_out flag may change.
+            common_keys = set(reports[min_frequencies[0]].keys())
+            for mf in min_frequencies[1:]:
+                rows = reports[mf]
+                assert set(rows.keys()) == common_keys, (
+                    f"Report read keys differ between mf={min_frequencies[0]} and "
+                    f"mf={mf} (stringency={cross_stringency})"
+                )
+                for read_key in common_keys:
+                    base_tracks = reports[min_frequencies[0]][read_key][1]
+                    cur_tracks = rows[read_key][1]
+                    assert cur_tracks == base_tracks, (
+                        f"associated_tracks changed with -mf for {read_key}: "
+                        f"{base_tracks} -> {cur_tracks} "
+                        f"(stringency={cross_stringency}, "
+                        f"mf {min_frequencies[0]} -> {mf})"
+                    )
+
+            # Monotonicity: as -mf grows, exclusion can only shrink. A read excluded at
+            # a higher -mf must also be excluded at every lower -mf, and the no-frequency
+            # path must match -mf 1 (both mean "at least one overlapping track").
+            mf_values = [1, 2, 3]
+            for idx in range(len(mf_values) - 1):
+                higher = reports[mf_values[idx + 1]]
+                lower = reports[mf_values[idx]]
+                for read_key in common_keys:
+                    if higher[read_key][0] == "true":
+                        assert lower[read_key][0] == "true", (
+                            f"Read excluded at mf={mf_values[idx + 1]} but not at "
+                            f"mf={mf_values[idx]} (monotonicity broken): {read_key} "
+                            f"(stringency={cross_stringency})"
+                        )
+            for read_key in common_keys:
+                assert reports[None][read_key][0] == reports[1][read_key][0], (
+                    f"filtered_out differs between mf=None and mf=1 for {read_key} "
+                    f"(stringency={cross_stringency})"
+                )
+
+            # 3. With -mf set, a read with fewer associated tracks than -mf cannot be
+            #    excluded.
+            for mf in min_frequencies:
+                if mf is None:
+                    continue
+                rows = reports[mf]
+                for read_key, (flag, tracks) in rows.items():
+                    if len(tracks) < mf:
+                        assert flag == "false", (
+                            f"Read with {len(tracks)} associated tracks (< mf={mf}) "
+                            f"should be flagged false: {read_key} "
+                            f"(stringency={cross_stringency})"
+                        )
 
 
 def test_consistency_align_parallel_same_db():
@@ -2421,7 +2501,7 @@ def test_consistency_align_parallel_same_db():
 # -- Protection against misuse --
 
 
-def test_filter_paired_end_vs_single_end():
+def test_filter_paired_end_vs_single_end(standard_database):
     """Test that WizardEye correctly handles different read types.
 
     Verifies two behaviors:
@@ -2454,18 +2534,8 @@ def test_filter_paired_end_vs_single_end():
     with tempfile.TemporaryDirectory(prefix="wizardeye_reads_test_") as tmpdir:
         tmp_path = Path(tmpdir)
 
-        wizardeye_db = tmp_path / "database"
-        generate_standard_database(
-            db_root=tmp_path,
-            reference_fasta=HG19_FA,
-            kmer_length=STANDARD_KMER_LENGTH,
-            offset_step=STANDARD_OFFSET_STEP,
-            bwa_missing_prob_err_rate=STANDARD_BWA_MISSING_PROB_ERR_RATE,
-            bwa_max_gap_opens=STANDARD_BWA_MAX_GAP_OPENINGS,
-            bwa_seed_length=STANDARD_BWA_SEED_LENGTH,
-            chunk_size=STANDARD_CHUNK_SIZE,
-            n_threads=STANDARD_N_THREADS,
-        )
+        # Use the shared module-scoped database
+        wizardeye_db = standard_database
 
         query_stems = [
             SUS_SCROFA_FA.stem,
@@ -2554,7 +2624,7 @@ def test_filter_paired_end_vs_single_end():
         print(f"Stderr: {result_single.stderr}\nStdout: {result_single.stdout}")
 
 
-def test_count_paired_end_vs_single_end():
+def test_count_paired_end_vs_single_end(standard_database):
     """Test that WizardEye count command correctly handles different read types.
 
     Verifies two behaviors:
@@ -2587,18 +2657,8 @@ def test_count_paired_end_vs_single_end():
     with tempfile.TemporaryDirectory(prefix="wizardeye_reads_test_") as tmpdir:
         tmp_path = Path(tmpdir)
 
-        wizardeye_db = tmp_path / "database"
-        generate_standard_database(
-            db_root=tmp_path,
-            reference_fasta=HG19_FA,
-            kmer_length=STANDARD_KMER_LENGTH,
-            offset_step=STANDARD_OFFSET_STEP,
-            bwa_missing_prob_err_rate=STANDARD_BWA_MISSING_PROB_ERR_RATE,
-            bwa_max_gap_opens=STANDARD_BWA_MAX_GAP_OPENINGS,
-            bwa_seed_length=STANDARD_BWA_SEED_LENGTH,
-            chunk_size=STANDARD_CHUNK_SIZE,
-            n_threads=STANDARD_N_THREADS,
-        )
+        # Use the shared module-scoped database
+        wizardeye_db = standard_database
 
         query_stems = [
             SUS_SCROFA_FA.stem,

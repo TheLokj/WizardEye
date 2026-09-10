@@ -1,6 +1,7 @@
-"""Test script for to control WizardEye exhaustivity.
+"""Test script to control WizardEye exhaustivity.
 
-This script tests different specific cases to check if WizardEye produces expected results
+This script tests different specific cases to check if WizardEye produces expected
+results.
 """
 
 import random
@@ -34,8 +35,11 @@ STANDARD_CROSS_STRINGENCY = 0.99
 
 
 def test_coverage_repetitive_sequence_with_bN():
-    """
-    Test that WizardEye refers, for a single k-mer, every alternative mappings even if there is a lot of them and despite their scores.
+    """Test that a single k-mer reports all alternative mappings despite scores.
+
+    Uses ``-bN`` to force exhaustive search so that every alternative mapping of a
+    single k-mer is reported even when there are many of them and despite their
+    scores.
     """
 
     kmer_length = 35
@@ -222,9 +226,9 @@ def test_coverage_repetitive_sequence_with_bN():
 
 
 def test_coverage_repetitive_sequence_with_bR_n_errs():
-    """
-    Test that WizardEye refers, for a single k-mer, every alternative mappings with a score up to best-1 score even if there is a lot of them.
-    This test does not include indels are bwa prefers mismatches to indels.
+    """Test that a single k-mer reports all mappings up to best-1 score.
+
+    This test does not include indels as BWA prefers mismatches to indels.
     """
 
     # Reproduce the test 3 times to test 0 and 1 errors, 1 and 2 errors and 2 and 3 errors.
@@ -406,16 +410,17 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
 
 
 def test_filter_duplicate_read_ids():
-    """
-    Test that filter processes reads with duplicate QNAME independently.
+    """Test that filter processes reads with duplicate QNAME independently.
 
-    This test creates a BAM file with reads sharing the same QNAME (read ID) but aligned
-    at different positions. Some positions overlap the track mask while others don't.
+    Creates a BAM file with reads sharing the same QNAME (read ID) but aligned at
+    different positions. Some positions overlap the track mask while others don't.
     It verifies that each read is processed individually during filtering:
-    - Reads overlapping masked positions are excluded
-    - Reads not overlapping masked positions are kept
-    - Duplicate IDs do not cause incorrect consolidation
-    - Edge cases: same chr/start/stop but different chr, same chr with different positions, same chr/stop with different start
+
+    - Reads overlapping masked positions are excluded.
+    - Reads not overlapping masked positions are kept.
+    - Duplicate IDs do not cause incorrect consolidation.
+    - Edge cases: same chr/start/stop but different chr, same chr with different
+      positions, same chr/stop with different start.
     """
     kmer_length = 35
 
@@ -887,14 +892,16 @@ def test_filter_duplicate_read_ids():
 
 
 def test_count_duplicate_read_ids():
-    """
-    Test that count processes reads with duplicate QNAME independently.
+    """Test that count processes reads with duplicate QNAME independently.
 
-    This test creates a BAM file with reads sharing the same QNAME (read ID) but aligned
-    at different positions. It verifies that each read is processed individually during counting:
-    - Each read produces a separate line in the report with unique read_key
-    - Duplicate IDs do not cause incorrect consolidation
-    - Edge cases: same chr/start/stop but different chr, same chr with different positions, same chr/stop with different start
+    Creates a BAM file with reads sharing the same QNAME (read ID) but aligned at
+    different positions. It verifies that each read is processed individually during
+    counting:
+
+    - Each read produces a separate line in the report with a unique read_key.
+    - Duplicate IDs do not cause incorrect consolidation.
+    - Edge cases: same chr/start/stop but different chr, same chr with different
+      positions, same chr/stop with different start.
     """
     kmer_length = 35
 
