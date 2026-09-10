@@ -813,26 +813,23 @@ def filter(
         "--only_unique",
         help="Consider only unique k-mers (no XA tag & MAPQ>0) area.",
     ),
-    output_filtered_bam: str | None = typer.Option(
+    output_kept_bam: str | None = typer.Option(
         None,
-        "-o",
-        "--output",
-        help="Output BAM for reads kept after filtering (non-overlapping mask).",
+        "-ko",
+        "--kept-output",
+        help="Output BAM for reads kept after filtering. If not set, no kept BAM is produced.",
     ),
     output_excluded_bam: str | None = typer.Option(
         None,
+        "-eo",
         "--excluded-output",
-        help="Output BAM for reads excluded by the generated mask.",
+        help="Output BAM for reads excluded after filtering. If not set, no excluded BAM is produced.",
     ),
     output_report_tsv: str | None = typer.Option(
         None,
+        "-ro",
         "--report-output",
-        help="Output TSV report with columns: read_id, excluded, overlapped, tags.",
-    ),
-    export_bam: bool = typer.Option(
-        False,
-        "--export-bam",
-        help="Write filtered/excluded BAM outputs. By default, only the TSV report is generated.",
+        help="Output TSV report with columns: read_id, excluded, overlapped, tags. If not set, a default report is generated next to the input BAM.",
     ),
     kmer_length: int | None = typer.Option(
         None,
@@ -897,10 +894,9 @@ def filter(
             stringency=cross_stringency,
             min_freq=min_freq,
             consider_all=not (only_unique),
-            output_filtered_bam=output_filtered_bam,
+            output_kept_bam=output_kept_bam,
             output_excluded_bam=output_excluded_bam,
             output_report_tsv=output_report_tsv,
-            export_bam=export_bam,
         )
     except FileNotFoundError as e:
         log(str(e), "E")
@@ -927,11 +923,9 @@ def filter(
     )
 
     log(f"Read exclusion report saved at {filter_result['report_tsv']}", "S")
-    if (
-        filter_result["filtered_bam"] is not None
-        and filter_result["excluded_bam"] is not None
-    ):
-        log(f"Filtered BAM (kept reads): {filter_result['filtered_bam']}", "S")
+    if filter_result["kept_bam"] is not None:
+        log(f"Kept BAM (kept reads): {filter_result['kept_bam']}", "S")
+    if filter_result["excluded_bam"] is not None:
         log(f"Excluded BAM (masked reads): {filter_result['excluded_bam']}", "S")
 
     log("Thank you for using WizardEye!", "S")
@@ -1298,8 +1292,9 @@ def count(
     ),
     output_report_tsv: str | None = typer.Option(
         None,
+        "-ro",
         "--report-output",
-        help="Output TSV report with columns: read_id, excluded, overlapped, tags.",
+        help="Output TSV report with columns: read_key, statistic per track. If not set, a default path is generated next to the input BAM.",
     ),
     n_threads: int = typer.Option(
         1,

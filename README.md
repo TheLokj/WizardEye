@@ -266,10 +266,14 @@ WizardEye produces a tabulation-separated report containing, for each read, the 
 | read_5:chrom1:232:256 | true | bos_taurus,ovis_aries |
 | read_5:chrom2:2:36 | false |  |
 
-With `--export-bam`, WizardEye produces two additional files:
+By default, this report is written next to the input BAM. You can specify a custom path with `-ro/--report-output PATH`.
 
-- `excluded.bam`: reads excluded by the filtration,
-- `filtered.bam`: reads retained by the filtration.
+You can optionally export the kept and excluded reads as separate BAM files:
+
+- `-ko/--kept-output PATH`: writes kept reads to `PATH`. If not set, no kept BAM is produced.
+- `-eo/--excluded-output PATH`: writes excluded reads to `PATH`. If not set, no excluded BAM is produced.
+
+`PATH` can be either a full file path or an existing directory. When a directory is given, a default filename including `-rc` and `-mf` is used inside it.
 
 ### Count and compute statistics
 

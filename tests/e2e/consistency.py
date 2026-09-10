@@ -1690,7 +1690,6 @@ def test_export_and_filter_same_results(standard_database):
                 str(filter_report_path),
                 "--excluded-output",
                 str(filter_excluded_bam),
-                "--export-bam",
                 "-d",
                 str(wizardeye_db),
             ]
@@ -1882,7 +1881,6 @@ def test_export_and_filter_same_results_with_mf(standard_database):
                     str(filter_report_path),
                     "--excluded-output",
                     str(filter_excluded_bam),
-                    "--export-bam",
                     "-d",
                     str(wizardeye_db),
                 ]
@@ -2015,14 +2013,14 @@ def test_export_and_filter_same_results_with_mf(standard_database):
 
 
 def test_consistency_filter_report_bam_split_and_min_frequency(standard_database):
-    """Test filter report matches the excluded/filtered BAM split.
+    """Test filter report matches the excluded/kept BAM split.
 
     Also verifies that -mf only toggles exclusion while associated_tracks stays
     fixed.
 
     Verifies, for several stringency and -mf values:
       1. A read flagged ``true`` (filtered_out) is in the excluded BAM and absent from the
-         filtered BAM; a read flagged ``false`` is in the filtered BAM and absent from the
+         kept BAM; a read flagged ``false`` is in the kept BAM and absent from the
          excluded BAM.
       2. ``associated_tracks`` is identical for every -mf value at a given stringency - only
          the ``filtered_out`` flag varies with -mf.
@@ -2052,14 +2050,12 @@ def test_consistency_filter_report_bam_split_and_min_frequency(standard_database
 
         for cross_stringency in stringency_values:
             reports = {}  # mf -> {read_key: (flag, tracks)}
-            bam_keys = {}  # mf -> (filtered_keys, excluded_keys)
+            bam_keys = {}  # mf -> (kept_keys, excluded_keys)
 
             for mf in min_frequencies:
                 mf_label = "none" if mf is None else str(mf)
                 report_path = runs_dir / f"report_s{cross_stringency}_mf{mf_label}.tsv"
-                filtered_bam = (
-                    runs_dir / f"filtered_s{cross_stringency}_mf{mf_label}.bam"
-                )
+                kept_bam = runs_dir / f"kept_s{cross_stringency}_mf{mf_label}.bam"
                 excluded_bam = (
                     runs_dir / f"excluded_s{cross_stringency}_mf{mf_label}.bam"
                 )
@@ -2089,11 +2085,10 @@ def test_consistency_filter_report_bam_split_and_min_frequency(standard_database
                     exclude_tracks_str,
                     "--report-output",
                     str(report_path),
-                    "-o",
-                    str(filtered_bam),
+                    "--kept-output",
+                    str(kept_bam),
                     "--excluded-output",
                     str(excluded_bam),
-                    "--export-bam",
                     "-d",
                     str(wizardeye_db),
                 ]
@@ -2113,8 +2108,8 @@ def test_consistency_filter_report_bam_split_and_min_frequency(standard_database
                 assert report_path.exists(), (
                     f"wizardeye filter did not create report: {report_path}"
                 )
-                assert filtered_bam.exists(), (
-                    f"wizardeye filter did not create filtered BAM: {filtered_bam}"
+                assert kept_bam.exists(), (
+                    f"wizardeye filter did not create kept BAM: {kept_bam}"
                 )
                 assert excluded_bam.exists(), (
                     f"wizardeye filter did not create excluded BAM: {excluded_bam}"
@@ -2122,21 +2117,21 @@ def test_consistency_filter_report_bam_split_and_min_frequency(standard_database
 
                 reports[mf] = parse_filter_report(report_path)
                 bam_keys[mf] = (
-                    extract_mapped_read_keys(filtered_bam),
+                    extract_mapped_read_keys(kept_bam),
                     extract_mapped_read_keys(excluded_bam),
                 )
 
-            # 1. Report flag must match the excluded/filtered BAM split.
+            # 1. Report flag must match the excluded/kept BAM split.
             for mf in min_frequencies:
-                filtered_keys, excluded_keys = bam_keys[mf]
+                kept_keys, excluded_keys = bam_keys[mf]
                 rows = reports[mf]
 
-                assert not (filtered_keys & excluded_keys), (
-                    f"A mapped read is in both filtered and excluded BAM "
+                assert not (kept_keys & excluded_keys), (
+                    f"A mapped read is in both kept and excluded BAM "
                     f"(stringency={cross_stringency}, mf={mf})"
                 )
-                assert input_mapped_keys == (filtered_keys | excluded_keys), (
-                    f"Filtered + excluded BAM do not cover all mapped input reads "
+                assert input_mapped_keys == (kept_keys | excluded_keys), (
+                    f"Kept + excluded BAM do not cover all mapped input reads "
                     f"(stringency={cross_stringency}, mf={mf})"
                 )
 
@@ -2152,8 +2147,8 @@ def test_consistency_filter_report_bam_split_and_min_frequency(standard_database
                             f"Read flagged true not in excluded BAM: {read_key} "
                             f"(stringency={cross_stringency}, mf={mf})"
                         )
-                        assert read_key not in filtered_keys, (
-                            f"Read flagged true also in filtered BAM: {read_key} "
+                        assert read_key not in kept_keys, (
+                            f"Read flagged true also in kept BAM: {read_key} "
                             f"(stringency={cross_stringency}, mf={mf})"
                         )
                         assert tracks, (
@@ -2161,8 +2156,8 @@ def test_consistency_filter_report_bam_split_and_min_frequency(standard_database
                             f"(stringency={cross_stringency}, mf={mf})"
                         )
                     else:
-                        assert read_key in filtered_keys, (
-                            f"Read flagged false not in filtered BAM: {read_key} "
+                        assert read_key in kept_keys, (
+                            f"Read flagged false not in kept BAM: {read_key} "
                             f"(stringency={cross_stringency}, mf={mf})"
                         )
                         assert read_key not in excluded_keys, (

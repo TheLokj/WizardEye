@@ -1,4 +1,4 @@
-"""Filter alignment BAM utilities for WizardEye.
+""" "Filter alignment BAM utilities for WizardEye.
 
 This Python module provides functions to generate mask using previously generated
 cross-mappability tracks and to filter BAM with such masks. It also provides functions
@@ -408,8 +408,7 @@ def filter_bam(
     min_freq: int | None = None,
     consider_all: bool = False,
     output_report_tsv: str | None = None,
-    export_bam: bool = False,
-    output_filtered_bam: str | None = None,
+    output_kept_bam: str | None = None,
     output_excluded_bam: str | None = None,
 ) -> dict[str, object]:
     """Alternative BAM filtering function using pyBigWig directly instead of bedtools mask intersection.
@@ -418,24 +417,29 @@ def filter_bam(
     k-mers overlapping each read position exceeds the stringency threshold for any track.
 
     Args:
-            input_bam (str): Path to the input BAM file to filter.
-            ref (str): Name of the reference species.
-            exclude_tracks (List[str]): List of input track names to consider.
-            kmer_length (int): Length of the k-mers used during track generations.
-            offset_step (int): Step size for the offset used during track generations.
-            bwa (Optional[BWAParameters]): BWA alignment parameters for track selection.
-            stringency (float): Cross-stringency threshold, must be between 0.0 and 1.0.
-            min_freq (Optional[int]): Minimum number of tracks that must overlap a position for it to be masked.
-                If None, uses standard logic (any track overlapping).
-            consider_all (bool): If True, all k-mers are considered. If False (default), only uniquely aligned k-mers are considered.
-            output_report_tsv (Optional[str]): Path to the output TSV report file.
-            export_bam (bool): If True, splits the input BAM into filtered and excluded BAM files.
-            output_filtered_bam (Optional[str]): Path to the output BAM file containing filtered reads if export_bam is True.
-            output_excluded_bam (Optional[str]): Path to the output BAM file containing excluded reads if export_bam is True.
-            db_root (str): Root directory of the database.
+        input_bam: Path to the input BAM file to filter.
+        ref: Name of the reference species.
+        db_root: Root directory of the database.
+        exclude_tracks: List of input track names to consider.
+        kmer_length: Length of the k-mers used during track generations.
+        offset_step: Step size for the offset used during track generations.
+        bwa_params: BWA alignment parameters for track selection.
+        stringency: Cross-stringency threshold, must be between 0.0 and 1.0.
+        min_freq: Minimum number of tracks that must overlap a position for it to
+            be masked. If None, uses standard logic (any track overlapping).
+        consider_all: If True, all k-mers are considered. If False, only
+            uniquely aligned k-mers are considered. Defaults to True (i.e. all
+            k-mers), as the CLI inverts ``--only-unique`` (default False).
+        output_report_tsv: Path to the output TSV report file. If None, a default
+            path is generated next to the input BAM.
+        output_kept_bam: Path to the output BAM file containing kept reads. If
+            None, no kept BAM is produced. Can be a directory.
+        output_excluded_bam: Path to the output BAM file containing excluded reads.
+            If None, no excluded BAM is produced. Can be a directory.
 
     Returns:
-            Dict[str, object]: Dictionary containing mask path (None for this alternative), filtered/excluded BAM paths, report path, and counts.
+        Dictionary containing mask path (None for this alternative), kept/excluded
+        BAM paths, report path, and counts.
     """
     if pysam is None:
         raise RuntimeError("pysam is required for report generation and BAM filtering")
@@ -491,9 +495,12 @@ def filter_bam(
             track_to_tags.setdefault(key, set()).update(tags)
 
     report_tsv = (
-        Path(output_report_tsv)
+        _resolve_output_path(
+            output_report_tsv,
+            _default_output_table(input_bam_path, stringency, min_freq),
+        )
         if output_report_tsv
-        else _default_output_table(input_bam_path)
+        else _default_output_table(input_bam_path, stringency, min_freq)
     )
     report_tsv.parent.mkdir(parents=True, exist_ok=True)
 
@@ -614,40 +621,52 @@ def filter_bam(
         )
         n_filtered = max(0, n_mapped_records - len(excluded_reads))
 
-        filtered_bam: Path | None = None
+        kept_bam: Path | None = None
         excluded_bam: Path | None = None
 
-        if export_bam:
-            filtered_bam = (
-                Path(output_filtered_bam)
-                if output_filtered_bam
-                else _default_output_bam(input_bam_path, "filtered")
+        if output_kept_bam:
+            kept_bam = _resolve_output_path(
+                output_kept_bam,
+                _default_output_bam(input_bam_path, "kept", stringency, min_freq),
             )
-            excluded_bam = (
-                Path(output_excluded_bam)
-                if output_excluded_bam
-                else _default_output_bam(input_bam_path, "excluded")
+        if output_excluded_bam:
+            excluded_bam = _resolve_output_path(
+                output_excluded_bam,
+                _default_output_bam(input_bam_path, "excluded", stringency, min_freq),
             )
+
+        if kept_bam is not None or excluded_bam is not None:
             log("Filtering BAM from excluded read IDs...", "I")
+            # If only excluded is requested, still need a kept output to split;
+            # use a temporary path and discard it afterwards.
+            kept_path = kept_bam or _default_output_bam(
+                input_bam_path, "kept", stringency, min_freq
+            )
             filter_bam_from_reads_id(
                 input_bam=input_bam_path,
                 excluded_reads=excluded_reads,
-                output_filtered_bam=filtered_bam,
+                output_kept_bam=kept_path,
                 output_excluded_bam=excluded_bam,
             )
+            if kept_bam is None:
+                # Only excluded was requested; remove the temporary kept BAM.
+                kept_path.unlink(missing_ok=True)
+            else:
+                kept_bam = kept_path
 
-            for bam_path in (filtered_bam, excluded_bam):
-                try:
-                    pysam.index(str(bam_path))
-                except (OSError, RuntimeError) as e:
-                    log(
-                        f"Could not index BAM (possibly unsorted): {bam_path} - {e}",
-                        "W",
-                    )
+            for bam_path in (kept_bam, excluded_bam):
+                if bam_path is not None:
+                    try:
+                        pysam.index(str(bam_path))
+                    except (OSError, RuntimeError) as e:
+                        log(
+                            f"Could not index BAM (possibly unsorted): {bam_path} - {e}",
+                            "W",
+                        )
 
         return {
             "mask": None,
-            "filtered_bam": filtered_bam,
+            "kept_bam": kept_bam,
             "excluded_bam": excluded_bam,
             "report_tsv": report_path,
             "n_total": n_mapped_records,
@@ -664,27 +683,31 @@ def filter_bam(
 def filter_bam_from_reads_id(
     input_bam: Path,
     excluded_reads: set[tuple[str, str, int, int]],
-    output_filtered_bam: Path,
-    output_excluded_bam: Path,
+    output_kept_bam: Path,
+    output_excluded_bam: Path | None = None,
 ) -> tuple[int, int, int]:
     """Split BAM in one pysam pass using excluded read IDs with position info.
 
     Args:
-            input_bam: Path to input BAM file.
-            excluded_reads: Set of tuples (chrom, read_id, start, stop) to exclude.
-            output_filtered_bam: Path to output BAM file with filtered reads.
-            output_excluded_bam: Path to output BAM file with excluded reads.
+        input_bam: Path to input BAM file.
+        excluded_reads: Set of tuples ``(chrom, read_id, start, stop)`` to exclude.
+        output_kept_bam: Path to output BAM file with kept reads.
+        output_excluded_bam: Path to output BAM file with excluded reads.
+            If None, excluded reads are discarded.
 
     Returns:
-            Tuple[int, int, int]: Number of total records, number of filtered records and number of excluded records."""
+        Number of total records, number of kept records, and number of excluded
+        records.
+    """
 
-    log("Splitting BAM into excluded/filtered files based on filtration...", "I")
+    log("Splitting BAM into kept/excluded files based on filtration...", "I")
 
     if pysam is None:
         raise RuntimeError("pysam is required to filter BAM from read IDs")
 
-    output_filtered_bam.parent.mkdir(parents=True, exist_ok=True)
-    output_excluded_bam.parent.mkdir(parents=True, exist_ok=True)
+    output_kept_bam.parent.mkdir(parents=True, exist_ok=True)
+    if output_excluded_bam is not None:
+        output_excluded_bam.parent.mkdir(parents=True, exist_ok=True)
 
     n_total_records = 0
     n_excluded_records = 0
@@ -692,29 +715,36 @@ def filter_bam_from_reads_id(
     with (
         pysam.AlignmentFile(str(input_bam), "rb") as bam,
         pysam.AlignmentFile(
-            str(output_filtered_bam), "wb", template=bam
+            str(output_kept_bam), "wb", template=bam
         ) as filtered_handle,
-        pysam.AlignmentFile(
-            str(output_excluded_bam), "wb", template=bam
-        ) as excluded_handle,
     ):
-        for read in bam.fetch(until_eof=True):
-            n_total_records += 1
-            read_id = read.query_name
-            chrom = read.reference_name
-            start = read.reference_start
-            end = read.reference_end
-            if (
-                read_id
-                and chrom
-                and start is not None
-                and end is not None
-                and (chrom, read_id, start, end) in excluded_reads
-            ):
-                excluded_handle.write(read)
-                n_excluded_records += 1
-            else:
-                filtered_handle.write(read)
+        excluded_handle = None
+        if output_excluded_bam is not None:
+            excluded_handle = pysam.AlignmentFile(
+                str(output_excluded_bam), "wb", template=bam
+            )
+        try:
+            for read in bam.fetch(until_eof=True):
+                n_total_records += 1
+                read_id = read.query_name
+                chrom = read.reference_name
+                start = read.reference_start
+                end = read.reference_end
+                if (
+                    read_id
+                    and chrom
+                    and start is not None
+                    and end is not None
+                    and (chrom, read_id, start, end) in excluded_reads
+                ):
+                    if excluded_handle is not None:
+                        excluded_handle.write(read)
+                    n_excluded_records += 1
+                else:
+                    filtered_handle.write(read)
+        finally:
+            if excluded_handle is not None:
+                excluded_handle.close()
 
     n_filtered_records = n_total_records - n_excluded_records
     return n_total_records, n_filtered_records, n_excluded_records
@@ -803,7 +833,9 @@ def count_k_mers_on_bam(
             track_to_tags.setdefault(key, set()).update(tags)
 
     report_tsv = (
-        Path(output_report_tsv)
+        _resolve_output_path(
+            output_report_tsv, _default_output_count_table(input_bam_path)
+        )
         if output_report_tsv
         else _default_output_count_table(input_bam_path)
     )
@@ -918,16 +950,82 @@ def _generate_count_only_report(
 # --- Reports and results generation ---
 
 
-def _default_output_bam(input_bam: Path, suffix: str) -> Path:
-    if input_bam.suffix.lower() == ".bam":
-        return input_bam.with_suffix(f".{suffix}.bam")
-    return Path(f"{input_bam!s}.{suffix}.bam")
+def _resolve_output_path(
+    user_path: str,
+    default_path: Path,
+) -> Path:
+    """Resolve a user-provided output path.
+
+    If the given path points to an existing directory, the default filename is
+    placed inside it. Otherwise the path is treated as a full file path.
+
+    Args:
+        user_path: User-provided path (file or existing directory).
+        default_path: Default path whose filename is used when ``user_path`` is a
+            directory.
+
+    Returns:
+        Resolved file path.
+    """
+    resolved = Path(user_path)
+    if resolved.is_dir():
+        return resolved / default_path.name
+    return resolved
 
 
-def _default_output_table(input_bam: Path) -> Path:
-    if input_bam.suffix.lower() == ".bam":
-        return input_bam.with_suffix(".wizardeye.report.tsv")
-    return Path(f"{input_bam!s}.wizardeye.report.tsv")
+def _default_output_bam(
+    input_bam: Path, suffix: str, stringency: float, min_freq: int | None = None
+) -> Path:
+    """Build a default output BAM path embedding the filtering parameters.
+
+    The filename encodes the cross-stringency (``rc``) and, when set, the
+    minimum frequency (``mf``): ``reads.wizardeye_kept_rc0_99_mf2.bam``.
+
+    Args:
+        input_bam: Path to the input BAM file.
+        suffix: Output suffix (e.g. ``"kept"`` or ``"excluded"``).
+        stringency: Cross-stringency threshold.
+        min_freq: Minimum frequency, or None to omit from the filename.
+
+    Returns:
+        Default output BAM path.
+    """
+    param_suffix = f"rc{stringency:g}".replace(".", "_")
+    if min_freq is not None:
+        param_suffix += f"_mf{min_freq}"
+    stem = (
+        input_bam.with_suffix("").name
+        if input_bam.suffix.lower() == ".bam"
+        else input_bam.name
+    )
+    return input_bam.with_name(f"{stem}.wizardeye_{suffix}_{param_suffix}.bam")
+
+
+def _default_output_table(
+    input_bam: Path, stringency: float, min_freq: int | None = None
+) -> Path:
+    """Build a default report path embedding the filtering parameters.
+
+    The filename encodes the cross-stringency (``rc``) and, when set, the
+    minimum frequency (``mf``): ``reads.wizardeye_report_rc0_99_mf2.tsv``.
+
+    Args:
+        input_bam: Path to the input BAM file.
+        stringency: Cross-stringency threshold.
+        min_freq: Minimum frequency, or None to omit from the filename.
+
+    Returns:
+        Default report TSV path.
+    """
+    param_suffix = f"rc{stringency:g}".replace(".", "_")
+    if min_freq is not None:
+        param_suffix += f"_mf{min_freq}"
+    stem = (
+        input_bam.with_suffix("").name
+        if input_bam.suffix.lower() == ".bam"
+        else input_bam.name
+    )
+    return input_bam.with_name(f"{stem}.wizardeye_report_{param_suffix}.tsv")
 
 
 def _default_output_count_table(input_bam: Path) -> Path:

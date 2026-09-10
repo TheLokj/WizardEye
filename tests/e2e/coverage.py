@@ -597,7 +597,7 @@ def test_filter_duplicate_read_ids():
         assert map_all_bw.exists(), f"map_all.bw not found in {track_dir}"
 
         # Run WizardEye filter
-        filtered_bam = tmpdir / "filtered.bam"
+        kept_bam = tmpdir / "filtered.bam"
         excluded_bam = tmpdir / "excluded.bam"
         report_tsv = tmpdir / "report.tsv"
 
@@ -626,9 +626,8 @@ def test_filter_duplicate_read_ids():
             "2000000000",
             "-d",
             str(db_path),
-            "--export-bam",
-            "-o",
-            str(filtered_bam),
+            "--kept-output",
+            str(kept_bam),
             "--excluded-output",
             str(excluded_bam),
             "-p",
@@ -649,7 +648,7 @@ def test_filter_duplicate_read_ids():
 
         # Count reads in filtered BAM
         result = subprocess.run(
-            ["samtools", "view", "-c", str(filtered_bam)],
+            ["samtools", "view", "-c", str(kept_bam)],
             capture_output=True,
             text=True,
             check=True,
@@ -666,12 +665,12 @@ def test_filter_duplicate_read_ids():
         n_excluded = int(result.stdout.strip())
 
         # Verify BAM outputs exist
-        assert filtered_bam.exists(), f"Filtered BAM not found: {filtered_bam}"
+        assert kept_bam.exists(), f"Filtered BAM not found: {kept_bam}"
         assert excluded_bam.exists(), f"Excluded BAM not found: {excluded_bam}"
 
         # Verify BAM outputs are valid BAM files
         subprocess.run(
-            ["samtools", "quickcheck", str(filtered_bam)],
+            ["samtools", "quickcheck", str(kept_bam)],
             capture_output=True,
             text=True,
             check=True,
@@ -816,7 +815,7 @@ def test_filter_duplicate_read_ids():
         # Verify exact read content in filtered and excluded BAMs
         # Get reads from filtered BAM
         result = subprocess.run(
-            ["samtools", "view", str(filtered_bam)],
+            ["samtools", "view", str(kept_bam)],
             capture_output=True,
             text=True,
             check=True,
