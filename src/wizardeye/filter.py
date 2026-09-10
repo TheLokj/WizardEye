@@ -596,7 +596,6 @@ def filter_bam(
                     )
                     max_freq = np.max(sum_overlapping)
                     if max_freq >= min_freq:
-                        print("+1")
                         excluded_reads.add((chrom, read_id, start, end))
                         max_idx = np.argmax(sum_overlapping)
                         for track in overlapping_tracks:
