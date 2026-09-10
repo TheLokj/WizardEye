@@ -1,0 +1,40 @@
+cff-version: 1.2.0
+title: WizardEye
+message: >-
+  A Python tool to create, manage and filter by
+  cross-mappability tracks.
+type: software
+authors:
+  - given-names: Louison
+    family-names: Lesage
+    email: louison_lesage@eva.mpg.de
+    affiliation: Max Planck Institute for Evolutionary Anthropology
+    orcid: 'https://orcid.org/0009-0000-0252-6311'
+  - given-names: Aurore
+    family-names: Galtier
+    email: aurore_galtier@eva.mpg.de
+    affiliation: Max Planck Institute for Evolutionary Anthropology
+    orcid: 'https://orcid.org/0009-0002-8041-6518'
+  - name: Max Planck Institute for Evolutionary Anthropology
+    address: Deutscher Platz 6
+    city: Leipzig
+    post-code: '04103'
+    country: DE
+repository-code: 'https://github.com/TheLokj/WizardEye/'
+abstract: >-
+  A Python tool to create, manage and filter by
+  cross-mappability tracks.
+keywords:
+  - bioinformatics
+  - metagenomics
+  - taxonomy
+  - filtration
+  - contamination
+  - mappability
+  - cross-mappability
+  - eDNA
+  - aDNA
+  - ancient-dna-fragments
+  - ancient-dna-sequences
+license: MIT
+version: 0.1.5

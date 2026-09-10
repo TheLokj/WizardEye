@@ -33,6 +33,8 @@ This tool is directly adapted from the script [generate_cross_mappability_filter
 	- [Export a mask](#export-a-mask)
 	- [Import an existing track manually](#import-an-existing-track-manually)
 - [Go beyond WizardEye limits](#go-beyond-wizardeye-limits)
+- [License](#license)
+- [Citation](#citation)
 
 ## How it works
 
@@ -251,7 +253,7 @@ wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus
 
 Note that the `-mf` parameter is also available in the `export` command to generate masks with frequency filtering applied. This will remove lines with less than `-mf` from the final bed file.
 
-<img src="docs/stringency_and_frequency.png" alt="WizardEye - Stringency and Frequency" width="800" />
+<img src="docs/stringency_and_frequency.png" alt="WizardEye - Stringency and Frequency" width="800"/>
 
 #### Output
 
@@ -324,8 +326,18 @@ wizardeye import -d /path/to/database -r ref -i input -k 35 -w 20 \
 
 This command creates the target/track directory, copies the two BigWig files as `map_all.bw` and `map_uniq.bw`, and writes a `param.yaml` file with the provided generation metadata.
 
-# Go beyond WizardEye limits
+## Go beyond WizardEye limits
 
 It is recommended to complement your filtering with an evolutionarily-aware method such as Kraken2. This combination is useful for removing both reads from completely different organisms and reads that may be ambiguous between closely related organisms.
+
+## License
+
+This software is licensed under the MIT license. See the [`LICENSE`](https://github.com/TheLokj/WizardEye/blob/master/LICENSE) file for details. Source code is available at [https://github.com/TheLokj/WizardEye/](https://github.com/TheLokj/WizardEye/).
+
+## Citation
+
+WizardEye and its associated method were co-developed by **Aurore Galtier** and **Louison Lesage**, with the collaboration of **Janet Kelso**, **Kay Prüfer**, and **Matthias Meyer**. This work was carried out at the Max Planck Institute for Evolutionary Anthropology.
+
+As WizardEye is not yet published in a peer-reviewed journal, please refer to the [`CITATION.cff`](https://github.com/TheLokj/WizardEye/blob/master/CITATION.cff) file for citation information in the meantime.
 
 *Last documentation update: 0.1.5.*
