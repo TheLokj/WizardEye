@@ -92,7 +92,6 @@ def _request_tracks_from_args(
     kmer_length: int,
     offset_step: int,
     only_unique: bool,
-    no_cache: bool,
     cross_stringency: float,
     min_freq: int,
     bwa_params: BWAParameters | None = None,
@@ -151,10 +150,6 @@ def _request_tracks_from_args(
     )
     log(
         f"Mask source mode: {'uniquely aligned k-mers' if only_unique else f'all k-mers {default}'}",
-        "I",
-    )
-    log(
-        f"Mask cache mode: {'disabled (--no-cache)' if no_cache else f'enabled {default}'}",
         "I",
     )
     if cross_stringency:
@@ -299,14 +294,14 @@ def migrate(
         "0.1.3", "--to", help="Target version to migrate to."
     ),
     bwa_r_best_hits: int = typer.Option(
-        2147483647,
+        ...,
         "-bR",
-        help="bwa aln -R parameter value. When n_best_hits>=-bR, bwa aln do not explore suboptimal hits.",
+        help="bwa aln -R parameter value used to generate the tracks. Required: must match the value used during alignment (e.g. 30).",
     ),
     bwa_samse_n: int = typer.Option(
-        2147483647,
+        ...,
         "-bsn",
-        help="bwa samse -n parameter value. If n_kept_hits>-n, kept hits will NOT be saved in the track.",
+        help="bwa samse -n parameter value used to generate the tracks. Required: must match the value used during alignment (e.g. 2000000000).",
     ),
 ):
     """Migrate database tracks from old naming format to new format with BWA parameters hash."""
@@ -869,7 +864,6 @@ def filter(
         kmer_length,
         offset_step,
         only_unique,
-        None,
         cross_stringency,
         min_freq,
         bwa_params,
@@ -1012,7 +1006,12 @@ def export(
     n_threads: int = typer.Option(
         1,
         "-j",
-        help="Number of threads for parallel overlap extraction from BigWig tracks.",
+        help="Number of threads for parallel per-track mask computation.",
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Disable mask caching: recompute track masks and avoid writing cache files.",
     ),
 ):
     """Export a merged BED mask using the same track-selection logic as `filter`."""
@@ -1037,7 +1036,6 @@ def export(
         kmer_length,
         offset_step,
         only_unique,
-        None,
         cross_stringency,
         min_freq,
         bwa_params,
@@ -1056,6 +1054,7 @@ def export(
             db_root=db_root,
             output_file=output_bed,
             bwa_params=bwa_params,
+            no_cache=no_cache,
         )
     except ValueError as e:
         log(str(e), "E")
@@ -1148,11 +1147,6 @@ def import_tracks(
         "-bsn",
         help="bwa samse -n used after alignment.",
     ),
-    n_threads: int = typer.Option(
-        1,
-        "-j",
-        help="Thread count used for alignment.",
-    ),
     db_root: str = typer.Option(
         ..., "-d", "--db-root", help="Path to the database root directory."
     ),
@@ -1199,7 +1193,6 @@ def import_tracks(
             tags=tag,
             mapping_tool=mapping_tool,
             bwa_params=bwa_params,
-            n_threads=n_threads,
             force=force,
         )
     except FileExistsError as e:
@@ -1285,21 +1278,11 @@ def count(
         "--only_unique",
         help="Consider only unique k-mers (no XA tag & MAPQ>0) area.",
     ),
-    no_cache: bool = typer.Option(
-        False,
-        "--no-cache",
-        help="Disable mask caching: recompute track masks and avoid writing cache files.",
-    ),
     output_report_tsv: str | None = typer.Option(
         None,
         "-ro",
         "--report-output",
         help="Output TSV report with columns: read_key, statistic per track. If not set, a default path is generated next to the input BAM.",
-    ),
-    n_threads: int = typer.Option(
-        1,
-        "-j",
-        help="Number of threads for parallel overlap extraction from BigWig tracks.",
     ),
 ):
 
@@ -1336,7 +1319,6 @@ def count(
         kmer_length,
         offset_step,
         only_unique,
-        no_cache,
         None,
         None,
         bwa_params,
@@ -1356,7 +1338,6 @@ def count(
             count_mode=count_mode,
             bwa_params=bwa_params,
             consider_all=not (only_unique),
-            n_threads=n_threads,
             output_report_tsv=output_report_tsv,
         )
 

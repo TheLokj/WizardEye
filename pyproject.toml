@@ -7,7 +7,13 @@ name = "WizardEye"
 dynamic = ["version"]
 description = "A Python tool to create, manage, and filter by cross-mappability tracks."
 readme = "./README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9,<=3.14.7"
+authors = [
+  { name = "Louison Lesage", email = "louison_lesage@eva.mpg.de" },
+  { name = "Aurore Galtier", email = "aurore_galtier@eva.mpg.de" },
+]
 dependencies = [
   "typer>=0.9",
   "PyYAML>=6.0",

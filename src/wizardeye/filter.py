@@ -764,7 +764,6 @@ def count_k_mers_on_bam(
     bwa_params: BWAParameters | None = None,
     consider_all: bool = False,
     output_report_tsv: str | None = None,
-    n_threads: int = 1,
 ) -> dict[str, object]:
     """Main function to filter a BAM file using several tracks and generate requested outputs.
 
@@ -780,8 +779,6 @@ def count_k_mers_on_bam(
                calculation. If False (default), only uniquely aligned k-mers are considered.
             output_report_tsv (Optional[str]): Path to the output TSV report file.
             db_root (str): Root directory of the database.
-            no_cache (bool): If True, do not use and generate cached tracks.
-            n_threads (int): Number of threads to use for parallel processing.
     """
     if pysam is None:
         raise RuntimeError("pysam is required for report generation and BAM filtering")

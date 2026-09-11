@@ -126,14 +126,14 @@ database/
 ...
 │   ├── ref.md5                     # reference md5
 │   └── ref.yaml                    # information about the reference
-└── info.yaml                      # information about the database
+└── info.yaml                       # information about the database
 ```
 
 Every subdirectory contains two `BigWig` files that can be opened in a traditional genome browser. The `map_all.bw` file, for every position in the reference genome, represents the number of overlapping k-mers from the risky sequences, while `map_uniq.bw` contains only unique k-mers (i.e., k-mers overlapping only that genomic region). These two files enable stringency computation.
 
 ##### Update a track
 
-You can update tags for an existing track using the database command by providing the full track-defining parameters and replacement tags:
+You can update tags for an existing track using the database command by providing the full track-defining parameters (`-d`, `-r/--ref`, `-q/--track`, `-k`, `-w`, BWA parameters, `-t/--tags`) and replacement tags:
 
 ```
 wizardeye database update track-tags -d /path/to/database \
@@ -141,9 +141,17 @@ wizardeye database update track-tags -d /path/to/database \
 	--tags Mammalia,Ruminantia
 ```
 
+##### Database catalogue
+
+To list every reference and track stored in a database, use:
+
+```
+wizardeye database catalogue -d /path/to/database
+```
+
 ##### Database cache
 
-Note that masks generated during export are cached in the database to speed up subsequent exports. You can avoid this by specifying `--no-cache` before export. You can delete the cache using the following command:
+The `export` command caches the per-track and merged masks it computes as `.bed` files inside the database, so repeated exports with the same parameters reuse them. You can delete this cache using:
 
 ```
 wizardeye database clean -d /path/to/database
@@ -157,6 +165,8 @@ Version 0.1.3 introduced new track naming. To migrate an existing database from 
 wizardeye database migrate -d /path/to/database --from 0.1.2 --to 0.1.3 -bR 30 -bsn 2000000000
 ```
 
+The `-bR` and `-bsn` parameters are **required** for migration: they must match the BWA values used when the tracks were originally generated. 
+
 ### Create a new track
 
 You can compute ambiguous regions of `reference.fa` that can be targeted by reads from `risky.fa` using specific BWA parameters:
@@ -167,19 +177,36 @@ wizardeye align -i /path/to/risky.fa -r /path/to/reference.fa -d /path/to/databa
 					-bn 0.01 -bo 2 -bl 16500
 ```
 
+The k-mer and main BWA alignment parameters accepted by `align` are:
+
+| Parameters | Default | Definition |
+|------------|---|---------|
+| `-k` | *required* | Length of k-mers to produce |
+| `-w` | `1` | Offset/sliding window step for k-mers |
+| `-bn` | `0.01` | bwa aln `-n`. Max diff. or missing prob. under 0.02 err rate |
+| `-bo` | `2` | bwa aln `-o`. Maximum number or fraction of gap opens |
+| `-bl` | `16500` | bwa aln `-l`. Seed length |
+| `-bj` | `1` | bwa aln `-t`. Number of threads per bwa instance |
+
 You can provide tags to describe `risky.fa` (e.g., phylogeny and/or environment: `-t Mammalia,Carnivora,Felis,Cave`). This enables direct BAM file filtering based on specific tags. You can manually set a track identifier with `--track_ID` to store it in the database metadata. Note that to prevent misuse, a new track cannot be added if the reference alignment file differs, including in sequence names. This is enforced by an MD5-based check to prevent silently corrupted analyses.
+
+If a track already exists for the same parameters, WizardEye skips it. Use `--force` to recreate it anyway:
+
+```
+wizardeye align -i /path/to/risky.fa -r /path/to/reference.fa -d /path/to/database -k 35 -w 1 --force
+```
 
 As WizardEye uses `seqkit split2` to distribute alignment computation across threads, several parameters can speed this up:
 
 | Parameters | Default | Definition |
 |------------|---|---------|
-| `--tmp_dir` | `TMPDIR` | Temporary directory for processing chunks and alignments |
-| `--chunk_size` | `2000000` | Number of sequences per chunk |
+| `--tmp-dir` | `TMPDIR` | Temporary directory for processing chunks and alignments |
+| `--chunk-size` | `2000000` | Number of k-mers per chunk |
 | `--jobs` | `1` | Number of threads for generating chunks and running parallel bwa instances |
-| `--bwa_threads` | `1` | Number of threads per bwa instance |
+| `--bwa-threads` | `1` | Number of threads per bwa instance (`-bj`) |
 
 > [!NOTE]
-With default parameters (`-n 0.01 -o 2 -l 16500 -k 35 -w 1`), a cross-mappability track based on hg19 coordinates is generated from a complete mammalian genome in ~48 hours using 128 threads (`--chunk_jobs 128 --bwa_threads 1`). Such computation requires ~200GB of free storage in the temporary directory due to the large number of k-mers generated before alignment.
+With default parameters (`-n 0.01 -o 2 -l 16500 -k 35 -w 1`), a cross-mappability track based on hg19 coordinates is generated from a complete mammalian genome in ~48 hours using 128 threads (`--jobs 128 --bwa-threads 1`). Such computation requires ~200GB of free storage in the temporary directory due to the large number of k-mers generated before alignment.
 
 #### How to deal with exhaustivity
 
@@ -281,11 +308,15 @@ You can optionally export the kept and excluded reads as separate BAM files:
 
 If you prefer to use your own filter, you can export a per-read report summarizing the number of k-mers overlapping the reference per read interval using the `count` command.
 
-This command accepts the same parameters as `filter`, plus a `--mode` parameter to specify the statistical summary type (`sum`, `max`, `min`, `cov`, `mean`, or `std`). Statistics are computed per interval. For example, if `max` is specified, for each track, the maximum number of overlapping k-mers from that track at any position in the read's interval is reported.
+This command accepts the same track-selection parameters as `filter` (`-i`, `-r`, `-d`, `--exclude-tags`, `--exclude-tracks`, `-k`, `-w`, BWA parameters, `--only-unique`), plus a `-m/--mode` parameter (default: `mean`) to specify the statistical summary type (`sum`, `max`, `min`, `cov`, `mean`, or `std`). Statistics are computed per interval. For example, if `max` is specified, for each track, the maximum number of overlapping k-mers from that track at any position in the read's interval is reported.
+
+Note that `count` does not apply stringency (`-rc`) or frequency (`-mf`) filtering, and does not produce BAM outputs.
 
 ```
 wizardeye count -i alignment.bam -r hg19 --exclude-tags Farm -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -m max
 ```
+
+Use `-ro/--report-output PATH` to write the report to a custom location (a default path next to the input BAM is used otherwise).
 
 #### Output
 
@@ -310,21 +341,32 @@ If you plan to use the same configuration frequently (e.g., in a pipeline), you 
 wizardeye export -r hg19 --exclude-tags Cave -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database -o mask.bed
 ```
 
+Use `-j` to parallelize per-track mask computation. The `export` command also accepts `--exclude-tracks`, `--only-unique`, `-rc/--stringency`, and `-mf/--min-frequency`, using the same track-selection logic as `filter`.
+
+By default, `export` caches per-track masks as `.bed` files inside the database. The merged mask is written to the output file when `-o` is provided, or cached in the database otherwise. Use `--no-cache` to recompute masks without writing cache files:
+
 ### Import an existing track manually
 
-If you computed a track outside WizardEye, you can import it manually by providing both BigWig files and the parameters used to generate them:
+If you computed a track outside WizardEye, you can import it manually by providing both BigWig files and the parameters used to generate them. Here, `-i/--input` is the query species name (not a file path), and `-r/--ref` is the reference name in the database:
 
 ```
-wizardeye import -d /path/to/database -r ref -i input -k 35 -w 20 \
+wizardeye import -d /path/to/database -r ref -i species_name -k 35 -w 20 \
 	--map-all-bw /path/to/map_all.bw \
 	--map-uniq-bw /path/to/map_uniq.bw \
 	--reference-fasta /path/to/reference.fa \
 	--input-fasta /path/to/input.fa \
-	-bn 0.01 -bo 2 -bl 16500 -j 8 \
+	-bn 0.01 -bo 2 -bl 16500 \
 	-t Mammalia,Carnivora
 ```
 
 This command creates the target/track directory, copies the two BigWig files as `map_all.bw` and `map_uniq.bw`, and writes a `param.yaml` file with the provided generation metadata.
+
+Optional parameters give finer control over the imported metadata:
+
+- `--reference-fasta PATH` / `--input-fasta PATH`: original FASTA paths to store in metadata.
+- `--reference-fasta-md5 MD5`: reference FASTA MD5 to store in metadata. If `--reference-fasta` is also provided, WizardEye validates it against the given file.
+- `--mapping-tool TOOL`: mapping tool name to record in metadata (`bwa aln` is the only tool compatible now).
+- `--force`: overwrite the imported track files and metadata if the track already exists.
 
 ## Go beyond WizardEye limits
 
