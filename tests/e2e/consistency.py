@@ -18,34 +18,31 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
-# Constants for test fixtures
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
-SRC_DIR = PROJECT_ROOT / "src"
-HG19_FA = FIXTURES_DIR / "hg19_chr1_25_1kbp.fa"
-SUS_SCROFA_FA = FIXTURES_DIR / "sus_scrofa_chr1_25_1kbp.fa"
-CANIS_LUPUS_FA = FIXTURES_DIR / "canis_lupus_chr1_25_1kbp.fa"
-RATTUS_NORVEGICUS_FA = FIXTURES_DIR / "rattus_norvegicus_chr1_25_1kbp.fa"
-SIMULATED_URSUS_BAM = FIXTURES_DIR / "ursus_1000000.uniq.L35MQ25.bam"
-SCRIPT_PATH = Path(__file__).parent.parent / "generate_cross_mappability_filter_bwa.sh"
-
-# Standard alignment parameters - reused across tests
-STANDARD_KMER_LENGTH = 35
-STANDARD_OFFSET_STEP = 1
-STANDARD_BWA_MISSING_PROB_ERR_RATE = 0.01
-STANDARD_BWA_MAX_GAP_OPENINGS = 2
-STANDARD_BWA_SEED_LENGTH = 16500
-STANDARD_BWA_R_BEST_HITS = 30
-STANDARD_BWA_SAMSE_N = 2000000000
-STANDARD_BWA_HASH = "2b5d0c37"  # MD5 hash of "0.01:2:16500:False:1:30:2000000000"
-STANDARD_N_THREADS = 1
-STANDARD_CHUNK_SIZE = 100000
-STANDARD_CROSS_STRINGENCY = 0.99
+# Import shared constants
+from . import (
+    CANIS_LUPUS_FA,
+    HG19_FA,
+    RATTUS_NORVEGICUS_FA,
+    SCRIPT_PATH,
+    SIMULATED_URSUS_BAM,
+    SRC_DIR,
+    STANDARD_BWA_HASH,
+    STANDARD_BWA_MAX_GAP_OPENINGS,
+    STANDARD_BWA_MISSING_PROB_ERR_RATE,
+    STANDARD_BWA_SEED_LENGTH,
+    STANDARD_CHUNK_SIZE,
+    STANDARD_CROSS_STRINGENCY,
+    STANDARD_KMER_LENGTH,
+    STANDARD_N_THREADS,
+    STANDARD_OFFSET_STEP,
+    SUS_SCROFA_FA,
+)
 
 
 @pytest.fixture(scope="module")
@@ -179,7 +176,7 @@ def generate_standard_database(
 
     # Initialize database if needed
     subprocess.run(
-        ["python3", "-m", "wizardeye", "database", "init", "-d", str(db_root)],
+        [sys.executable, "-m", "wizardeye", "database", "init", "-d", str(db_root)],
         check=True,
         capture_output=True,
         text=True,
@@ -192,7 +189,7 @@ def generate_standard_database(
     for query_fasta in query_fastas:
         # Run WizardEye align
         cmd = [
-            "python3",
+            sys.executable,
             "-m",
             "wizardeye",
             "align",
@@ -262,14 +259,10 @@ def compare_bedgraph_files(file1, file2, label):
         lines2 = f2.readlines()
 
     if len(lines1) != len(lines2):
-        print(f"{label}: Different number of lines ({len(lines1)} vs {len(lines2)})")
         return False
 
     for i, (line1, line2) in enumerate(zip(lines1, lines2), 1):
         if line1 != line2:
-            print(f"{label}: Difference at line {i}:")
-            print(f"  First: {line1.rstrip()}")
-            print(f"  Second: {line2.rstrip()}")
             return False
     return True
 
@@ -411,14 +404,7 @@ def test_align_same_behavior_as_original_script():
                 f"-o={original_output}/",
             ]
 
-            result = subprocess.run(
-                original_cmd, capture_output=True, text=True, check=True
-            )
-            print(f"Original script stdout for {query_fa.name}: {result.stdout}")
-            print(f"Original script stderr for {query_fa.name}: {result.stderr}")
-            print(
-                f"Original script return code for {query_fa.name}: {result.returncode}"
-            )
+            subprocess.run(original_cmd, capture_output=True, text=True, check=True)
 
             # Verify original script created expected outputs in output/tracks/
             tracks_dir = original_output / "tracks"
@@ -440,7 +426,7 @@ def test_align_same_behavior_as_original_script():
             # Initialize WizardEye database
             subprocess.run(
                 [
-                    "python3",
+                    sys.executable,
                     "-m",
                     "wizardeye",
                     "database",
@@ -456,7 +442,7 @@ def test_align_same_behavior_as_original_script():
 
             # Run WizardEye align with query_fa against hg19 using same parameters
             wizardeye_cmd = [
-                "python3",
+                sys.executable,
                 "-m",
                 "wizardeye",
                 "align",
@@ -624,7 +610,7 @@ def test_export_same_behavior_as_original_script():
             f"-o={original_output}/",
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             original_cmd,
             capture_output=True,
             text=True,
@@ -632,8 +618,6 @@ def test_export_same_behavior_as_original_script():
             errors="replace",
             check=True,
         )
-        print(f"Original script stdout: {result.stdout}")
-        print(f"Original script stderr: {result.stderr}")
 
         # Check that original script created the export mask with all 3 species
         bn_str = f"{float(STANDARD_CROSS_STRINGENCY):g}"
@@ -647,7 +631,7 @@ def test_export_same_behavior_as_original_script():
         # Initialize WizardEye database
         subprocess.run(
             [
-                "python3",
+                sys.executable,
                 "-m",
                 "wizardeye",
                 "database",
@@ -666,7 +650,7 @@ def test_export_same_behavior_as_original_script():
         # Run WizardEye align for EACH query FASTA against hg19
         for query_fa in query_fastas:
             wizardeye_cmd = [
-                "python3",
+                sys.executable,
                 "-m",
                 "wizardeye",
                 "align",
@@ -711,7 +695,7 @@ def test_export_same_behavior_as_original_script():
         wizardeye_mask.parent.mkdir(parents=True, exist_ok=True)
 
         wizardeye_export_cmd = [
-            "python3",
+            sys.executable,
             "-m",
             "wizardeye",
             "export",
@@ -789,11 +773,6 @@ def test_export_same_behavior_as_original_script():
                 we_lines = f2.readlines()
 
             if len(orig_lines) != len(we_lines):
-                print(
-                    f"Different number of lines: original={len(orig_lines)}, wizardeye={len(we_lines)}"
-                )
-                print(f"First 5 original lines: {orig_lines[:5]}")
-                print(f"First 5 wizardeye lines: {we_lines[:5]}")
                 raise AssertionError("Export masks differ in line count")
 
             for i, (line1, line2) in enumerate(zip(orig_lines, we_lines), 1):
@@ -844,7 +823,7 @@ def test_consistency_align_same_launch():
                     # Initialize WizardEye database
                     subprocess.run(
                         [
-                            "python3",
+                            sys.executable,
                             "-m",
                             "wizardeye",
                             "database",
@@ -862,7 +841,7 @@ def test_consistency_align_same_launch():
 
                     # Run WizardEye align
                     wizardeye_cmd = [
-                        "python3",
+                        sys.executable,
                         "-m",
                         "wizardeye",
                         "align",
@@ -1024,7 +1003,7 @@ def test_consistency_align_parallelisation():
                     # Initialize WizardEye database
                     subprocess.run(
                         [
-                            "python3",
+                            sys.executable,
                             "-m",
                             "wizardeye",
                             "database",
@@ -1042,7 +1021,7 @@ def test_consistency_align_parallelisation():
 
                     # Run WizardEye align with this thread count
                     wizardeye_cmd = [
-                        "python3",
+                        sys.executable,
                         "-m",
                         "wizardeye",
                         "align",
@@ -1202,7 +1181,7 @@ def test_consistency_count_same_launch(standard_database):
                 # Run WizardEye count with this repetition
                 report_path = output_dir / "count_report.tsv"
                 wizardeye_cmd = [
-                    "python3",
+                    sys.executable,
                     "-m",
                     "wizardeye",
                     "count",
@@ -1321,7 +1300,7 @@ def test_consistency_count_parallelisation(standard_database):
                 # Run WizardEye count with this thread count
                 report_path = output_dir / "count_report.tsv"
                 wizardeye_cmd = [
-                    "python3",
+                    sys.executable,
                     "-m",
                     "wizardeye",
                     "count",
@@ -1433,7 +1412,7 @@ def test_consistency_filter_same_launch(standard_database):
                 # Run WizardEye filter with this repetition
                 report_path = output_dir / "filter_report.tsv"
                 wizardeye_cmd = [
-                    "python3",
+                    sys.executable,
                     "-m",
                     "wizardeye",
                     "filter",
@@ -1555,7 +1534,7 @@ def test_consistency_filter_parallelisation(standard_database):
                 # Run WizardEye filter with this thread count
                 report_path = output_dir / "filter_report.tsv"
                 wizardeye_cmd = [
-                    "python3",
+                    sys.executable,
                     "-m",
                     "wizardeye",
                     "filter",
@@ -1664,7 +1643,7 @@ def test_export_and_filter_same_results(standard_database):
             filter_excluded_bam = filter_output_dir / "excluded.bam"
 
             filter_cmd = [
-                "python3",
+                sys.executable,
                 "-m",
                 "wizardeye",
                 "filter",
@@ -1720,7 +1699,7 @@ def test_export_and_filter_same_results(standard_database):
             export_mask_path = export_output_dir / "export_mask.bed"
 
             export_cmd = [
-                "python3",
+                sys.executable,
                 "-m",
                 "wizardeye",
                 "export",
@@ -1853,7 +1832,7 @@ def test_export_and_filter_same_results_with_mf(standard_database):
                 filter_excluded_bam = filter_output_dir / "excluded.bam"
 
                 filter_cmd = [
-                    "python3",
+                    sys.executable,
                     "-m",
                     "wizardeye",
                     "filter",
@@ -1911,7 +1890,7 @@ def test_export_and_filter_same_results_with_mf(standard_database):
                 export_mask_path = export_output_dir / "export_mask.bed"
 
                 export_cmd = [
-                    "python3",
+                    sys.executable,
                     "-m",
                     "wizardeye",
                     "export",
@@ -2061,7 +2040,7 @@ def test_consistency_filter_report_bam_split_and_min_frequency(standard_database
                 )
 
                 cmd = [
-                    "python3",
+                    sys.executable,
                     "-m",
                     "wizardeye",
                     "filter",
@@ -2246,7 +2225,7 @@ def test_consistency_align_parallel_same_db():
         # Initialize WizardEye database
         subprocess.run(
             [
-                "python3",
+                sys.executable,
                 "-m",
                 "wizardeye",
                 "database",
@@ -2266,7 +2245,7 @@ def test_consistency_align_parallel_same_db():
             """Run a single align command and return the output paths."""
             subprocess.run(
                 [
-                    "python3",
+                    sys.executable,
                     "-m",
                     "wizardeye",
                     "align",
@@ -2365,7 +2344,7 @@ def test_consistency_align_parallel_same_db():
             # Initialize sequential database
             subprocess.run(
                 [
-                    "python3",
+                    sys.executable,
                     "-m",
                     "wizardeye",
                     "database",
@@ -2385,7 +2364,7 @@ def test_consistency_align_parallel_same_db():
             for query_fa in query_fastas:
                 result = subprocess.run(
                     [
-                        "python3",
+                        sys.executable,
                         "-m",
                         "wizardeye",
                         "align",
@@ -2541,7 +2520,7 @@ def test_filter_paired_end_vs_single_end(standard_database):
         hg19_stem = HG19_FA.stem
 
         base_cmd = [
-            "python3",
+            sys.executable,
             "-m",
             "wizardeye",
             "filter",
@@ -2590,7 +2569,6 @@ def test_filter_paired_end_vs_single_end(standard_database):
             "WizardEye should have failed with paired-end reads."
         )
         error_output = result_paired.stderr + result_paired.stdout
-        print(error_output)
         assert "paired" in error_output.lower(), (
             f"Expected error about paired-end reads, got: {error_output[:500]}"
         )
@@ -2606,7 +2584,7 @@ def test_filter_paired_end_vs_single_end(standard_database):
 
         cmd_single = base_cmd[:4] + ["-i", str(bam_single)] + base_cmd[4:]
 
-        result_single = subprocess.run(
+        subprocess.run(
             cmd_single,
             capture_output=True,
             text=True,
@@ -2615,8 +2593,6 @@ def test_filter_paired_end_vs_single_end(standard_database):
             check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-
-        print(f"Stderr: {result_single.stderr}\nStdout: {result_single.stdout}")
 
 
 def test_count_paired_end_vs_single_end(standard_database):
@@ -2664,7 +2640,7 @@ def test_count_paired_end_vs_single_end(standard_database):
         hg19_stem = HG19_FA.stem
 
         base_cmd = [
-            "python3",
+            sys.executable,
             "-m",
             "wizardeye",
             "count",
@@ -2713,7 +2689,6 @@ def test_count_paired_end_vs_single_end(standard_database):
             "WizardEye count should have failed with paired-end reads."
         )
         error_output = result_paired.stderr + result_paired.stdout
-        print(error_output)
         assert "paired" in error_output.lower(), (
             f"Expected error about paired-end reads, got: {error_output[:500]}"
         )
@@ -2729,7 +2704,7 @@ def test_count_paired_end_vs_single_end(standard_database):
 
         cmd_single = base_cmd[:4] + ["-i", str(bam_single)] + base_cmd[4:]
 
-        result_single = subprocess.run(
+        subprocess.run(
             cmd_single,
             capture_output=True,
             text=True,
@@ -2738,5 +2713,3 @@ def test_count_paired_end_vs_single_end(standard_database):
             check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-
-        print(f"Stderr: {result_single.stderr}\nStdout: {result_single.stdout}")
