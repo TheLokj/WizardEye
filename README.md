@@ -249,6 +249,8 @@ You can also filter out reads based on specific tracks:
 wizardeye filter -i alignment.bam -r hg19 --exclude-tracks myotis_alcathoe,ursus_arctos -k 35 -w 1 -bn 0.01 -bo 2 -bl 16500 -d /path/to/database
 ```
 
+Note that unmapped reads are not filtered out and are then kept as WizardEye is based on a spatial filter. To remove them, please use 'samtools view -F 4' before or after filtering.
+
 > [!WARNING]
 If sequence naming differs between BAM and tracks (e.g., `chr1` vs `1`), filtering stops with an explicit error. Harmonize contig names beforehand.
 

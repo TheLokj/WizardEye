@@ -529,6 +529,7 @@ def filter_bam(
         excluded_reads: set[tuple[str, str, int, int]] = set()
         n_total_records = 0
         n_mapped_records = 0
+        n_unmapped_records = 0
 
         log("Identifying overlapping reads...", "I")
 
@@ -544,6 +545,7 @@ def filter_bam(
                 read_id = read.query_name or ""
 
                 if not read_id or read.is_unmapped or read.reference_name is None:
+                    n_unmapped_records += 1
                     read_key = (read_id, "", -1, -1)
                     read_tracks[read_key] = set()
                     read_tags[read_key] = set()
@@ -664,6 +666,15 @@ def filter_bam(
                             "W",
                         )
 
+        # Warn about unmapped reads if any were detected
+        if n_unmapped_records > 0:
+            log(
+                f"{n_unmapped_records:,} unmapped reads were detected in the input BAM. "
+                f"WizardEye uses a spatial filter, these reads were ignored and not filtered out."
+                f"If you wish to remove them, use 'samtools view -F 4' before or after filtering.",
+                "W",
+            )
+
         return {
             "mask": None,
             "kept_bam": kept_bam,
@@ -673,6 +684,7 @@ def filter_bam(
             "n_filtered": n_filtered,
             "n_excluded": len(excluded_reads),
             "n_total_records": n_total_records,
+            "n_unmapped": n_unmapped_records,
         }
 
     finally:

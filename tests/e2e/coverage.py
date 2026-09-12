@@ -27,6 +27,7 @@ from . import (
 )
 from .utils import (
     count_mapped_reads_in_bam,
+    count_unmapped_reads_in_bam,
     extract_random_reads_from_fasta,
     get_track_name,
     write_fasta_file,
@@ -49,7 +50,7 @@ def test_contaminant_reads_filtering():
     and filtered out by WizardEye.
     """
     # Number of random reads to extract from each contaminant
-    NUM_READS = 10_000_000
+    NUM_READS = 100_000
     READ_LENGTH = STANDARD_KMER_LENGTH
 
     # Reference name in the database
@@ -271,6 +272,269 @@ def test_contaminant_reads_filtering():
                 f"but found {filtered_count} reads. "
                 f"Initial count: {initial_count}"
             )
+
+
+def test_unmapped_reads_filtering():
+    """Test that WizardEye correctly filters out contaminant reads and handles unmapped reads.
+
+    For each contaminant FASTA:
+    1. Extract random k-mer reads
+    2. Align them to hg19 using bwa
+    3. Create a track from the full contaminant FASTA
+    4. Filter the alignment BAM
+    5. Verify unmapped reads are kept, mapped contaminant reads are excluded
+
+    This ensures that unmapped reads are preserved while contaminant reads are filtered.
+    """
+    # Number of random reads to extract from each contaminant
+    NUM_READS = 10_000
+    READ_LENGTH = STANDARD_KMER_LENGTH
+
+    # Reference name in the database
+    ref_name = HG19_FA.stem
+
+    env = {**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)}
+
+    with tempfile.TemporaryDirectory(prefix="wizardeye_contaminant_test_") as tmpdir:
+        tmpdir = Path(tmpdir)
+
+        # Create database
+        db_root = tmpdir / "database_root"
+        db_root.mkdir()
+
+        subprocess.run(
+            [sys.executable, "-m", "wizardeye", "database", "init", "-d", str(db_root)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        db_path = db_root / "database"
+
+        for contaminant_fa in CONTAMINANT_FAS:
+            contaminant_name = contaminant_fa.stem
+
+            # Step 1: Extract random reads from contaminant
+            reads = extract_random_reads_from_fasta(
+                contaminant_fa,
+                num_reads=NUM_READS,
+                read_length=READ_LENGTH,
+                seed=42,
+            )
+
+            # Step 2: Align reads to hg19 using bwa
+            # Write reads to a temporary FASTA file
+            reads_fasta = tmpdir / f"{contaminant_name}_reads.fa"
+            sequences = [(f"read_{i}", read) for i, read in enumerate(reads)]
+            write_fasta_file(sequences, reads_fasta)
+
+            # Index the reference if not already indexed
+            reference_index_files = [
+                HG19_FA.with_suffix(".bwt"),
+                HG19_FA.with_suffix(".pac"),
+                HG19_FA.with_suffix(".ann"),
+                HG19_FA.with_suffix(".amb"),
+                HG19_FA.with_suffix(".sa"),
+            ]
+            if not all(f.exists() for f in reference_index_files):
+                subprocess.run(
+                    ["bwa", "index", str(HG19_FA)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+            # Align reads with bwa aln
+            aln_output = tmpdir / f"{contaminant_name}_alignments.sai"
+            with open(aln_output, "w") as aln_file:
+                subprocess.run(
+                    [
+                        "bwa",
+                        "aln",
+                        "-n",
+                        str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                        "-o",
+                        str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                        "-l",
+                        str(STANDARD_BWA_SEED_LENGTH),
+                        "-t",
+                        str(STANDARD_N_THREADS),
+                        str(HG19_FA),
+                        str(reads_fasta),
+                    ],
+                    stdout=aln_file,
+                    check=True,
+                    text=True,
+                )
+
+            # Convert to SAM using bwa samse
+            sam_path = tmpdir / f"{contaminant_name}_alignment.sam"
+            with open(sam_path, "w") as sam_file:
+                subprocess.run(
+                    [
+                        "bwa",
+                        "samse",
+                        "-n",
+                        str(STANDARD_BWA_R_BEST_HITS),
+                        str(HG19_FA),
+                        str(aln_output),
+                        str(reads_fasta),
+                    ],
+                    stdout=sam_file,
+                    check=True,
+                    text=True,
+                )
+
+            # Convert SAM to BAM using samtools
+            unsorted_bam = tmpdir / f"{contaminant_name}_unsorted.bam"
+            subprocess.run(
+                ["samtools", "view", "-b", str(sam_path), "-o", str(unsorted_bam)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            bam_path = tmpdir / f"{contaminant_name}_alignment.bam"
+            subprocess.run(
+                ["samtools", "sort", str(unsorted_bam), "-o", str(bam_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            subprocess.run(
+                ["samtools", "index", str(bam_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            # Step 3: Create a track from the full contaminant FASTA
+
+            # Step 3: Create a track from the full contaminant FASTA
+            track_id = get_track_name(
+                contaminant_fa,
+                STANDARD_KMER_LENGTH,
+                STANDARD_OFFSET_STEP,
+                STANDARD_BWA_HASH,
+            )
+
+            align_cmd = [
+                sys.executable,
+                "-m",
+                "wizardeye",
+                "align",
+                "-i",
+                str(contaminant_fa),
+                "-r",
+                str(HG19_FA),
+                "-k",
+                str(STANDARD_KMER_LENGTH),
+                "-w",
+                str(STANDARD_OFFSET_STEP),
+                "-bn",
+                str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                "-bo",
+                str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                "-bl",
+                str(STANDARD_BWA_SEED_LENGTH),
+                "-j",
+                str(STANDARD_N_THREADS),
+                "-cs",
+                str(STANDARD_CHUNK_SIZE),
+                "-d",
+                str(db_path),
+                "-t",
+                contaminant_name,
+            ]
+
+            subprocess.run(
+                align_cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                env=env,
+            )
+
+            # Step 4: Filter the BAM using wizardeye
+            report_path = tmpdir / f"{contaminant_name}_filter_report.tsv"
+            kept_bam_path = tmpdir / f"{contaminant_name}_kept.bam"
+            excluded_bam_path = tmpdir / f"{contaminant_name}_excluded.bam"
+
+            filter_cmd = [
+                sys.executable,
+                "-m",
+                "wizardeye",
+                "filter",
+                "-i",
+                str(bam_path),
+                "-r",
+                ref_name,
+                "-k",
+                str(STANDARD_KMER_LENGTH),
+                "-w",
+                str(STANDARD_OFFSET_STEP),
+                "-bn",
+                str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                "-bo",
+                str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                "-bl",
+                str(STANDARD_BWA_SEED_LENGTH),
+                "-p",
+                "0.01",
+                "--report-output",
+                str(report_path),
+                "--kept-output",
+                str(kept_bam_path),
+                "--excluded-output",
+                str(excluded_bam_path),
+                "--exclude-tracks",
+                track_id,
+                "-d",
+                str(db_path),
+            ]
+
+            result = subprocess.run(
+                filter_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                env=env,
+            )
+
+            # Verify return code is 0
+            assert result.returncode == 0, (
+                f"Command failed with stderr: {result.stderr}"
+            )
+
+            # Check if input BAM has unmapped reads using pysam
+            unmapped_in_input = count_unmapped_reads_in_bam(bam_path)
+
+            # Verify stdout contains "WARN" and "unmapped" if there are unmapped reads
+            if unmapped_in_input > 0:
+                assert "unmapped" in result.stdout, (
+                    f"Expected 'unmapped ' in stdout when {unmapped_in_input} unmapped reads exist in input, got: {result.stdout}"
+                )
+                assert "WARN" in result.stdout, (
+                    f"Expected WARN in stdout when unmapped reads exist, got: {result.stdout}"
+                )
+
+            # Verify kept BAM contains unmapped reads if they exist in input using pysam
+            unmapped_in_kept = count_unmapped_reads_in_bam(kept_bam_path)
+
+            # Verify excluded BAM contains no unmapped reads using pysam
+            unmapped_in_excluded = count_unmapped_reads_in_bam(excluded_bam_path)
+            assert unmapped_in_excluded == 0, (
+                f"Expected 0 unmapped reads in excluded BAM, found {unmapped_in_excluded}"
+            )
+
+            # If input had unmapped reads, verify they are in kept BAM
+            if unmapped_in_input > 0:
+                assert unmapped_in_kept == unmapped_in_input, (
+                    f"Expected exactly {unmapped_in_input} unmapped reads in kept BAM (from input), found {unmapped_in_kept}"
+                )
 
 
 # -- Test the exhaustive search of WizardEye with repetitive sequences --

@@ -43,6 +43,7 @@ from . import (
     STANDARD_OFFSET_STEP,
     SUS_SCROFA_FA,
 )
+from .utils import get_all_fasta_sequence_info
 
 
 @pytest.fixture(scope="module")
@@ -265,35 +266,6 @@ def compare_bedgraph_files(file1, file2, label):
         if line1 != line2:
             return False
     return True
-
-
-def get_all_fasta_sequence_info(fasta_path):
-    """Get all sequence names and lengths from a FASTA file.
-
-    Args:
-        fasta_path: Path to the FASTA file to parse.
-
-    Returns:
-        List of (sequence_name, sequence_length) tuples, one per sequence.
-    """
-    sequences = []
-    seq_name = None
-    seq_len = 0
-    with open(fasta_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith(">"):
-                if seq_name is not None:
-                    sequences.append((seq_name, seq_len))
-                seq_name = line[1:].split()[0]
-                seq_len = 0
-            else:
-                seq_len += len(line)
-        if seq_name is not None:
-            sequences.append((seq_name, seq_len))
-    return sequences
 
 
 def extract_mapped_read_keys(bam_path):

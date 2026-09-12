@@ -135,3 +135,45 @@ def count_mapped_reads_in_bam(bam_path: Path) -> int:
     """
     with pysam.AlignmentFile(str(bam_path), "rb") as bam:
         return sum(1 for read in bam.fetch(until_eof=True) if not read.is_unmapped)
+
+
+def count_unmapped_reads_in_bam(bam_path: Path) -> int:
+    """Count the number of unmapped reads in a BAM file.
+
+    Args:
+        bam_path (Path): Path to the BAM file to analyze.
+
+    Returns:
+        int: Number of unmapped reads in the BAM file.
+    """
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        return sum(1 for read in bam.fetch(until_eof=True) if read.is_unmapped)
+
+
+def get_all_fasta_sequence_info(fasta_path):
+    """Get all sequence names and lengths from a FASTA file.
+
+    Args:
+        fasta_path: Path to the FASTA file to parse.
+
+    Returns:
+        List of (sequence_name, sequence_length) tuples, one per sequence.
+    """
+    sequences = []
+    seq_name = None
+    seq_len = 0
+    with open(fasta_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                if seq_name is not None:
+                    sequences.append((seq_name, seq_len))
+                seq_name = line[1:].split()[0]
+                seq_len = 0
+            else:
+                seq_len += len(line)
+        if seq_name is not None:
+            sequences.append((seq_name, seq_len))
+    return sequences
