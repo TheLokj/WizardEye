@@ -1,4 +1,4 @@
-name: Test
+name: Check code style and run tests
 
 on:
   push:
@@ -48,7 +48,7 @@ jobs:
         run: |
           ruff check .
 
-      - name: Run integration tests
+      - name: Run end-to-end tests
         working-directory: tests/
         run: python -m pytest */*.py -v
         env:

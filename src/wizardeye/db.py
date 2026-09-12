@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """Database management for WizardEye tracks.
 
 This module provides functions to initialize and validate the database structure, manage track metadata,
@@ -8,28 +6,30 @@ parameters and metadata, and includes utilities to query available tracks and di
 for each reference species.
 """
 
+from __future__ import annotations
+
 import shutil
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from importlib import metadata
+from pathlib import Path
+
 import yaml
 
-from dataclasses import dataclass, field
-from pathlib import Path
-from datetime import datetime
-from importlib import metadata
-from typing import Dict, List, Optional, Tuple, Union
-
 from .utils import (
-    log,
-    get_name_from_param,
-    from_charlist_to_list,
-    file_md5,
     BWAParameters,
+    file_md5,
+    from_charlist_to_list,
     get_bwa_params_hash,
+    get_name_from_param,
+    log,
+    validate_not_reserved,
 )
 from .version import PACKAGE_VERSION
 
 
 # -- Database management functions --
-def init_db(base_dir: Union[str, Path] = ".") -> Path:
+def init_db(base_dir: str | Path = ".") -> Path:
     """Create /database and its info.yaml file.
 
     If the database already exists, it will not be modified and the existing info.yaml path will be returned.
@@ -45,7 +45,7 @@ def init_db(base_dir: Union[str, Path] = ".") -> Path:
     db_dir.mkdir(parents=True, exist_ok=True)
 
     db_yaml_path = db_dir / "info.yaml"
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
     created_date = now
 
     if db_yaml_path.exists():
@@ -53,15 +53,12 @@ def init_db(base_dir: Union[str, Path] = ".") -> Path:
         return db_yaml_path
 
     try:
-        cross_tool_version = metadata.version("cross_tool")
+        wizardeye_version = metadata.version("wizardeye")
     except metadata.PackageNotFoundError:
-        try:
-            cross_tool_version = metadata.version("wizardeye")
-        except metadata.PackageNotFoundError:
-            cross_tool_version = PACKAGE_VERSION
+        wizardeye_version = PACKAGE_VERSION
 
     db_content = {
-        "cross_tool_version": cross_tool_version,
+        "wizardeye_version": wizardeye_version,
         "created_date": created_date,
         "last_updated": now,
     }
@@ -73,7 +70,7 @@ def init_db(base_dir: Union[str, Path] = ".") -> Path:
     return db_yaml_path
 
 
-def valid_database(db_root: Union[str, Path]) -> bool:
+def valid_database(db_root: str | Path) -> bool:
     """Check if the database root contains a valid info.yaml file."""
     db_root = Path(db_root)
     db_yaml_path = db_root / "info.yaml"
@@ -83,10 +80,12 @@ def valid_database(db_root: Union[str, Path]) -> bool:
     try:
         with db_yaml_path.open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle)
-        if not isinstance(data, dict) or "cross_tool_version" not in data:
+        if not isinstance(data, dict) or (
+            "wizardeye_version" not in data and "cross_tool_version" not in data
+        ):
             log(f"Invalid database info.yaml format at {db_yaml_path}", "E")
             return False
-    except Exception as e:
+    except (yaml.YAMLError, OSError, ValueError) as e:
         log(f"Failed to read database info.yaml at {db_yaml_path}: {e}", "E")
         return False
     return True
@@ -165,7 +164,7 @@ class Track:
 
     db_root: Path
     identity: TrackIdentity
-    info: Dict
+    info: dict
 
     @property
     def track_dir(self) -> Path:
@@ -195,7 +194,7 @@ class Track:
     def exists(self) -> bool:
         return self.map_all_bw.exists() and self.map_uniq_bw.exists()
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return {
             "track_dir": self.track_dir,
             "track_name": self.track_name,
@@ -206,14 +205,16 @@ class Track:
     @classmethod
     def from_param(
         cls,
-        db_root: Union[str, Path],
+        db_root: str | Path,
         ref_species: str,
         query_species: str,
         kmer_length: int,
         offset_step: int,
-        bwa_params: BWAParameters = BWAParameters(),
-        info: Optional[Dict] = None,
-    ) -> "Track":
+        bwa_params: BWAParameters | None = None,
+        info: dict | None = None,
+    ) -> Track:
+        if bwa_params is None:
+            bwa_params = BWAParameters()
         params = TrackParameters(
             kmer_length=kmer_length,
             offset_step=offset_step,
@@ -226,8 +227,8 @@ class Track:
 
     @classmethod
     def from_param_yaml(
-        cls, db_root: Union[str, Path], ref_species: str, track_dir: Path
-    ) -> Optional["Track"]:
+        cls, db_root: str | Path, ref_species: str, track_dir: Path
+    ) -> Track | None:
         param_yaml = track_dir / "param.yaml"
         if not param_yaml.exists():
             return None
@@ -295,7 +296,7 @@ class Track:
             info=param_content,
         )
 
-    def load_info(self) -> Dict:
+    def load_info(self) -> dict:
         if not self.param_yaml.exists():
             raise FileNotFoundError(f"Track YAML not found at {self.param_yaml}")
 
@@ -311,11 +312,10 @@ class Track:
             yaml.safe_dump(self.info, handle, sort_keys=False)
         return self.param_yaml
 
-    def update_tags(
-        self, tags: Optional[List[str]]
-    ) -> Tuple[Path, List[str], List[str]]:
+    def update_tags(self, tags: list[str] | None) -> tuple[Path, list[str], list[str]]:
         content = self.load_info()
 
+        validate_not_reserved(tags)
         new_tags = from_charlist_to_list(tags, lowercase=True)
         existing_tags = content.get("tags", [])
         if not isinstance(existing_tags, list):
@@ -325,7 +325,9 @@ class Track:
         )
 
         content["tags"] = new_tags
-        content["last_updated"] = datetime.now().isoformat(timespec="seconds")
+        content["last_updated"] = datetime.now(tz=timezone.utc).isoformat(
+            timespec="seconds"
+        )
         self.info = content
         return self.save_info(), old_tags, new_tags
 
@@ -335,10 +337,12 @@ def check_track_exists(
     query_species: str,
     kmer_length: int,
     offset_step: int,
-    db_root: Union[str, Path],
-    bwa_params: BWAParameters = BWAParameters(),
+    db_root: str | Path,
+    bwa_params: BWAParameters | None = None,
 ) -> bool:
     """Check if a track exists for the given reference/query and k/s parameters."""
+    if bwa_params is None:
+        bwa_params = BWAParameters()
     track = Track.from_param(
         db_root=db_root,
         ref_species=ref_species,
@@ -355,11 +359,13 @@ def update_track_tags(
     query_species: str,
     kmer_length: int,
     offset_step: int,
-    tags: Optional[List[str]],
-    db_root: Union[str, Path],
-    bwa_params: BWAParameters = BWAParameters(),
-) -> Tuple[Path, List[str], List[str]]:
+    tags: list[str] | None,
+    db_root: str | Path,
+    bwa_params: BWAParameters | None = None,
+) -> tuple[Path, list[str], list[str]]:
     """Replace all tags in the track param.yaml and return old/new values."""
+    if bwa_params is None:
+        bwa_params = BWAParameters()
     track = Track.from_param(
         db_root=db_root,
         ref_species=ref_species,
@@ -376,18 +382,20 @@ def import_track(
     query_species: str,
     kmer_length: int,
     offset_step: int,
-    map_all_bw: Union[str, Path],
-    map_uniq_bw: Union[str, Path],
-    db_root: Union[str, Path],
-    input_fasta: Optional[Union[str, Path]] = None,
-    reference_fasta: Optional[Union[str, Path]] = None,
-    reference_fasta_md5: Optional[str] = None,
-    tags: Optional[List[str]] = None,
+    map_all_bw: str | Path,
+    map_uniq_bw: str | Path,
+    db_root: str | Path,
+    input_fasta: str | Path | None = None,
+    reference_fasta: str | Path | None = None,
+    reference_fasta_md5: str | None = None,
+    tags: list[str] | None = None,
     mapping_tool: str = "bwa aln",
-    bwa_params: BWAParameters = BWAParameters(),
+    bwa_params: BWAParameters | None = None,
     force: bool = False,
-) -> Dict[str, Path]:
+) -> dict[str, Path]:
     """Import an externally generated track by copying BigWig files and writing param.yaml."""
+    if bwa_params is None:
+        bwa_params = BWAParameters()
     db_root = Path(db_root)
 
     all_bw_src = Path(map_all_bw)
@@ -396,6 +404,9 @@ def import_track(
         raise FileNotFoundError(f"map_all.bw source file not found: {all_bw_src}")
     if not uniq_bw_src.exists() or not uniq_bw_src.is_file():
         raise FileNotFoundError(f"map_uniq.bw source file not found: {uniq_bw_src}")
+
+    validate_not_reserved(query_species)
+    validate_not_reserved(tags)
 
     track = Track.from_param(
         db_root=db_root,
@@ -441,7 +452,7 @@ def import_track(
             "reference_name": ref_species,
             "reference_fasta": str(reference_path.resolve()),
             "reference_fasta_md5": computed_ref_md5,
-            "last_updated": datetime.now().isoformat(timespec="seconds"),
+            "last_updated": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
         }
         with target_meta_yaml.open("w", encoding="utf-8") as handle:
             yaml.safe_dump(target_meta_content, handle, sort_keys=False)
@@ -449,7 +460,7 @@ def import_track(
             handle.write(f"{computed_ref_md5}  {reference_path.name}\n")
 
     track.info = {
-        "generation_date": datetime.now().isoformat(timespec="seconds"),
+        "generation_date": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
         "wizardeye_version": PACKAGE_VERSION,
         "reference": str(reference_path) if reference_path else ref_species,
         "reference_fasta_md5": computed_ref_md5,
@@ -488,14 +499,14 @@ def get_tracks(
     kmer_length: int,
     offset_step: int,
     db_root: str,
-    bwa_params: Optional[BWAParameters] = None,
-) -> List[Track]:
+    bwa_params: BWAParameters | None = None,
+) -> list[Track]:
     """Collect tracks for one reference filtered by generation parameters."""
     ref_dir = Path(db_root) / ref_species
     if not ref_dir.exists() or not ref_dir.is_dir():
         raise ValueError(f"Reference '{ref_species}' not found in {db_root}")
 
-    tracks: List[Track] = []
+    tracks: list[Track] = []
     for track_dir in sorted(
         [p for p in ref_dir.iterdir() if p.is_dir()], key=lambda p: p.name
     ):
@@ -550,13 +561,13 @@ def get_tracks(
 
 def get_corresponding_tracks(
     ref_species: str,
-    db_root: Union[str, Path],
-    query_species: Optional[str],
-    tags: Optional[List[str]],
-    kmer_length: Optional[int],
-    offset_step: Optional[int],
-    bwa_params: Optional[BWAParameters] = None,
-) -> Optional[List[Track]]:
+    db_root: str | Path,
+    query_species: str | None,
+    tags: list[str] | None,
+    kmer_length: int | None,
+    offset_step: int | None,
+    bwa_params: BWAParameters | None = None,
+) -> list[Track] | None:
     if query_species is None and not tags:
         log(
             "At least one track name or tag must be provided to find corresponding tracks.",
@@ -590,12 +601,12 @@ def get_corresponding_tracks(
 
 def from_tags_get_tracks(
     ref_species: str,
-    tags: List[str],
+    tags: list[str],
     kmer_length: int,
     offset_step: int,
-    db_root: Union[str, Path],
-    bwa_params: Optional[BWAParameters] = None,
-) -> List[str]:
+    db_root: str | Path,
+    bwa_params: BWAParameters | None = None,
+) -> list[str]:
     """Return track names matching all requested generation parameters and at least one tag."""
     normalized_tags = set(from_charlist_to_list(tags, lowercase=True))
     tracks = get_tracks(
@@ -606,7 +617,7 @@ def from_tags_get_tracks(
         bwa_params=bwa_params,
     )
 
-    matching_track_names: List[str] = []
+    matching_track_names: list[str] = []
     for track in tracks:
         track_tags = set(
             from_charlist_to_list(track.info.get("tags", []), lowercase=True)
@@ -617,7 +628,7 @@ def from_tags_get_tracks(
     return sorted(set(matching_track_names))
 
 
-def get_refs(db_root: str) -> List[str]:
+def get_refs(db_root: str) -> list[str]:
     """List reference species available in the database."""
     db_root = Path(db_root)
     if not db_root.exists() or not db_root.is_dir():
@@ -630,11 +641,10 @@ def get_refs(db_root: str) -> List[str]:
 
 
 def resolve_requested_track_names(
-    requested_tracks: List[str],
-    available_tracks: List,
+    requested_tracks: list[str],
+    available_tracks: list,
     ref: str,
-    context: str,
-) -> List[str]:
+) -> list[str]:
     """Resolve user-provided identifiers to canonical track names.
 
     Accepted identifiers for one track are:
@@ -642,7 +652,7 @@ def resolve_requested_track_names(
     - query species identifier
     - query/input name from param.yaml
     """
-    resolved: List[str] = []
+    resolved: list[str] = []
     for requested in requested_tracks:
         matches = [
             track
@@ -652,7 +662,7 @@ def resolve_requested_track_names(
         ]
         if not matches:
             log(
-                f"Track '{requested}' does not exist for reference '{ref}' with specified parameters and will be ignored in {context}.",
+                f"Track '{requested}' does not exist for reference '{ref}' with specified parameters and will be ignored in track selection.",
                 "W",
             )
             continue
@@ -662,12 +672,12 @@ def resolve_requested_track_names(
         ):
             matching_names = ", ".join(sorted(track.track_name for track in matches))
             log(
-                f"Track identifier '{requested}' is ambiguous for reference '{ref}' in {context}. "
+                f"Track identifier '{requested}' is ambiguous for reference '{ref}' in track selection. "
                 f"Use one canonical track name: {matching_names}",
                 "E",
             )
             raise ValueError(
-                f"Ambiguous track identifier '{requested}' for reference '{ref}' in {context}"
+                f"Ambiguous track identifier '{requested}' for reference '{ref}' in track selection"
             )
 
         if any(track.track_name == requested for track in matches):
@@ -681,7 +691,7 @@ def resolve_requested_track_names(
 
 
 # Display functions
-def print_available_species(ref_species: str, db_root: Union[str, Path]) -> Path:
+def print_available_species(ref_species: str, db_root: str | Path) -> Path:
     """Print one-row-per-track table with merged tags, k and sliding window values."""
     db_root = Path(db_root)
     ref_dir = db_root / ref_species
@@ -696,7 +706,7 @@ def print_available_species(ref_species: str, db_root: Union[str, Path]) -> Path
         log(f"No tracks found for reference '{ref_species}' in {ref_dir}", "E")
         return
 
-    grouped_tracks: Dict[str, Dict[str, set]] = {}
+    grouped_tracks: dict[str, dict[str, set]] = {}
     for track_dir in sorted(track_dirs, key=lambda p: p.name):
         track_name = track_dir.name
         logical_track_name = track_name
@@ -727,7 +737,7 @@ def print_available_species(ref_species: str, db_root: Union[str, Path]) -> Path
                         k_set.add(str(k))
                     if s is not None:
                         sliding_set.add(str(s))
-            except Exception as e:
+            except (yaml.YAMLError, OSError, ValueError) as e:
                 log(f"Failed to read {param_yaml}: {e}", "W")
 
         if logical_track_name not in grouped_tracks:
@@ -774,7 +784,7 @@ def print_available_species(ref_species: str, db_root: Union[str, Path]) -> Path
         print(_format_row(row))
 
 
-def print_full_catalogue(db_root: Union[str, Path]) -> None:
+def print_full_catalogue(db_root: str | Path) -> None:
     """Print track tables for every reference target found in the database root."""
     db_root = Path(db_root)
     if not db_root.exists() or not db_root.is_dir():
@@ -795,7 +805,7 @@ def print_full_catalogue(db_root: Union[str, Path]) -> None:
 # -- Migration functions ---
 
 
-def _parse_old_track_name(track_dir_name: str) -> Optional[Dict[str, Optional[str]]]:
+def _parse_old_track_name(track_dir_name: str) -> dict[str, str | None] | None:
     """Parse old track directory name format (e.g., sus_scrofa_k35_w1_n1_o2_l1).
 
     Returns dict with keys: query_species, kmer_length, offset_step,
@@ -819,7 +829,7 @@ def _parse_old_track_name(track_dir_name: str) -> Optional[Dict[str, Optional[st
     bwa_o = match.group(5)
     bwa_l = match.group(6)
 
-    result: Dict[str, Optional[str]] = {
+    result: dict[str, str | None] = {
         "query_species": query_species,
         "kmer_length": kmer_length,
         "offset_step": offset_step,
@@ -832,10 +842,10 @@ def _parse_old_track_name(track_dir_name: str) -> Optional[Dict[str, Optional[st
 
 
 def migrate_database(
-    db_root: Union[str, Path],
+    db_root: str | Path,
     bwa_r_best_hits: int = 2147483647,
     bwa_samse_n: int = 2147483647,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     """Migrate database tracks from old naming format to new format with bwa hash.
 
     Old format: {query}_k{k}_w{w}_n{n}_o{o}_l{l}/
@@ -881,8 +891,8 @@ def migrate_database(
         raise ValueError(f"No reference directories found in {new_db_root}")
 
     migrated_count = 0
-    warnings_list: List[str] = []
-    errors_list: List[str] = []
+    warnings_list: list[str] = []
+    errors_list: list[str] = []
 
     # Check if defaults are used
     if bwa_r_best_hits == 2147483647 and bwa_samse_n == 2147483647:
@@ -938,7 +948,7 @@ def migrate_database(
                         existing_bwa_n = float(bwa_params.get("-n", 0.01))
                         existing_bwa_o = int(bwa_params.get("-o", 2))
                         existing_bwa_l = int(bwa_params.get("-l", 16500))
-                except Exception:
+                except (yaml.YAMLError, OSError, TypeError, ValueError):
                     pass
 
             # Create new BWAParameters with extracted values + provided bR and bns
@@ -1000,7 +1010,7 @@ def migrate_database(
 
                     with new_param_yaml.open("w", encoding="utf-8") as handle:
                         yaml.safe_dump(param_content, handle, sort_keys=False)
-                except Exception as e:
+                except (yaml.YAMLError, OSError) as e:
                     errors_list.append(
                         f"Failed to update metadata for {ref_name}/{new_track_name}: {e}"
                     )

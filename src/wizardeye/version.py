@@ -1,20 +1,19 @@
-# -*- coding: utf-8 -*-
-
 """Project version metadata.
 
 DISPLAY_VERSION is human-friendly and can be shown in CLI/help.
 PACKAGE_VERSION is PEP 440 compliant for packaging tools.
 """
 
+from __future__ import annotations
+
 import subprocess
 import sys
-from typing import Optional
 
-DISPLAY_VERSION = "0.1.4"
-PACKAGE_VERSION = "0.1.4"
+DISPLAY_VERSION = "0.1.5"
+PACKAGE_VERSION = "0.1.5"
 
 
-def _get_git_commit_hash() -> Optional[str]:
+def _get_git_commit_hash() -> str | None:
     """Get the current Git commit hash if available.
 
     Returns:

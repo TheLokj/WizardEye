@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 """Mappability track generation and export utilities for WizardEye.
 
 This Python module provides functions to create mappability tracks from input FASTA files
@@ -15,35 +13,37 @@ It includes utilities for handling temporary files, validating inputs, and savin
                 The original script: https://github.com/TheLokj/generate_cross_mappability_filter/blob/master/BWA/generate_cross_mappability_filter_bwa.sh
 """
 
-import subprocess
-import shutil
-import yaml
+from __future__ import annotations
+
 import os
+import shlex
+import shutil
+import subprocess
 import sys
 import tempfile
-
-from pathlib import Path
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timezone
+from pathlib import Path
 
-from .version import PACKAGE_VERSION
+import yaml
+
 from .utils import (
-    log,
-    run,
+    BWAParameters,
+    compute_sorted_genome_coverage,
+    convert_bedgraph_to_bigwig,
     file_md5,
     from_charlist_to_list,
-    convert_bedgraph_to_bigwig,
-    write_seq_sizes_from_bam,
-    write_seq_sizes_from_fasta,
+    get_bwa_params_hash,
     iterate_mapping_intervals,
     iterate_unique_mapping_intervals,
-    sort_bed_file,
-    compute_sorted_genome_coverage,
+    log,
     merge_and_sort_bams,
-    BWAParameters,
-    get_bwa_params_hash,
+    sort_bed_file,
+    validate_not_reserved,
+    write_seq_sizes_from_bam,
+    write_seq_sizes_from_fasta,
 )
+from .version import PACKAGE_VERSION
 
 # --- WizardEye mappability pipeline blocks ---
 
@@ -55,7 +55,7 @@ def _split_fasta_into_kmers(
     chunk_size: int,
     output_dir: Path,
     n_threads: int = 1,
-) -> List[Path]:
+) -> list[Path]:
     """Split FASTA into k-mers, deduplicate, and chunk using seqkit pipeline.
 
     Runs a 3-stage pipeline via PIPE specific to the mappability workflow:
@@ -154,8 +154,8 @@ def _from_alignment_to_bigWig(
     out_dir: Path,
     kmer_length: int,
     n_threads: int = 1,
-    tmp_dir: Optional[Path] = None,
-) -> Tuple[Path, Path, Dict[str, int]]:
+    tmp_dir: Path | None = None,
+) -> tuple[Path, Path, dict[str, int]]:
     """Convert alignment results to BigWig tracks.
 
     Args:
@@ -236,8 +236,10 @@ def _from_alignment_to_bigWig(
 def _align_with_bwa_aln(
     input_fasta: Path,
     reference: Path,
-    bwa_params: BWAParameters = BWAParameters(),
+    bwa_params: BWAParameters | None = None,
 ) -> Path:
+    if bwa_params is None:
+        bwa_params = BWAParameters()
     """Align a FASTA file using bwa aln and return the path to the resulting BAM file containing mapped reads.
 
     Args:
@@ -278,11 +280,12 @@ def _align_with_bwa_aln(
     )
 
     with sai_file.open("w", encoding="utf-8") as sai_out:
-        run(bwa_cmd, check=True, stdout=sai_out)
+        log(" ".join(shlex.quote(str(arg)) for arg in bwa_cmd), "C")
+        subprocess.run(bwa_cmd, stdout=sai_out, check=True)
 
     with bam_file.open("wb") as bam_out:
         log(
-            f"bwa samse -n {str(bwa_params.samse_n)} {reference} {sai_file} {input_fasta}",
+            f"bwa samse -n {bwa_params.samse_n!s} {reference} {sai_file} {input_fasta}",
             "C",
         )
         bwa_samse = subprocess.Popen(
@@ -298,11 +301,13 @@ def _align_with_bwa_aln(
             stdout=subprocess.PIPE,
         )
         try:
-            run(
-                ["samtools", "view", "-b", "-F", "4", "-"],
-                check=True,
+            cmd = ["samtools", "view", "-b", "-F", "4", "-"]
+            log(" ".join(shlex.quote(str(arg)) for arg in cmd), "C")
+            subprocess.run(
+                cmd,
                 stdin=bwa_samse.stdout,
                 stdout=bam_out,
+                check=True,
             )
         finally:
             if bwa_samse.stdout is not None:
@@ -330,12 +335,14 @@ def create_mappability_track(
     offset_step,
     chunk_size,
     n_threads,
-    bwa_params: BWAParameters = BWAParameters(),
+    bwa_params: BWAParameters | None = None,
     db_root="database",
-    tags: Optional[List[str]] = None,
+    tags: list[str] | None = None,
     manual_track_id=None,
-    tmp_dir_custom: Optional[str] = None,
+    tmp_dir_custom: str | None = None,
 ):
+    if bwa_params is None:
+        bwa_params = BWAParameters()
     """Pipeline to create a mappability track from an input FASTA file by aligning k-mers to a reference genome and exporting BigWig files.
 
     Args:
@@ -366,6 +373,8 @@ def create_mappability_track(
     query_track_id = track_id.strip() if track_id else input_name
     if not query_track_id:
         raise ValueError("track_id cannot be empty")
+    validate_not_reserved(query_track_id)
+    validate_not_reserved(tags)
 
     input_md5 = file_md5(input_fasta)
     bwa_hash = get_bwa_params_hash(bwa_params)
@@ -403,7 +412,7 @@ def create_mappability_track(
         "reference_name": target_name,
         "reference_fasta": str(input_target.resolve()),
         "reference_fasta_md5": target_md5,
-        "last_updated": datetime.now().isoformat(timespec="seconds"),
+        "last_updated": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
     }
     with open(target_meta_yaml, "w", encoding="utf-8") as f:
         yaml.safe_dump(target_meta_content, f, sort_keys=False)
@@ -430,7 +439,9 @@ def create_mappability_track(
         bwt_file = input_target.with_suffix(input_target.suffix + ".bwt")
         if not bwt_file.exists():
             log(f"BWA index not found for {input_target}, running bwa index...", "I")
-            run(["bwa", "index", str(input_target)], check=True)
+            cmd = ["bwa", "index", str(input_target)]
+            log(" ".join(shlex.quote(str(arg)) for arg in cmd), "C")
+            subprocess.run(cmd, check=True)
         else:
             log(f"BWA index found for {input_target}, skipping index.", "I")
 
@@ -455,7 +466,7 @@ def create_mappability_track(
                 "I",
             )
 
-        chunk_bams: List[Path] = []
+        chunk_bams: list[Path] = []
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [
                 executor.submit(
@@ -485,7 +496,7 @@ def create_mappability_track(
 
         # Export only final BigWig depth tracks.
         log("Exporting mappability BigWig tracks from temporary BAM...", "I")
-        cov_map_bw, cov_uniq_bw, covered_bp = _from_alignment_to_bigWig(
+        _cov_map_bw, _cov_uniq_bw, covered_bp = _from_alignment_to_bigWig(
             bam_file=bam_file,
             out_dir=out_dir,
             kmer_length=kmer_length,
@@ -497,7 +508,9 @@ def create_mappability_track(
         log("Saving track parameters and metadata...", "I")
         param_yaml = out_dir / "param.yaml"
         param_content = {
-            "generation_date": datetime.now().isoformat(timespec="seconds"),
+            "generation_date": datetime.now(tz=timezone.utc).isoformat(
+                timespec="seconds"
+            ),
             "wizardeye_version": PACKAGE_VERSION,
             "reference": str(input_target),
             "reference_fasta_md5": target_md5,
@@ -537,5 +550,5 @@ def create_mappability_track(
         log("Cleaning up temporary files and directories...", "I")
         try:
             shutil.rmtree(tmp_dir)
-        except Exception as e:
+        except (OSError, PermissionError) as e:
             log(f"Could not remove tmp dir {tmp_dir}: {e}", "WARN")

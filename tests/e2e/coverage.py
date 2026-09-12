@@ -1,41 +1,551 @@
-"""Test script for to control WizardEye exhaustivity.
+"""Test script to control WizardEye exhaustivity.
 
-This script tests different specific cases to check if WizardEye produces expected results
+This script tests different specific cases to check if WizardEye produces expected
+results.
 """
 
 import random
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
-# Constants for test fixtures
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
-SRC_DIR = PROJECT_ROOT / "src"
-HG19_FA = FIXTURES_DIR / "hg19_chr1_25_1kbp.fa"
-SUS_SCROFA_FA = FIXTURES_DIR / "sus_scrofa_chr1_25_1kbp.fa"
-CANIS_LUPUS_FA = FIXTURES_DIR / "canis_lupus_chr1_25_1kbp.fa"
-RATTUS_NORVEGICUS_FA = FIXTURES_DIR / "rattus_norvegicus_chr1_25_1kbp.fa"
-SIMULATED_URSUS_BAM = FIXTURES_DIR / "ursus_1000000.uniq.L35MQ25.bam"
-SCRIPT_PATH = Path(__file__).parent.parent / "generate_cross_mappability_filter_bwa.sh"
+# Import shared constants and utilities
+from . import (
+    CONTAMINANT_FAS,
+    HG19_FA,
+    SRC_DIR,
+    STANDARD_BWA_HASH,
+    STANDARD_BWA_MAX_GAP_OPENINGS,
+    STANDARD_BWA_MISSING_PROB_ERR_RATE,
+    STANDARD_BWA_R_BEST_HITS,
+    STANDARD_BWA_SEED_LENGTH,
+    STANDARD_CHUNK_SIZE,
+    STANDARD_KMER_LENGTH,
+    STANDARD_N_THREADS,
+    STANDARD_OFFSET_STEP,
+)
+from .utils import (
+    count_mapped_reads_in_bam,
+    count_unmapped_reads_in_bam,
+    extract_random_reads_from_fasta,
+    get_track_name,
+    write_fasta_file,
+)
 
-# Standard alignment parameters - reused across tests
-STANDARD_KMER_LENGTH = 35
-STANDARD_OFFSET_STEP = 1
-STANDARD_BWA_MISSING_PROB_ERR_RATE = 0.01
-STANDARD_BWA_MAX_GAP_OPENINGS = 2
-STANDARD_BWA_SEED_LENGTH = 16500
-STANDARD_BWA_R_BEST_HITS = 30
-STANDARD_BWA_SAMSE_N = 2000000000
-STANDARD_BWA_HASH = "2b5d0c37"  # MD5 hash of "0.01:2:16500:False:1:30:2000000000"
-STANDARD_N_THREADS = 1
-STANDARD_CHUNK_SIZE = 100000
-STANDARD_CROSS_STRINGENCY = 0.99
+# -- Test WizardEye ability to filter contaminant reads --
+
+
+def test_contaminant_reads_filtering():
+    """Test that WizardEye correctly filters out contaminant reads.
+
+    For each contaminant FASTA:
+    1. Extract random k-mer reads
+    2. Align them to hg19 using bwa
+    3. Create a track from the full contaminant FASTA
+    4. Filter the alignment BAM
+    5. Verify no reads remain after filtering
+
+    This ensures that reads from known contaminants are correctly identified
+    and filtered out by WizardEye.
+    """
+    # Number of random reads to extract from each contaminant
+    NUM_READS = 100_000
+    READ_LENGTH = STANDARD_KMER_LENGTH
+
+    # Reference name in the database
+    ref_name = HG19_FA.stem
+
+    env = {**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)}
+
+    with tempfile.TemporaryDirectory(prefix="wizardeye_contaminant_test_") as tmpdir:
+        tmpdir = Path(tmpdir)
+
+        # Create database
+        db_root = tmpdir / "database_root"
+        db_root.mkdir()
+
+        subprocess.run(
+            [sys.executable, "-m", "wizardeye", "database", "init", "-d", str(db_root)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        db_path = db_root / "database"
+
+        for contaminant_fa in CONTAMINANT_FAS:
+            contaminant_name = contaminant_fa.stem
+
+            # Step 1: Extract random reads from contaminant
+            reads = extract_random_reads_from_fasta(
+                contaminant_fa,
+                num_reads=NUM_READS,
+                read_length=READ_LENGTH,
+                seed=42,
+            )
+
+            # Step 2: Align reads to hg19 using bwa
+            # Write reads to a temporary FASTA file
+            reads_fasta = tmpdir / f"{contaminant_name}_reads.fa"
+            sequences = [(f"read_{i}", read) for i, read in enumerate(reads)]
+            write_fasta_file(sequences, reads_fasta)
+
+            # Index the reference if not already indexed
+            reference_index_files = [
+                HG19_FA.with_suffix(".bwt"),
+                HG19_FA.with_suffix(".pac"),
+                HG19_FA.with_suffix(".ann"),
+                HG19_FA.with_suffix(".amb"),
+                HG19_FA.with_suffix(".sa"),
+            ]
+            if not all(f.exists() for f in reference_index_files):
+                subprocess.run(
+                    ["bwa", "index", str(HG19_FA)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+            # Align reads with bwa aln
+            aln_output = tmpdir / f"{contaminant_name}_alignments.sai"
+            with open(aln_output, "w") as aln_file:
+                subprocess.run(
+                    [
+                        "bwa",
+                        "aln",
+                        "-n",
+                        str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                        "-o",
+                        str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                        "-l",
+                        str(STANDARD_BWA_SEED_LENGTH),
+                        "-t",
+                        str(STANDARD_N_THREADS),
+                        str(HG19_FA),
+                        str(reads_fasta),
+                    ],
+                    stdout=aln_file,
+                    check=True,
+                    text=True,
+                )
+
+            # Convert to SAM using bwa samse
+            sam_path = tmpdir / f"{contaminant_name}_alignment.sam"
+            with open(sam_path, "w") as sam_file:
+                subprocess.run(
+                    [
+                        "bwa",
+                        "samse",
+                        "-n",
+                        str(STANDARD_BWA_R_BEST_HITS),
+                        str(HG19_FA),
+                        str(aln_output),
+                        str(reads_fasta),
+                    ],
+                    stdout=sam_file,
+                    check=True,
+                    text=True,
+                )
+
+            # Convert SAM to BAM using samtools
+            unsorted_bam = tmpdir / f"{contaminant_name}_unsorted.bam"
+            subprocess.run(
+                ["samtools", "view", "-b", str(sam_path), "-o", str(unsorted_bam)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            bam_path = tmpdir / f"{contaminant_name}_alignment.bam"
+            subprocess.run(
+                ["samtools", "sort", str(unsorted_bam), "-o", str(bam_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            subprocess.run(
+                ["samtools", "index", str(bam_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            # Count initial reads (only mapped ones)
+            initial_count = count_mapped_reads_in_bam(bam_path)
+
+            # Step 3: Create a track from the full contaminant FASTA
+            track_id = get_track_name(
+                contaminant_fa,
+                STANDARD_KMER_LENGTH,
+                STANDARD_OFFSET_STEP,
+                STANDARD_BWA_HASH,
+            )
+
+            align_cmd = [
+                sys.executable,
+                "-m",
+                "wizardeye",
+                "align",
+                "-i",
+                str(contaminant_fa),
+                "-r",
+                str(HG19_FA),
+                "-k",
+                str(STANDARD_KMER_LENGTH),
+                "-w",
+                str(STANDARD_OFFSET_STEP),
+                "-bn",
+                str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                "-bo",
+                str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                "-bl",
+                str(STANDARD_BWA_SEED_LENGTH),
+                "-j",
+                str(STANDARD_N_THREADS),
+                "-cs",
+                str(STANDARD_CHUNK_SIZE),
+                "-d",
+                str(db_path),
+                "-t",
+                contaminant_name,
+            ]
+
+            subprocess.run(
+                align_cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                env=env,
+            )
+
+            # Step 4: Filter the BAM using wizardeye
+            report_path = tmpdir / f"{contaminant_name}_filter_report.tsv"
+            filtered_bam_path = tmpdir / f"{contaminant_name}_filtered.bam"
+
+            filter_cmd = [
+                sys.executable,
+                "-m",
+                "wizardeye",
+                "filter",
+                "-i",
+                str(bam_path),
+                "-r",
+                ref_name,
+                "-k",
+                str(STANDARD_KMER_LENGTH),
+                "-w",
+                str(STANDARD_OFFSET_STEP),
+                "-bn",
+                str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                "-bo",
+                str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                "-bl",
+                str(STANDARD_BWA_SEED_LENGTH),
+                "-p",
+                "0.01",
+                "--report-output",
+                str(report_path),
+                "--kept-output",
+                str(filtered_bam_path),
+                "--exclude-tracks",
+                track_id,
+                "-d",
+                str(db_path),
+            ]
+
+            subprocess.run(
+                filter_cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                env=env,
+            )
+
+            # Step 5: Verify no reads remain
+            filtered_count = count_mapped_reads_in_bam(filtered_bam_path)
+
+            # All reads should be filtered out
+            assert filtered_count == 0, (
+                f"Expected 0 reads after filtering {contaminant_name}, "
+                f"but found {filtered_count} reads. "
+                f"Initial count: {initial_count}"
+            )
+
+
+def test_unmapped_reads_filtering():
+    """Test that WizardEye correctly filters out contaminant reads and handles unmapped reads.
+
+    For each contaminant FASTA:
+    1. Extract random k-mer reads
+    2. Align them to hg19 using bwa
+    3. Create a track from the full contaminant FASTA
+    4. Filter the alignment BAM
+    5. Verify unmapped reads are kept, mapped contaminant reads are excluded
+
+    This ensures that unmapped reads are preserved while contaminant reads are filtered.
+    """
+    # Number of random reads to extract from each contaminant
+    NUM_READS = 10_000
+    READ_LENGTH = STANDARD_KMER_LENGTH
+
+    # Reference name in the database
+    ref_name = HG19_FA.stem
+
+    env = {**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)}
+
+    with tempfile.TemporaryDirectory(prefix="wizardeye_contaminant_test_") as tmpdir:
+        tmpdir = Path(tmpdir)
+
+        # Create database
+        db_root = tmpdir / "database_root"
+        db_root.mkdir()
+
+        subprocess.run(
+            [sys.executable, "-m", "wizardeye", "database", "init", "-d", str(db_root)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        db_path = db_root / "database"
+
+        for contaminant_fa in CONTAMINANT_FAS:
+            contaminant_name = contaminant_fa.stem
+
+            # Step 1: Extract random reads from contaminant
+            reads = extract_random_reads_from_fasta(
+                contaminant_fa,
+                num_reads=NUM_READS,
+                read_length=READ_LENGTH,
+                seed=42,
+            )
+
+            # Step 2: Align reads to hg19 using bwa
+            # Write reads to a temporary FASTA file
+            reads_fasta = tmpdir / f"{contaminant_name}_reads.fa"
+            sequences = [(f"read_{i}", read) for i, read in enumerate(reads)]
+            write_fasta_file(sequences, reads_fasta)
+
+            # Index the reference if not already indexed
+            reference_index_files = [
+                HG19_FA.with_suffix(".bwt"),
+                HG19_FA.with_suffix(".pac"),
+                HG19_FA.with_suffix(".ann"),
+                HG19_FA.with_suffix(".amb"),
+                HG19_FA.with_suffix(".sa"),
+            ]
+            if not all(f.exists() for f in reference_index_files):
+                subprocess.run(
+                    ["bwa", "index", str(HG19_FA)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+            # Align reads with bwa aln
+            aln_output = tmpdir / f"{contaminant_name}_alignments.sai"
+            with open(aln_output, "w") as aln_file:
+                subprocess.run(
+                    [
+                        "bwa",
+                        "aln",
+                        "-n",
+                        str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                        "-o",
+                        str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                        "-l",
+                        str(STANDARD_BWA_SEED_LENGTH),
+                        "-t",
+                        str(STANDARD_N_THREADS),
+                        str(HG19_FA),
+                        str(reads_fasta),
+                    ],
+                    stdout=aln_file,
+                    check=True,
+                    text=True,
+                )
+
+            # Convert to SAM using bwa samse
+            sam_path = tmpdir / f"{contaminant_name}_alignment.sam"
+            with open(sam_path, "w") as sam_file:
+                subprocess.run(
+                    [
+                        "bwa",
+                        "samse",
+                        "-n",
+                        str(STANDARD_BWA_R_BEST_HITS),
+                        str(HG19_FA),
+                        str(aln_output),
+                        str(reads_fasta),
+                    ],
+                    stdout=sam_file,
+                    check=True,
+                    text=True,
+                )
+
+            # Convert SAM to BAM using samtools
+            unsorted_bam = tmpdir / f"{contaminant_name}_unsorted.bam"
+            subprocess.run(
+                ["samtools", "view", "-b", str(sam_path), "-o", str(unsorted_bam)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            bam_path = tmpdir / f"{contaminant_name}_alignment.bam"
+            subprocess.run(
+                ["samtools", "sort", str(unsorted_bam), "-o", str(bam_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            subprocess.run(
+                ["samtools", "index", str(bam_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            # Step 3: Create a track from the full contaminant FASTA
+
+            # Step 3: Create a track from the full contaminant FASTA
+            track_id = get_track_name(
+                contaminant_fa,
+                STANDARD_KMER_LENGTH,
+                STANDARD_OFFSET_STEP,
+                STANDARD_BWA_HASH,
+            )
+
+            align_cmd = [
+                sys.executable,
+                "-m",
+                "wizardeye",
+                "align",
+                "-i",
+                str(contaminant_fa),
+                "-r",
+                str(HG19_FA),
+                "-k",
+                str(STANDARD_KMER_LENGTH),
+                "-w",
+                str(STANDARD_OFFSET_STEP),
+                "-bn",
+                str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                "-bo",
+                str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                "-bl",
+                str(STANDARD_BWA_SEED_LENGTH),
+                "-j",
+                str(STANDARD_N_THREADS),
+                "-cs",
+                str(STANDARD_CHUNK_SIZE),
+                "-d",
+                str(db_path),
+                "-t",
+                contaminant_name,
+            ]
+
+            subprocess.run(
+                align_cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                env=env,
+            )
+
+            # Step 4: Filter the BAM using wizardeye
+            report_path = tmpdir / f"{contaminant_name}_filter_report.tsv"
+            kept_bam_path = tmpdir / f"{contaminant_name}_kept.bam"
+            excluded_bam_path = tmpdir / f"{contaminant_name}_excluded.bam"
+
+            filter_cmd = [
+                sys.executable,
+                "-m",
+                "wizardeye",
+                "filter",
+                "-i",
+                str(bam_path),
+                "-r",
+                ref_name,
+                "-k",
+                str(STANDARD_KMER_LENGTH),
+                "-w",
+                str(STANDARD_OFFSET_STEP),
+                "-bn",
+                str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+                "-bo",
+                str(STANDARD_BWA_MAX_GAP_OPENINGS),
+                "-bl",
+                str(STANDARD_BWA_SEED_LENGTH),
+                "-p",
+                "0.01",
+                "--report-output",
+                str(report_path),
+                "--kept-output",
+                str(kept_bam_path),
+                "--excluded-output",
+                str(excluded_bam_path),
+                "--exclude-tracks",
+                track_id,
+                "-d",
+                str(db_path),
+            ]
+
+            result = subprocess.run(
+                filter_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                env=env,
+            )
+
+            # Verify return code is 0
+            assert result.returncode == 0, (
+                f"Command failed with stderr: {result.stderr}"
+            )
+
+            # Check if input BAM has unmapped reads using pysam
+            unmapped_in_input = count_unmapped_reads_in_bam(bam_path)
+
+            # Verify stdout contains "WARN" and "unmapped" if there are unmapped reads
+            if unmapped_in_input > 0:
+                assert "unmapped" in result.stdout, (
+                    f"Expected 'unmapped ' in stdout when {unmapped_in_input} unmapped reads exist in input, got: {result.stdout}"
+                )
+                assert "WARN" in result.stdout, (
+                    f"Expected WARN in stdout when unmapped reads exist, got: {result.stdout}"
+                )
+
+            # Verify kept BAM contains unmapped reads if they exist in input using pysam
+            unmapped_in_kept = count_unmapped_reads_in_bam(kept_bam_path)
+
+            # Verify excluded BAM contains no unmapped reads using pysam
+            unmapped_in_excluded = count_unmapped_reads_in_bam(excluded_bam_path)
+            assert unmapped_in_excluded == 0, (
+                f"Expected 0 unmapped reads in excluded BAM, found {unmapped_in_excluded}"
+            )
+
+            # If input had unmapped reads, verify they are in kept BAM
+            if unmapped_in_input > 0:
+                assert unmapped_in_kept == unmapped_in_input, (
+                    f"Expected exactly {unmapped_in_input} unmapped reads in kept BAM (from input), found {unmapped_in_kept}"
+                )
+
+
+# -- Test the exhaustive search of WizardEye with repetitive sequences --
 
 
 def test_coverage_repetitive_sequence_with_bN():
-    """
-    Test that WizardEye refers, for a single k-mer, every alternative mappings even if there is a lot of them and despite their scores.
+    """Test that a single k-mer reports all alternative mappings despite scores.
+
+    Uses ``-bN`` to force exhaustive search so that every alternative mapping of a
+    single k-mer is reported even when there are many of them and despite their
+    scores.
     """
 
     kmer_length = 35
@@ -105,7 +615,7 @@ def test_coverage_repetitive_sequence_with_bN():
 
         # Initialize database
         subprocess.run(
-            ["python3", "-m", "wizardeye", "database", "init", "-d", str(db_dir)],
+            [sys.executable, "-m", "wizardeye", "database", "init", "-d", str(db_dir)],
             check=True,
             capture_output=True,
             text=True,
@@ -118,7 +628,7 @@ def test_coverage_repetitive_sequence_with_bN():
         ref_stem = ref_fasta.stem
 
         align_cmd = [
-            "python3",
+            sys.executable,
             "-m",
             "wizardeye",
             "align",
@@ -147,16 +657,13 @@ def test_coverage_repetitive_sequence_with_bN():
             str(db_path),
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             align_cmd,
             capture_output=False,
             text=True,
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-
-        if result.returncode != 0:
-            print(f"wizardeye align failed: {result.stderr}")
-            raise RuntimeError(f"Alignment failed with return code {result.returncode}")
 
         # Find the track directory
         track_pattern = f"query_k{kmer_length}_w{kmer_length}_bwa{STANDARD_BWA_HASH}"
@@ -186,9 +693,6 @@ def test_coverage_repetitive_sequence_with_bN():
                 text=True,
             )
         except FileNotFoundError:
-            print(
-                "Warning: bigWigToBedGraph not found, skipping detailed coverage check"
-            )
             return
 
         with open(bedgraph_file, "r") as f:
@@ -199,7 +703,7 @@ def test_coverage_repetitive_sequence_with_bN():
 
         total_depth = 0
         for line in lines:
-            if line.startswith("#") or line.startswith("track"):
+            if line.startswith(("#", "track")):
                 continue
             parts = line.strip().split("\t")
             if len(parts) >= 4:
@@ -213,10 +717,6 @@ def test_coverage_repetitive_sequence_with_bN():
                 if depth > 0 and chrom in all_contigs:
                     all_contigs.remove(chrom)
 
-        print("\nRepetitive sequence test results:")
-        print(f"Number of reference k-mers: {num_kmers}")
-        print(f"Total depth: {total_depth}")
-
         assert total_depth >= num_kmers, (
             "Expected depth should be greater than the number of generated k-mers. "
         )
@@ -225,9 +725,9 @@ def test_coverage_repetitive_sequence_with_bN():
 
 
 def test_coverage_repetitive_sequence_with_bR_n_errs():
-    """
-    Test that WizardEye refers, for a single k-mer, every alternative mappings with a score up to best-1 score even if there is a lot of them.
-    This test does not include indels are bwa prefers mismatches to indels.
+    """Test that a single k-mer reports all mappings up to best-1 score.
+
+    This test does not include indels as BWA prefers mismatches to indels.
     """
 
     # Reproduce the test 3 times to test 0 and 1 errors, 1 and 2 errors and 2 and 3 errors.
@@ -287,7 +787,15 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
 
             # Initialize database
             subprocess.run(
-                ["python3", "-m", "wizardeye", "database", "init", "-d", str(db_dir)],
+                [
+                    sys.executable,
+                    "-m",
+                    "wizardeye",
+                    "database",
+                    "init",
+                    "-d",
+                    str(db_dir),
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -300,7 +808,7 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
             ref_stem = ref_fasta.stem
 
             align_cmd = [
-                "python3",
+                sys.executable,
                 "-m",
                 "wizardeye",
                 "align",
@@ -328,18 +836,13 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
                 str(db_path),
             ]
 
-            result = subprocess.run(
+            subprocess.run(
                 align_cmd,
                 capture_output=False,
                 text=True,
+                check=True,
                 env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
             )
-
-            if result.returncode != 0:
-                print(f"wizardeye align failed: {result.stderr}")
-                raise RuntimeError(
-                    f"Alignment failed with return code {result.returncode}"
-                )
 
             # Find the track directory
             track_pattern = (
@@ -373,9 +876,6 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
                     text=True,
                 )
             except FileNotFoundError:
-                print(
-                    "Warning: bigWigToBedGraph not found, skipping detailed coverage check"
-                )
                 return
 
             with open(bedgraph_file, "r") as f:
@@ -386,7 +886,7 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
 
             total_depth = 0
             for line in lines:
-                if line.startswith("#") or line.startswith("track"):
+                if line.startswith(("#", "track")):
                     continue
                 parts = line.strip().split("\t")
                 if len(parts) >= 4:
@@ -400,10 +900,6 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
                     if depth > 0 and chrom in all_contigs:
                         all_contigs.remove(chrom)
 
-            print("\nRepetitive sequence test results:")
-            print(f"Number of reference k-mers: {num_kmers}")
-            print(f"Total depth: {total_depth}")
-
             assert total_depth >= num_kmers, (
                 f"Expected depth should be equal or greater than the number of generated k-mers [{error}-{error + 1} errors]. "
             )
@@ -414,16 +910,17 @@ def test_coverage_repetitive_sequence_with_bR_n_errs():
 
 
 def test_filter_duplicate_read_ids():
-    """
-    Test that filter processes reads with duplicate QNAME independently.
+    """Test that filter processes reads with duplicate QNAME independently.
 
-    This test creates a BAM file with reads sharing the same QNAME (read ID) but aligned
-    at different positions. Some positions overlap the track mask while others don't.
+    Creates a BAM file with reads sharing the same QNAME (read ID) but aligned at
+    different positions. Some positions overlap the track mask while others don't.
     It verifies that each read is processed individually during filtering:
-    - Reads overlapping masked positions are excluded
-    - Reads not overlapping masked positions are kept
-    - Duplicate IDs do not cause incorrect consolidation
-    - Edge cases: same chr/start/stop but different chr, same chr with different positions, same chr/stop with different start
+
+    - Reads overlapping masked positions are excluded.
+    - Reads not overlapping masked positions are kept.
+    - Duplicate IDs do not cause incorrect consolidation.
+    - Edge cases: same chr/start/stop but different chr, same chr with different
+      positions, same chr/stop with different start.
     """
     kmer_length = 35
 
@@ -534,7 +1031,7 @@ def test_filter_duplicate_read_ids():
         db_dir = tmpdir / "database"
         db_dir.mkdir()
         subprocess.run(
-            ["python3", "-m", "wizardeye", "database", "init", "-d", str(db_dir)],
+            [sys.executable, "-m", "wizardeye", "database", "init", "-d", str(db_dir)],
             check=True,
             capture_output=True,
             text=True,
@@ -547,7 +1044,7 @@ def test_filter_duplicate_read_ids():
         ref_stem = ref_fasta.stem
 
         align_cmd = [
-            "python3",
+            sys.executable,
             "-m",
             "wizardeye",
             "align",
@@ -575,16 +1072,13 @@ def test_filter_duplicate_read_ids():
             str(db_path),
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             align_cmd,
             capture_output=True,
             text=True,
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-
-        if result.returncode != 0:
-            print(f"WizardEye align failed: {result.stderr}")
-            raise RuntimeError(f"Alignment failed with return code {result.returncode}")
 
         # Find the track directory
         track_pattern = f"query_k{kmer_length}_w{1}_bwa{STANDARD_BWA_HASH}"
@@ -603,12 +1097,12 @@ def test_filter_duplicate_read_ids():
         assert map_all_bw.exists(), f"map_all.bw not found in {track_dir}"
 
         # Run WizardEye filter
-        filtered_bam = tmpdir / "filtered.bam"
+        kept_bam = tmpdir / "filtered.bam"
         excluded_bam = tmpdir / "excluded.bam"
         report_tsv = tmpdir / "report.tsv"
 
         filter_cmd = [
-            "python3",
+            sys.executable,
             "-m",
             "wizardeye",
             "filter",
@@ -632,9 +1126,8 @@ def test_filter_duplicate_read_ids():
             "2000000000",
             "-d",
             str(db_path),
-            "--export-bam",
-            "-o",
-            str(filtered_bam),
+            "--kept-output",
+            str(kept_bam),
             "--excluded-output",
             str(excluded_bam),
             "-p",
@@ -645,22 +1138,17 @@ def test_filter_duplicate_read_ids():
             "query",
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             filter_cmd,
             capture_output=True,
             text=True,
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
 
-        if result.returncode != 0:
-            print("WizardEye filter failed:")
-            print(f"stdout: {result.stdout}")
-            print(f"stderr: {result.stderr}")
-            raise RuntimeError(f"Filter failed with return code {result.returncode}")
-
         # Count reads in filtered BAM
         result = subprocess.run(
-            ["samtools", "view", "-c", str(filtered_bam)],
+            ["samtools", "view", "-c", str(kept_bam)],
             capture_output=True,
             text=True,
             check=True,
@@ -677,25 +1165,23 @@ def test_filter_duplicate_read_ids():
         n_excluded = int(result.stdout.strip())
 
         # Verify BAM outputs exist
-        assert filtered_bam.exists(), f"Filtered BAM not found: {filtered_bam}"
+        assert kept_bam.exists(), f"Filtered BAM not found: {kept_bam}"
         assert excluded_bam.exists(), f"Excluded BAM not found: {excluded_bam}"
 
         # Verify BAM outputs are valid BAM files
-        result = subprocess.run(
-            ["samtools", "quickcheck", str(filtered_bam)],
+        subprocess.run(
+            ["samtools", "quickcheck", str(kept_bam)],
             capture_output=True,
             text=True,
             check=True,
         )
-        assert result.returncode == 0, f"Filtered BAM is corrupted: {result.stderr}"
 
-        result = subprocess.run(
+        subprocess.run(
             ["samtools", "quickcheck", str(excluded_bam)],
             capture_output=True,
             text=True,
             check=True,
         )
-        assert result.returncode == 0, f"Excluded BAM is corrupted: {result.stderr}"
 
         # Total reads should be 11:
         # - 2x read1 (10, 55)
@@ -829,7 +1315,7 @@ def test_filter_duplicate_read_ids():
         # Verify exact read content in filtered and excluded BAMs
         # Get reads from filtered BAM
         result = subprocess.run(
-            ["samtools", "view", str(filtered_bam)],
+            ["samtools", "view", str(kept_bam)],
             capture_output=True,
             text=True,
             check=True,
@@ -895,24 +1381,18 @@ def test_filter_duplicate_read_ids():
             f"Actual: {sorted(actual_excluded)}"
         )
 
-        print("\nDuplicate read IDs test results:")
-        print("Total reads in input: 11")
-        print(f"Reads in filtered BAM: {n_filtered}")
-        print(f"Reads in excluded BAM: {n_excluded}")
-        print(f"Total reads after filtering: {total_reads}")
-        print(f"Report entries (excluded): {n_excluded_in_report}")
-        print(f"Report entries (filtered): {n_filtered_in_report}")
-
 
 def test_count_duplicate_read_ids():
-    """
-    Test that count processes reads with duplicate QNAME independently.
+    """Test that count processes reads with duplicate QNAME independently.
 
-    This test creates a BAM file with reads sharing the same QNAME (read ID) but aligned
-    at different positions. It verifies that each read is processed individually during counting:
-    - Each read produces a separate line in the report with unique read_key
-    - Duplicate IDs do not cause incorrect consolidation
-    - Edge cases: same chr/start/stop but different chr, same chr with different positions, same chr/stop with different start
+    Creates a BAM file with reads sharing the same QNAME (read ID) but aligned at
+    different positions. It verifies that each read is processed individually during
+    counting:
+
+    - Each read produces a separate line in the report with a unique read_key.
+    - Duplicate IDs do not cause incorrect consolidation.
+    - Edge cases: same chr/start/stop but different chr, same chr with different
+      positions, same chr/stop with different start.
     """
     kmer_length = 35
 
@@ -1023,7 +1503,7 @@ def test_count_duplicate_read_ids():
         db_dir = tmpdir / "database"
         db_dir.mkdir()
         subprocess.run(
-            ["python3", "-m", "wizardeye", "database", "init", "-d", str(db_dir)],
+            [sys.executable, "-m", "wizardeye", "database", "init", "-d", str(db_dir)],
             check=True,
             capture_output=True,
             text=True,
@@ -1036,7 +1516,7 @@ def test_count_duplicate_read_ids():
         ref_stem = ref_fasta.stem
 
         align_cmd = [
-            "python3",
+            sys.executable,
             "-m",
             "wizardeye",
             "align",
@@ -1064,16 +1544,13 @@ def test_count_duplicate_read_ids():
             str(db_path),
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             align_cmd,
             capture_output=True,
             text=True,
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-
-        if result.returncode != 0:
-            print(f"WizardEye align failed: {result.stderr}")
-            raise RuntimeError(f"Alignment failed with return code {result.returncode}")
 
         # Find the track directory
         track_pattern = f"query_k{kmer_length}_w{1}_bwa{STANDARD_BWA_HASH}"
@@ -1095,7 +1572,7 @@ def test_count_duplicate_read_ids():
         count_report_tsv = tmpdir / "count_report.tsv"
 
         count_cmd = [
-            "python3",
+            sys.executable,
             "-m",
             "wizardeye",
             "count",
@@ -1127,18 +1604,13 @@ def test_count_duplicate_read_ids():
             str(count_report_tsv),
         ]
 
-        result = subprocess.run(
+        subprocess.run(
             count_cmd,
             capture_output=True,
             text=True,
+            check=True,
             env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
         )
-
-        if result.returncode != 0:
-            print("WizardEye count failed:")
-            print(f"stdout: {result.stdout}")
-            print(f"stderr: {result.stderr}")
-            raise RuntimeError(f"Count failed with return code {result.returncode}")
 
         # Verify report file exists
         assert count_report_tsv.exists(), (
@@ -1214,8 +1686,3 @@ def test_count_duplicate_read_ids():
             f"Expected: {sorted(expected_read_keys)}\n"
             f"Actual: {sorted(actual_read_keys)}"
         )
-
-        print("\nDuplicate read IDs count test results:")
-        print("Total reads in input: 11")
-        print(f"Report entries: {len(actual_read_keys)}")
-        print("All reads with duplicate IDs were processed independently")

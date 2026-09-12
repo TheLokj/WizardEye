@@ -1,0 +1,18 @@
+# All hidden files
+.*
+
+# Compiled Python files
+__pycache__/
+*.egg-info/
+
+# Files produced during test
+*.amb
+*.ann
+*.bwt
+*.fai
+*.pac
+*.sa
+
+# Allow GitHub related files
+!.github/
+!.gitignore
