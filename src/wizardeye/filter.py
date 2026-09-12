@@ -9,6 +9,7 @@ to generate the final filtration report.
 from __future__ import annotations
 
 import hashlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from .utils import (
     merge_bed_files,
     validate_bam_compatibility,
 )
+from .version import PACKAGE_VERSION
 
 # -- Mask creation related functions --
 
@@ -396,6 +398,23 @@ def compute_stringency_on_bedGraph(
 # -- Filtration related functions --
 
 
+def _build_filtered_bam_header(
+    bam: pysam.AlignmentFile, output_label: str
+) -> pysam.AlignmentHeader:
+    header_dict = bam.header.to_dict()
+    command_line = shlex.join(sys.argv) if sys.argv else "wizardeye"
+    header_dict.setdefault("PG", []).append(
+        {
+            "ID": "wizardeye-filter",
+            "PN": "wizardeye",
+            "VN": PACKAGE_VERSION,
+            "CL": command_line,
+        }
+    )
+    header_dict.setdefault("CO", []).append(f"WizardEye output: {output_label}")
+    return pysam.AlignmentHeader.from_dict(header_dict)
+
+
 def filter_bam(
     input_bam: str,
     ref: str,
@@ -726,37 +745,39 @@ def filter_bam_from_reads_id(
 
     with (
         pysam.AlignmentFile(str(input_bam), "rb") as bam,
-        pysam.AlignmentFile(
-            str(output_kept_bam), "wb", template=bam
-        ) as filtered_handle,
     ):
-        excluded_handle = None
-        if output_excluded_bam is not None:
-            excluded_handle = pysam.AlignmentFile(
-                str(output_excluded_bam), "wb", template=bam
-            )
-        try:
-            for read in bam.fetch(until_eof=True):
-                n_total_records += 1
-                read_id = read.query_name
-                chrom = read.reference_name
-                start = read.reference_start
-                end = read.reference_end
-                if (
-                    read_id
-                    and chrom
-                    and start is not None
-                    and end is not None
-                    and (chrom, read_id, start, end) in excluded_reads
-                ):
-                    if excluded_handle is not None:
-                        excluded_handle.write(read)
-                    n_excluded_records += 1
-                else:
-                    filtered_handle.write(read)
-        finally:
-            if excluded_handle is not None:
-                excluded_handle.close()
+        kept_header = _build_filtered_bam_header(bam, "kept reads")
+        with pysam.AlignmentFile(
+            str(output_kept_bam), "wb", header=kept_header
+        ) as filtered_handle:
+            excluded_handle = None
+            if output_excluded_bam is not None:
+                excluded_header = _build_filtered_bam_header(bam, "excluded reads")
+                excluded_handle = pysam.AlignmentFile(
+                    str(output_excluded_bam), "wb", header=excluded_header
+                )
+            try:
+                for read in bam.fetch(until_eof=True):
+                    n_total_records += 1
+                    read_id = read.query_name
+                    chrom = read.reference_name
+                    start = read.reference_start
+                    end = read.reference_end
+                    if (
+                        read_id
+                        and chrom
+                        and start is not None
+                        and end is not None
+                        and (chrom, read_id, start, end) in excluded_reads
+                    ):
+                        if excluded_handle is not None:
+                            excluded_handle.write(read)
+                        n_excluded_records += 1
+                    else:
+                        filtered_handle.write(read)
+            finally:
+                if excluded_handle is not None:
+                    excluded_handle.close()
 
     n_filtered_records = n_total_records - n_excluded_records
     return n_total_records, n_filtered_records, n_excluded_records

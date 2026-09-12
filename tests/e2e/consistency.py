@@ -2170,6 +2170,123 @@ def test_consistency_filter_report_bam_split_and_min_frequency(standard_database
                         )
 
 
+def test_filter_bam_preserves_initial_pg_and_adds_wizardeye_metadata(
+    standard_database,
+):
+    """Test that WizardEye filter preserves input BAM provenance and adds its own metadata.
+
+    Uses the available Ursus BAM fixture to exercise the real CLI and verify that
+    the filtered BAM outputs:
+      1. preserve the input BAM header's initial @PG entries,
+      2. append a WizardEye @PG entry with the full command line,
+      3. add a @CO entry indicating whether the output is kept or excluded reads.
+    """
+    import pysam
+
+    query_stems = [SUS_SCROFA_FA.stem, CANIS_LUPUS_FA.stem, RATTUS_NORVEGICUS_FA.stem]
+    exclude_tracks_str = ",".join(query_stems)
+    hg19_stem = HG19_FA.stem
+
+    with tempfile.TemporaryDirectory(prefix="wizardeye_filter_header_") as tmpdir:
+        tmp_path = Path(tmpdir)
+        report_path = tmp_path / "filter_report.tsv"
+        kept_bam = tmp_path / "kept.bam"
+        excluded_bam = tmp_path / "excluded.bam"
+
+        with pysam.AlignmentFile(str(SIMULATED_URSUS_BAM), "rb") as input_bam:
+            input_header = input_bam.header.to_dict()
+
+        input_pg_entries = input_header.get("PG", [])
+        assert input_pg_entries, (
+            "Expected the Ursus BAM fixture to contain at least one @PG entry"
+        )
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "wizardeye",
+            "filter",
+            "-i",
+            str(SIMULATED_URSUS_BAM),
+            "-r",
+            str(hg19_stem),
+            "-k",
+            str(STANDARD_KMER_LENGTH),
+            "-w",
+            str(STANDARD_OFFSET_STEP),
+            "-bn",
+            str(STANDARD_BWA_MISSING_PROB_ERR_RATE),
+            "-bo",
+            str(STANDARD_BWA_MAX_GAP_OPENINGS),
+            "-bl",
+            str(STANDARD_BWA_SEED_LENGTH),
+            "-p",
+            str(STANDARD_CROSS_STRINGENCY),
+            "--exclude-tracks",
+            exclude_tracks_str,
+            "--report-output",
+            str(report_path),
+            "--kept-output",
+            str(kept_bam),
+            "--excluded-output",
+            str(excluded_bam),
+            "-d",
+            str(standard_database),
+        ]
+
+        subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+            env={**subprocess.os.environ, "PYTHONPATH": str(SRC_DIR)},
+        )
+
+        assert report_path.exists(), (
+            f"wizardeye filter did not create report: {report_path}"
+        )
+        assert kept_bam.exists(), (
+            f"wizardeye filter did not create kept BAM: {kept_bam}"
+        )
+        assert excluded_bam.exists(), (
+            f"wizardeye filter did not create excluded BAM: {excluded_bam}"
+        )
+
+        for bam_path, expected_output_label in (
+            (kept_bam, "kept reads"),
+            (excluded_bam, "excluded reads"),
+        ):
+            with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+                output_header = bam.header.to_dict()
+
+            output_pg_entries = output_header.get("PG", [])
+            output_co_entries = output_header.get("CO", [])
+
+            assert output_pg_entries[: len(input_pg_entries)] == input_pg_entries, (
+                f"Initial @PG entries were not preserved in {bam_path}"
+            )
+
+            wizardeye_pg = next(
+                (
+                    pg
+                    for pg in output_pg_entries
+                    if pg.get("ID") == "wizardeye-filter"
+                    and pg.get("PN") == "wizardeye"
+                    and pg.get("VN")
+                    and "filter" in pg.get("CL", "")
+                ),
+                None,
+            )
+            assert wizardeye_pg is not None, f"wizardeye PG entry missing in {bam_path}"
+
+            assert any(
+                co == f"WizardEye output: {expected_output_label}"
+                for co in output_co_entries
+            ), f"wizardeye CO entry missing in {bam_path}"
+
+
 def test_consistency_align_parallel_same_db():
     """Test if multiple genomes can be aligned simultaneously in parallel on the same database.
 
