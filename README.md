@@ -4,7 +4,7 @@
 [![Version](https://img.shields.io/badge/version-0.1.5-yellow.svg)](https://github.com/TheLokj/WizardEye/releases)
 ![Beta](https://img.shields.io/badge/beta-orange.svg)
 [![Install WizardEye using bioconda](https://img.shields.io/badge/Install%20WizardEye%20using-bioconda-brightblue.svg?style=flat)](https://anaconda.org/channels/bioconda/packages/wizardeye/overview)
-[![Python CI](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml/badge.svg)](https://github.com/TheLokj/WizardEye/actions/workflows/test.yml)
+[![Python CI](https://github.com/TheLokj/WizardEye/actions/workflows/ci.yml/badge.svg)](https://github.com/TheLokj/WizardEye/actions/workflows/ci.yml)
 ![GitHub bugs](https://img.shields.io/github/issues/TheLokj/WizardEye/bug)
 
 WizardEye is a Python tool that filters aligned reads based on the risk of ambiguous alignment to a reference genome.
